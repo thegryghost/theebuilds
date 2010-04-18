@@ -1,0 +1,11 @@
+--- sc-0.5.11/cam.c.org 2006-12-19 11:06:31.000000000 -0500
++++ sc-0.5.11/cam.c     2006-12-19 11:06:50.000000000 -0500
+@@ -1224,7 +1224,7 @@
+ {
+   ecm->SetName(sys->Name());
+   ecm->Fail(false);
+-  ecmcache.New(ecm);
++  //ecmcache.New(ecm);
+   cEcmInfo *e=ecmList.First();
+   while(e) {
+     if(e->Cached() && e->Failed()) ecmcache.Delete(e);

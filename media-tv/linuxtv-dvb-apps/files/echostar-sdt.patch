@@ -1,0 +1,120 @@
+Index: util/scan/dump-vdr.c
+===================================================================
+RCS file: /cvs/linuxtv/dvb-apps/util/scan/dump-vdr.c,v
+retrieving revision 1.2
+diff -u -F^f -r1.2 dump-vdr.c
+--- util/scan/dump-vdr.c	19 Jan 2004 20:43:07 -0000	1.2
++++ util/scan/dump-vdr.c	14 Jul 2004 18:38:41 -0000
+@@ -145,7 +145,7 @@
+ 			transport_stream_id = 0;
+ 		}
+ 		if ((dump_channum == 1) && (channel_num > 0))
+-			fprintf(f, ":@%i\n", channel_num);
++			fprintf(f, ":@1%04i\n", channel_num);
+ 		if (vdr_version >= 3)
+ 			fprintf (f, "%s;%s:", service_name, provider_name);
+ 		else
+@@ -175,8 +175,8 @@
+ 				fprintf (f, "=%.4s", audio_lang[0]);
+  		}
+ 		if (scrambled == 1) scrambled = ca_select;
+-		fprintf (f, ":%d:%d:%d:%d:%d:0", teletext_pid, scrambled,
+-				service_id, network_id, transport_stream_id);
++		fprintf (f, ":%d:%d:%d:%d:%d:1%04d", teletext_pid, scrambled,
++				service_id, network_id, transport_stream_id, channel_num);
+ 		fprintf (f, "\n");
+ 	}
+ }
+Index: util/scan/scan.c
+===================================================================
+RCS file: /cvs/linuxtv/dvb-apps/util/scan/scan.c,v
+retrieving revision 1.13
+diff -u -F^f -r1.13 scan.c
+--- util/scan/scan.c	14 Jul 2004 18:06:08 -0000	1.13
++++ util/scan/scan.c	14 Jul 2004 18:38:42 -0000
+@@ -58,7 +58,7 @@
+ static int current_tp_only;
+ static int get_other_nits;
+ static int vdr_dump_provider;
+-static int vdr_dump_channum;
++static int vdr_dump_channum = 0;
+ static int no_ATSC_PSIP;
+ static int ATSC_type=1;
+ static int ca_select = 1;
+@@ -587,6 +587,8 @@
+ 		s->service_name = 0;
+ 	}
+ 
++        s->channel_num = s->service_id;
++	
+ 	info("0x%04x 0x%04x: pmt_pid 0x%04x %s -- %s (%s%s)\n",
+ 	    s->transport_stream_id,
+ 	    s->service_id,
+@@ -658,7 +660,8 @@
+ 			if (t == NIT)
+ 				parse_cable_delivery_system_descriptor (buf, data);
+ 			break;
+-
++		
++		case 0x46:
+ 		case 0x48:
+ 			if (t == SDT)
+ 				parse_service_descriptor (buf, data);
+@@ -714,8 +717,10 @@
+ 		if (!s)
+ 			s = alloc_service(current_tp, service_id);
+ 		s->pmt_pid = ((buf[2] & 0x1f) << 8) | buf[3];
++		s->transport_stream_id = transport_stream_id;
+ 		if (!s->priv && s->pmt_pid) {
+ 			s->priv = malloc(sizeof(struct section_buf));
++			verbose("PAT contains PMT 0x%x for service 0x%x\n", s->pmt_pid, s->service_id);
+ 			setup_filter(s->priv, demux_devname,
+ 				     s->pmt_pid, 0x02, s->service_id, 1, 0, 5);
+ 
+@@ -873,6 +878,7 @@
+ 			if (!t)
+ 				t = alloc_transponder(tn.param.frequency);
+ 			copy_transponder(t, &tn);
++			debug("NID 0x%04x TID 0x%04x\n", t->network_id, t->transport_stream_id);
+ 		}
+ 
+ 		section_length -= descriptors_loop_len + 6;
+@@ -909,7 +915,7 @@
+ 
+ 		s->running = (buf[3] >> 5) & 0x7;
+ 		s->scrambled = (buf[3] >> 4) & 1;
+-
++		
+ 		parse_descriptors (SDT, buf + 5, descriptors_loop_len, s);
+ 
+ 		section_length -= descriptors_loop_len + 5;
+@@ -1826,15 +1832,18 @@
+ 	struct section_buf s1;
+ 	struct section_buf s2;
+ 	struct section_buf s3;
+-
++	struct section_buf s4;
++	
+ 	/**
+ 	 *  filter timeouts > min repetition rates specified in ETR211
+ 	 */
+ 	setup_filter (&s0, demux_devname, 0x00, 0x00, -1, 1, 0, 5); /* PAT */
+ 	setup_filter (&s1, demux_devname, 0x11, 0x42, -1, 1, 0, 5); /* SDT */
++	setup_filter (&s4, demux_devname, 0x11, 0x46, -1, 1, 1, 5); /* SDT for Echostar is on a nonstandard pid */
+ 
+ 	add_filter (&s0);
+ 	add_filter (&s1);
++	add_filter (&s4);
+ 
+ 	if (!current_tp_only || output_format != OUTPUT_PIDS) {
+ 		setup_filter (&s2, demux_devname, 0x10, 0x40, -1, 1, 0, 15); /* NIT */
+@@ -1921,7 +1930,8 @@
+ 
+ static char sat_polarisation (struct transponder *t)
+ {
+-	return t->polarisation == POLARISATION_VERTICAL ? 'v' : 'h';
++	return (t->polarisation == POLARISATION_VERTICAL ||
++		t->polarisation == POLARISATION_CIRCULAR_RIGHT) ? 'v' : 'h';
+ }
+ 
+ static int sat_number (struct transponder *t)

@@ -1,0 +1,14 @@
+# ChangeLog for app-pda/ifuse
+# Copyright 1999-2009 Gentoo Foundation; Distributed under the GPL v2
+# $Header: /var/cvsroot/gentoo-x86/app-pda/ifuse/ChangeLog,v 1.2 2009/12/14 23:26:24 chainsaw Exp $
+
+*ifuse-0.9.5 (14 Dec 2009)
+
+  14 Dec 2009; <chainsaw@gentoo.org> +ifuse-0.9.5.ebuild:
+  Version bump.
+
+*ifuse-0.9.1 (08 Jun 2009)
+
+  08 Jun 2009; <chainsaw@gentoo.org> +ifuse-0.9.1.ebuild, +metadata.xml:
+  Initial commit, ebuild by me. Closes bug #241174.
+

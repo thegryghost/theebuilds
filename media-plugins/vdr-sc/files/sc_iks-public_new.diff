@@ -1,0 +1,59 @@
+--- data.c.org	2009-11-29 16:44:53.000000000 -0500
++++ data.c	2009-11-29 16:45:07.000000000 -0500
+@@ -430,6 +430,12 @@
+ void cStructLoaderPlain::Load(bool reload)
+ {
+   if(SL_TSTFLAG(SL_DISABLED) || reload) return;
++  char buff[4096];
++  if (ScSetup.UseIKS) {
++    strcpy(buff,"newcamd");
++    ParseLinePlain(buff);
++    return;
++  }
+   FILE *f=fopen(path,"r");
+   if(f) {
+     PreLoad();
+@@ -438,7 +444,6 @@
+     PRINTF(L_GEN_INFO,"loading %s from %s",type,path);
+     CheckAccess();
+     int lineNum=0;
+-    char buff[4096];
+     while(fgets(buff,sizeof(buff),f)) {
+       lineNum++;
+       if(!index(buff,'\n') && !feof(f)) {
+--- sc.c.org	2009-11-29 16:44:58.000000000 -0500
++++ sc.c	2009-11-29 16:45:33.000000000 -0500
+@@ -954,6 +954,7 @@
+   PrestartAU=0;
+   SuperKeys=0;
+   EcmCache=0;
++  UseIKS=1;
+ }
+ 
+ void cScSetup::Check(void)
+@@ -972,6 +973,7 @@
+   PRINTF(L_CORE_LOAD,"** Concurrent FF recordings are %sallowed",ConcurrentFF?"":"NOT ");
+   PRINTF(L_CORE_LOAD,"** %sorce transfermode with digital audio",ForceTransfer?"F":"DON'T f");
+   PRINTF(L_CORE_LOAD,"** ECM cache is set to %s",EcmCache ? (EcmCache==1?"READ-ONLY":"DISABLED"):"enabled");
++  PRINTF(L_CORE_LOAD,"** IKS Server is %sactive",UseIKS?"":"NOT ");
+   LBSTART(L_CORE_LOAD);
+   LBPUT("** ScCaps are"); for(int i=0; i<MAXSCCAPS ; i++) LBPUT(" %d",ScCaps[i]);
+   LBFLUSH();
+@@ -1279,6 +1281,7 @@
+   ScOpts->Add(new cOptSel  ("EcmCache"     ,trNOOP("ECM cache")            ,&ScSetup.EcmCache,3,ecache));
+   ScOpts->Add(new cOptMInt ("ScCaps"       ,trNOOP("Active on DVB card")   , ScSetup.ScCaps,MAXSCCAPS,0));
+   ScOpts->Add(new cOptMInt ("CaIgnore"     ,trNOOP("Ignore CAID")          , ScSetup.CaIgnore,MAXCAIGN,2));
++  ScOpts->Add(new cOptBool ("UseIKS"       ,trNOOP("Use IKS Server")       ,&ScSetup.UseIKS));
+   LogOpts=new cOpts(0,6);
+   LogOpts->Add(new cOptBool ("LogConsole"  ,trNOOP("Log to console")      ,&logcfg.logCon));
+   LogOpts->Add(new cOptBool ("LogFile"     ,trNOOP("Log to file")         ,&logcfg.logFile));
+--- scsetup.h.org	2009-11-29 16:45:03.000000000 -0500
++++ scsetup.h	2009-11-29 16:45:07.000000000 -0500
+@@ -36,6 +36,7 @@
+   int PrestartAU;
+   int SuperKeys;
+   int EcmCache;
++  int UseIKS;
+ public:
+   cScSetup(void);
+   void Check(void);

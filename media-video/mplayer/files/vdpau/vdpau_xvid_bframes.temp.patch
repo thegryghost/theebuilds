@@ -1,0 +1,35 @@
+Index: libavcodec/vdpau.c
+===================================================================
+--- libavcodec/vdpau.c	(revision 22148)
++++ libavcodec/vdpau.c	(working copy)
+@@ -25,6 +25,7 @@
+ #include "avcodec.h"
+ #include "h264.h"
+ #include "vc1.h"
++#include "libavutil/mathematics.h"
+ 
+ #undef NDEBUG
+ #include <assert.h>
+@@ -316,6 +317,22 @@
+     render = (struct vdpau_render_state *)s->current_picture_ptr->data[0];
+     assert(render);
+ 
++    /*
++     * trd and trb calculation.
++     */
++    if (s->pict_type == FF_B_TYPE) {
++        int d = av_gcd(s->pp_time, s->pb_time);
++        render->info.mpeg4.trd[0] = s->pp_time / d;
++        render->info.mpeg4.trb[0] = s->pb_time / d;
++        render->info.mpeg4.trd[1] = (s->pp_time + (s->pb_time >> 1)) / s->pb_time;
++        render->info.mpeg4.trb[1] = (s->pb_time + (s->pb_time >> 1)) / s->pb_time;
++    } else {
++        render->info.mpeg4.trd[0] =
++        render->info.mpeg4.trb[0] =
++        render->info.mpeg4.trd[1] =
++        render->info.mpeg4.trb[1] = 1;
++    }
++
+     /* fill VdpPictureInfoMPEG4Part2 struct */
+     render->info.mpeg4.vop_time_increment_resolution     = s->avctx->time_base.den;
+     render->info.mpeg4.vop_coding_type                   = 0;

@@ -1,0 +1,54 @@
+diff -Naur iphone_pair.old/iphone_pair.c iphone_pair/iphone_pair.c
+--- iphone_pair.old/iphone_pair.c	1969-12-31 19:00:00.000000000 -0500
++++ iphone_pair/iphone_pair.c	2009-12-31 03:01:34.563380759 -0500
+@@ -0,0 +1,44 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <libiphone/lockdown.h>
++
++int main(int argc, char **argv) {
++	char *uuid = NULL;
++	iphone_device_t idev;
++
++	iphone_error_t iperr = iphone_device_new(&idev, NULL);
++
++	if (iperr)
++	{
++		printf("Couldn't get iphone: %d\n", iperr);
++		return -1;
++	}
++	iperr = iphone_device_get_uuid(idev, &uuid);
++
++	if (iperr)
++	{
++		printf("Couldn't get UUID: %d\n", iperr);
++		return -1;
++	}
++	printf("UUID is %s, pairing ...\n", uuid);
++
++	lockdownd_client_t ld;
++	lockdownd_error_t lerr = lockdownd_client_new(idev, &ld);
++
++	if (lerr)
++	{
++		printf("Couldn't create lockdown client: %d\n", lerr);
++		return -1;
++	}
++
++	lerr = lockdownd_validate_pair(ld, NULL);
++
++	if (lerr != LOCKDOWN_E_SUCCESS)
++	{
++		printf("Couldn't validate pair: %d\n", lerr);
++		return -1;
++	}
++
++	lockdownd_client_free(ld);
++	return 0;
++}
+diff -Naur iphone_pair.old/Makefile iphone_pair/Makefile
+--- iphone_pair.old/Makefile	1969-12-31 19:00:00.000000000 -0500
++++ iphone_pair/Makefile	2009-12-31 03:03:39.427385752 -0500
+@@ -0,0 +1,2 @@
++iphone_pair: iphone_pair.o
++	gcc -Wall -o iphone_pair iphone_pair.c -liphone

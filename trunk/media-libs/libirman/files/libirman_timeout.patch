@@ -1,0 +1,11 @@
+--- irman.h.org	2009-12-18 02:10:19.930046673 -0500
++++ irman.h	2009-12-18 02:10:32.051826581 -0500
+@@ -32,7 +32,7 @@
+ /* successive bytes of an ir pseudocode should arrive within this time limit */
+ #define IR_POLL_TIMEOUT			(50 MSEC)
+ /* double signals should be no less than this apart */
+-#define IR_DOUBLE_TIMEOUT		(200 MSEC)
++#define IR_DOUBLE_TIMEOUT		(500 MSEC)
+ 
+ /* timeout for blocking IO */
+ #define IR_BLOCKING			(-1)

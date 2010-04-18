@@ -1,0 +1,11 @@
+--- dvbdevice.h.org	2010-01-03 16:55:25.000000000 -0500
++++ dvbdevice.h	2010-01-03 16:55:44.000000000 -0500
+@@ -10,6 +10,8 @@
+ #ifndef __DVBDEVICE_H
+ #define __DVBDEVICE_H
+ 
++typedef unsigned char __u8;
++
+ #include <sys/mman.h> // FIXME: workaround for broken linux-dvb header files
+ #include <linux/dvb/frontend.h>
+ #include <linux/dvb/version.h>

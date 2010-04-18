@@ -1,0 +1,57 @@
+--- libvo/vo_vdpau.c.orig	2010-02-15 00:22:40.000000000 -0500
++++ libvo/vo_vdpau.c	2010-02-15 00:25:22.000000000 -0500
+@@ -188,6 +188,7 @@
+ static int                                crop_bottom=0;
+ static int                                crop_left=0;
+ static int                                crop_right=0;
++static int                                half_rate_deint=0;
+ 
+ // EOSD
+ // Pool of surfaces
+@@ -241,15 +242,20 @@
+     for (i = 0; i <= !!(deint > 1); i++) {
+         int field = VDP_VIDEO_MIXER_PICTURE_STRUCTURE_FRAME;
+         VdpOutputSurface output_surface;
++
++        if (deint)
++            field = (top_field_first == i) ^ (deint > 1) ?
++                    VDP_VIDEO_MIXER_PICTURE_STRUCTURE_BOTTOM_FIELD:
++                    VDP_VIDEO_MIXER_PICTURE_STRUCTURE_TOP_FIELD;
++
++        if (half_rate_deint && ((half_rate_deint-1) == field))
++            continue;
++
+         if (i) {
+             draw_eosd();
+             draw_osd();
+             flip_page();
+         }
+-        if (deint)
+-            field = (top_field_first == i) ^ (deint > 1) ?
+-                    VDP_VIDEO_MIXER_PICTURE_STRUCTURE_BOTTOM_FIELD:
+-                    VDP_VIDEO_MIXER_PICTURE_STRUCTURE_TOP_FIELD;
+         output_surface = output_surfaces[surface_num];
+         vdp_st = vdp_presentation_queue_block_until_surface_idle(vdp_flip_queue,
+                                                                  output_surface,
+@@ -466,11 +472,11 @@
+ {
+ #define VDP_NUM_MIXER_PARAMETER 3
+ #define MAX_NUM_FEATURES 7
+-    int i;
++//    int i;
+     VdpStatus vdp_st;
+     int feature_count = 0;
+     VdpVideoMixerFeature features[MAX_NUM_FEATURES];
+-    VdpBool feature_enables[MAX_NUM_FEATURES];
++//    VdpBool feature_enables[MAX_NUM_FEATURES];
+     static const VdpVideoMixerAttribute denoise_attrib[] = {VDP_VIDEO_MIXER_ATTRIBUTE_NOISE_REDUCTION_LEVEL};
+     const void * const denoise_value[] = {&denoise};
+     static const VdpVideoMixerAttribute sharpen_attrib[] = {VDP_VIDEO_MIXER_ATTRIBUTE_SHARPNESS_LEVEL};
+@@ -1251,6 +1257,7 @@
+     {"pullup",  OPT_ARG_BOOL,  &pullup,  NULL},
+     {"denoise", OPT_ARG_FLOAT, &denoise, NULL},
+     {"sharpen", OPT_ARG_FLOAT, &sharpen, NULL},
++    {"half",    OPT_ARG_INT,  &half_rate_deint,    NULL},
+     {"colorspace", OPT_ARG_INT, &colorspace, NULL},
+     {"force-mixer", OPT_ARG_BOOL, &force_mixer, NULL},
+     {"hqscaling", OPT_ARG_INT, &hqscaling, (opt_test_f)int_non_neg},

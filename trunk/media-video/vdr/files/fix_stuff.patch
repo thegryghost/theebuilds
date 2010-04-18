@@ -1,0 +1,12 @@
+--- dvbdevice.c.org	2009-06-18 15:19:20.000000000 -0400
++++ dvbdevice.c	2009-06-18 15:20:07.000000000 -0400
+@@ -470,6 +470,9 @@
+ 
+   SetVideoFormat(Setup.VideoFormat);
+ 
++  #ifndef FE_CAN_2G_MODULATION
++  #define FE_CAN_2G_MODULATION 0x10000000 /* frontend supports "2nd generation modulation" (DVB-S2) */
++  #endif
+   // We only check the devices that must be present - the others will be checked before accessing them://XXX
+   if (fd_frontend >= 0) {
+      if (ioctl(fd_frontend, FE_GET_INFO, &frontendInfo) >= 0) {

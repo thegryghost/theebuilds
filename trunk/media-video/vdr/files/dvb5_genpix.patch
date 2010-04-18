@@ -1,0 +1,589 @@
+--- dvbdevice.c.org	2009-06-17 23:01:03.000000000 -0400
++++ dvbdevice.c	2009-06-17 23:02:05.000000000 -0400
+@@ -76,7 +76,7 @@
+   int tuneTimeout;
+   int lockTimeout;
+   time_t lastTimeoutReport;
+-  fe_type_t frontendType;
++  fe_delivery_system frontendType;
+   cChannel channel;
+   const char *diseqcCommands;
+   eTunerStatus tunerStatus;
+@@ -87,14 +87,14 @@
+   bool SetFrontend(void);
+   virtual void Action(void);
+ public:
+-  cDvbTuner(int Fd_Frontend, int CardIndex, fe_type_t FrontendType);
++  cDvbTuner(int Fd_Frontend, int CardIndex, fe_delivery_system FrontendType);
+   virtual ~cDvbTuner();
+   bool IsTunedTo(const cChannel *Channel) const;
+   void Set(const cChannel *Channel, bool Tune);
+   bool Locked(int TimeoutMs = 0);
+   };
+ 
+-cDvbTuner::cDvbTuner(int Fd_Frontend, int CardIndex, fe_type_t FrontendType)
++cDvbTuner::cDvbTuner(int Fd_Frontend, int CardIndex, fe_delivery_system FrontendType)
+ {
+   fd_frontend = Fd_Frontend;
+   cardIndex = CardIndex;
+@@ -104,7 +104,7 @@
+   lastTimeoutReport = 0;
+   diseqcCommands = NULL;
+   tunerStatus = tsIdle;
+-  if (frontendType == FE_QPSK)
++  if (frontendType == SYS_DVBS || frontendType == SYS_DVBS2)
+      CHECK(ioctl(fd_frontend, FE_SET_VOLTAGE, SEC_VOLTAGE_13)); // must explicitly turn on LNB power
+   SetDescription("tuner on device %d", cardIndex + 1);
+   Start();
+@@ -173,114 +173,150 @@
+ 
+ bool cDvbTuner::SetFrontend(void)
+ {
+-  dvb_frontend_parameters Frontend;
+-
++#define MAXFRONTENDCMDS 16
++#define SETCMD(c, d) { Frontend[CmdSeq.num].cmd = (c);\
++                       Frontend[CmdSeq.num].u.data = (d);\
++                       if (CmdSeq.num++ > MAXFRONTENDCMDS) {\
++                          esyslog("ERROR: too many tuning commands on frontend %d", cardIndex);\
++                          return false;\
++                          }\
++                     }
++  dtv_property Frontend[MAXFRONTENDCMDS];
+   memset(&Frontend, 0, sizeof(Frontend));
++  dtv_properties CmdSeq;
++  memset(&CmdSeq, 0, sizeof(CmdSeq));
++  CmdSeq.props = Frontend;
++  SETCMD(DTV_CLEAR, 0);
++  if (ioctl(fd_frontend, FE_SET_PROPERTY, &CmdSeq) < 0) {
++     esyslog("ERROR: frontend %d: %m", cardIndex);
++     return false;
++     }
++  CmdSeq.num = 0;
+ 
+-  switch (frontendType) {
+-    case FE_QPSK: { // DVB-S
+-
+-         unsigned int frequency = channel.Frequency();
+-
+-         if (Setup.DiSEqC) {
+-            cDiseqc *diseqc = Diseqcs.Get(channel.Source(), channel.Frequency(), channel.Polarization());
+-            if (diseqc) {
+-               if (diseqc->Commands() && (!diseqcCommands || strcmp(diseqcCommands, diseqc->Commands()) != 0)) {
+-                  cDiseqc::eDiseqcActions da;
+-                  for (char *CurrentAction = NULL; (da = diseqc->Execute(&CurrentAction)) != cDiseqc::daNone; ) {
+-                      switch (da) {
+-                        case cDiseqc::daNone:      break;
+-                        case cDiseqc::daToneOff:   CHECK(ioctl(fd_frontend, FE_SET_TONE, SEC_TONE_OFF)); break;
+-                        case cDiseqc::daToneOn:    CHECK(ioctl(fd_frontend, FE_SET_TONE, SEC_TONE_ON)); break;
+-                        case cDiseqc::daVoltage13: CHECK(ioctl(fd_frontend, FE_SET_VOLTAGE, SEC_VOLTAGE_13)); break;
+-                        case cDiseqc::daVoltage18: CHECK(ioctl(fd_frontend, FE_SET_VOLTAGE, SEC_VOLTAGE_18)); break;
+-                        case cDiseqc::daMiniA:     CHECK(ioctl(fd_frontend, FE_DISEQC_SEND_BURST, SEC_MINI_A)); break;
+-                        case cDiseqc::daMiniB:     CHECK(ioctl(fd_frontend, FE_DISEQC_SEND_BURST, SEC_MINI_B)); break;
+-                        case cDiseqc::daCodes: {
+-                             int n = 0;
+-                             uchar *codes = diseqc->Codes(n);
+-                             if (codes) {
+-                                struct dvb_diseqc_master_cmd cmd;
+-                                memcpy(cmd.msg, codes, min(n, int(sizeof(cmd.msg))));
+-                                cmd.msg_len = n;
+-                                CHECK(ioctl(fd_frontend, FE_DISEQC_SEND_MASTER_CMD, &cmd));
+-                                }
+-                             }
+-                             break;
+-                        }
+-                      }
+-                  diseqcCommands = diseqc->Commands();
++  if (frontendType == SYS_DVBS || frontendType == SYS_DVBS2) {
++     unsigned int frequency = channel.Frequency();
++     if (Setup.DiSEqC) {
++        cDiseqc *diseqc = Diseqcs.Get(channel.Source(), channel.Frequency(), channel.Polarization());
++        if (diseqc) {
++           if (diseqc->Commands() && (!diseqcCommands || strcmp(diseqcCommands, diseqc->Commands()) != 0)) {
++              cDiseqc::eDiseqcActions da;
++              for (char *CurrentAction = NULL; (da = diseqc->Execute(&CurrentAction)) != cDiseqc::daNone; ) {
++                  switch (da) {
++                    case cDiseqc::daNone:      break;
++                    case cDiseqc::daToneOff:   CHECK(ioctl(fd_frontend, FE_SET_TONE, SEC_TONE_OFF)); break;
++                    case cDiseqc::daToneOn:    CHECK(ioctl(fd_frontend, FE_SET_TONE, SEC_TONE_ON)); break;
++                    case cDiseqc::daVoltage13: CHECK(ioctl(fd_frontend, FE_SET_VOLTAGE, SEC_VOLTAGE_13)); break;
++                    case cDiseqc::daVoltage18: CHECK(ioctl(fd_frontend, FE_SET_VOLTAGE, SEC_VOLTAGE_18)); break;
++                    case cDiseqc::daMiniA:     CHECK(ioctl(fd_frontend, FE_DISEQC_SEND_BURST, SEC_MINI_A)); break;
++                    case cDiseqc::daMiniB:     CHECK(ioctl(fd_frontend, FE_DISEQC_SEND_BURST, SEC_MINI_B)); break;
++                    case cDiseqc::daCodes: {
++                         int n = 0;
++                         uchar *codes = diseqc->Codes(n);
++                         if (codes) {
++                            struct dvb_diseqc_master_cmd cmd;
++                            memcpy(cmd.msg, codes, min(n, int(sizeof(cmd.msg))));
++                            cmd.msg_len = n;
++                            CHECK(ioctl(fd_frontend, FE_DISEQC_SEND_MASTER_CMD, &cmd));
++                            }
++                         }
++                         break;
++                    }
+                   }
+-               frequency -= diseqc->Lof();
+-               }
+-            else {
+-               esyslog("ERROR: no DiSEqC parameters found for channel %d", channel.Number());
+-               return false;
+-               }
+-            }
+-         else {
+-            int tone = SEC_TONE_OFF;
+-
+-            if (frequency < (unsigned int)Setup.LnbSLOF) {
+-               frequency -= Setup.LnbFrequLo;
+-               tone = SEC_TONE_OFF;
+-               }
+-            else {
+-               frequency -= Setup.LnbFrequHi;
+-               tone = SEC_TONE_ON;
+-               }
+-            int volt = (channel.Polarization() == 'v' || channel.Polarization() == 'V' || channel.Polarization() == 'r' || channel.Polarization() == 'R') ? SEC_VOLTAGE_13 : SEC_VOLTAGE_18;
+-            CHECK(ioctl(fd_frontend, FE_SET_VOLTAGE, volt));
+-            CHECK(ioctl(fd_frontend, FE_SET_TONE, tone));
+-            }
+-
+-         frequency = abs(frequency); // Allow for C-band, where the frequency is less than the LOF
+-         Frontend.frequency = frequency * 1000UL;
+-         Frontend.inversion = fe_spectral_inversion_t(channel.Inversion());
+-         Frontend.u.qpsk.symbol_rate = channel.Srate() * 1000UL;
+-         Frontend.u.qpsk.fec_inner = fe_code_rate_t(channel.CoderateH());
+-
+-         tuneTimeout = DVBS_TUNE_TIMEOUT;
+-         lockTimeout = DVBS_LOCK_TIMEOUT;
+-         }
+-         break;
+-    case FE_QAM: { // DVB-C
+-
+-         // Frequency and symbol rate:
+-
+-         Frontend.frequency = FrequencyToHz(channel.Frequency());
+-         Frontend.inversion = fe_spectral_inversion_t(channel.Inversion());
+-         Frontend.u.qam.symbol_rate = channel.Srate() * 1000UL;
+-         Frontend.u.qam.fec_inner = fe_code_rate_t(channel.CoderateH());
+-         Frontend.u.qam.modulation = fe_modulation_t(channel.Modulation());
+-
+-         tuneTimeout = DVBC_TUNE_TIMEOUT;
+-         lockTimeout = DVBC_LOCK_TIMEOUT;
+-         }
+-         break;
+-    case FE_OFDM: { // DVB-T
++              diseqcCommands = diseqc->Commands();
++              }
++           frequency -= diseqc->Lof();
++           }
++        else {
++           esyslog("ERROR: no DiSEqC parameters found for channel %d", channel.Number());
++          return false;
++           }
++        }
++     else {
++        int tone = SEC_TONE_OFF;
++        if (frequency < (unsigned int)Setup.LnbSLOF) {
++           frequency -= Setup.LnbFrequLo;
++           tone = SEC_TONE_OFF;
++           }
++        else {
++           frequency -= Setup.LnbFrequHi;
++           tone = SEC_TONE_ON;
++           }
++        int volt = (channel.Polarization() == 'v' || channel.Polarization() == 'V' || channel.Polarization() == 'r' || channel.Polarization() == 'R') ? SEC_VOLTAGE_13 : SEC_VOLTAGE_18;
++        CHECK(ioctl(fd_frontend, FE_SET_VOLTAGE, volt));
++        CHECK(ioctl(fd_frontend, FE_SET_TONE, tone));
++        }
++     frequency = abs(frequency); // Allow for C-band, where the frequency is less than the LOF
+ 
+-         // Frequency and OFDM paramaters:
++     // DVB-S/DVB-S2 (common parts)
++     SETCMD(DTV_DELIVERY_SYSTEM, channel.System());
++     SETCMD(DTV_FREQUENCY, frequency * 1000UL);
++     SETCMD(DTV_MODULATION, channel.Modulation());
++     SETCMD(DTV_SYMBOL_RATE, channel.Srate() * 1000UL);
++     SETCMD(DTV_INNER_FEC, channel.CoderateH());
++     SETCMD(DTV_INVERSION, channel.Inversion());
++     if (channel.System() == SYS_DVBS2) {
++        if (frontendType == SYS_DVBS2) {
++           // DVB-S2
++           SETCMD(DTV_PILOT, PILOT_AUTO);
++           SETCMD(DTV_ROLLOFF, channel.RollOff());
++           }
++        else {
++           esyslog("ERROR: frontend %d doesn't provide DVB-S2", cardIndex);
++           return false;
++           }
++        }
++     else {
++        // DVB-S
++//        SETCMD(DTV_ROLLOFF, ROLLOFF_35); // DVB-S always has a ROLLOFF of 0.35
++        }
+ 
+-         Frontend.frequency = FrequencyToHz(channel.Frequency());
+-         Frontend.inversion = fe_spectral_inversion_t(channel.Inversion());
+-         Frontend.u.ofdm.bandwidth = fe_bandwidth_t(channel.Bandwidth());
+-         Frontend.u.ofdm.code_rate_HP = fe_code_rate_t(channel.CoderateH());
+-         Frontend.u.ofdm.code_rate_LP = fe_code_rate_t(channel.CoderateL());
+-         Frontend.u.ofdm.constellation = fe_modulation_t(channel.Modulation());
+-         Frontend.u.ofdm.transmission_mode = fe_transmit_mode_t(channel.Transmission());
+-         Frontend.u.ofdm.guard_interval = fe_guard_interval_t(channel.Guard());
+-         Frontend.u.ofdm.hierarchy_information = fe_hierarchy_t(channel.Hierarchy());
++     tuneTimeout = DVBS_TUNE_TIMEOUT;
++     lockTimeout = DVBS_LOCK_TIMEOUT;
++     }
++  else if (frontendType == SYS_DVBC_ANNEX_AC || frontendType == SYS_DVBC_ANNEX_B) {
++     // DVB-C
++     SETCMD(DTV_DELIVERY_SYSTEM, frontendType);
++     SETCMD(DTV_FREQUENCY, FrequencyToHz(channel.Frequency()));
++     SETCMD(DTV_INVERSION, channel.Inversion());
++     SETCMD(DTV_SYMBOL_RATE, channel.Srate() * 1000UL);
++     SETCMD(DTV_INNER_FEC, channel.CoderateH());
++     SETCMD(DTV_MODULATION, channel.Modulation());
++
++     tuneTimeout = DVBC_TUNE_TIMEOUT;
++     lockTimeout = DVBC_LOCK_TIMEOUT;
++     }
++  else if (frontendType == SYS_ATSC) {
++     // ATSC
++     SETCMD(DTV_DELIVERY_SYSTEM, frontendType);
++     SETCMD(DTV_FREQUENCY, FrequencyToHz(channel.Frequency()));
++     SETCMD(DTV_INVERSION, channel.Inversion());
++     SETCMD(DTV_MODULATION, channel.Modulation());
++
++     tuneTimeout = DVBT_TUNE_TIMEOUT;
++     lockTimeout = DVBT_LOCK_TIMEOUT;
++     }
++  else if (frontendType == SYS_DVBT) {
++     // DVB-T
++     SETCMD(DTV_DELIVERY_SYSTEM, frontendType);
++     SETCMD(DTV_FREQUENCY, FrequencyToHz(channel.Frequency()));
++     SETCMD(DTV_INVERSION, channel.Inversion());
++     SETCMD(DTV_BANDWIDTH_HZ, channel.Bandwidth());
++     SETCMD(DTV_CODE_RATE_HP, channel.CoderateH());
++     SETCMD(DTV_CODE_RATE_LP, channel.CoderateL());
++     SETCMD(DTV_MODULATION, channel.Modulation());
++     SETCMD(DTV_TRANSMISSION_MODE, channel.Transmission());
++     SETCMD(DTV_GUARD_INTERVAL, channel.Guard());
++     SETCMD(DTV_HIERARCHY, channel.Hierarchy());
+ 
+-         tuneTimeout = DVBT_TUNE_TIMEOUT;
+-         lockTimeout = DVBT_LOCK_TIMEOUT;
+-         }
+-         break;
+-    default:
+-         esyslog("ERROR: attempt to set channel with unknown DVB frontend type");
+-         return false;
+-    }
+-  if (ioctl(fd_frontend, FE_SET_FRONTEND, &Frontend) < 0) {
++     tuneTimeout = DVBT_TUNE_TIMEOUT;
++     lockTimeout = DVBT_LOCK_TIMEOUT;
++     }
++  else {
++     esyslog("ERROR: attempt to set channel with unknown DVB frontend type");
++     return false;
++     }
++  SETCMD(DTV_TUNE, 0);
++  if (ioctl(fd_frontend, FE_SET_PROPERTY, &CmdSeq) < 0) {
+      esyslog("ERROR: frontend %d: %m", cardIndex);
+      return false;
+      }
+@@ -351,11 +387,31 @@
+ int cDvbDevice::devVideoOffset = -1;
+ int cDvbDevice::setTransferModeForDolbyDigital = 1;
+ 
++const char *DeliverySystems[] = {
++  "UNDEFINED",
++  "DVB-C",
++  "DVB-C",
++  "DVB-T",
++  "DSS",
++  "DVB-S",
++  "DVB-S2",
++  "DVB-H",
++  "ISDBT",
++  "ISDBS",
++  "ISDBC",
++  "ATSC",
++  "ATSCMH",
++  "DMBTH",
++  "CMMB",
++  "DAB",
++  NULL
++  };
++
+ cDvbDevice::cDvbDevice(int n)
+ {
+   ciAdapter = NULL;
+   dvbTuner = NULL;
+-  frontendType = fe_type_t(-1); // don't know how else to initialize this - there is no FE_UNKNOWN
++  frontendType = SYS_UNDEFINED;
+   spuDecoder = NULL;
+   digitalAudio = false;
+   playMode = pmNone;
+@@ -415,15 +471,25 @@
+   SetVideoFormat(Setup.VideoFormat);
+ 
+   // We only check the devices that must be present - the others will be checked before accessing them://XXX
+-
+   if (fd_frontend >= 0) {
+-     dvb_frontend_info feinfo;
+-     if (ioctl(fd_frontend, FE_GET_INFO, &feinfo) >= 0) {
+-        frontendType = feinfo.type;
+-        dvbTuner = new cDvbTuner(fd_frontend, CardIndex(), frontendType);
++     if (ioctl(fd_frontend, FE_GET_INFO, &frontendInfo) >= 0) {
++        switch (frontendInfo.type) {
++          case FE_QPSK: frontendType = (frontendInfo.caps & FE_CAN_2G_MODULATION) ? SYS_DVBS2 : SYS_DVBS; break;
++          case FE_OFDM: frontendType = SYS_DVBT; break;
++          case FE_QAM:  frontendType = SYS_DVBC_ANNEX_AC; break;
++          case FE_ATSC: frontendType = SYS_ATSC; break;
++          default: esyslog("ERROR: unknown frontend type %d on device %d", frontendInfo.type, CardIndex() + 1);
++          }
+         }
+      else
+         LOG_ERROR;
++     if (frontendType != SYS_UNDEFINED) {
++        numProvidedSystems++;
++        if (frontendType == SYS_DVBS2)
++           numProvidedSystems++;
++        isyslog("device %d provides %s (\"%s\")", CardIndex() + 1, DeliverySystems[frontendType], frontendInfo.name);
++        dvbTuner = new cDvbTuner(fd_frontend, CardIndex(), frontendType);
++        }
+      }
+   else
+      esyslog("ERROR: can't open DVB device %d", n);
+@@ -744,9 +810,9 @@
+ {
+   int type = Source & cSource::st_Mask;
+   return type == cSource::stNone
+-      || type == cSource::stCable && frontendType == FE_QAM
+-      || type == cSource::stSat   && frontendType == FE_QPSK
+-      || type == cSource::stTerr  && frontendType == FE_OFDM;
++      || type == cSource::stCable && (frontendType == SYS_DVBC_ANNEX_AC || frontendType == SYS_DVBC_ANNEX_B)
++      || type == cSource::stSat   && (frontendType == SYS_DVBS || frontendType == SYS_DVBS2)
++      || type == cSource::stTerr  && (frontendType == SYS_DVBT || frontendType == SYS_ATSC);
+ }
+ 
+ bool cDvbDevice::ProvidesTransponder(const cChannel *Channel) const
+--- dvbdevice.h.org	2009-06-17 23:01:03.000000000 -0400
++++ dvbdevice.h	2009-06-17 23:01:53.000000000 -0400
+@@ -35,7 +35,9 @@
+          ///< Must be called before accessing any DVB functions.
+          ///< \return True if any devices are available.
+ private:
+-  fe_type_t frontendType;
++  dvb_frontend_info frontendInfo;
++  int numProvidedSystems;
++  fe_delivery_system frontendType;
+   int fd_osd, fd_audio, fd_video, fd_dvr, fd_stc, fd_ca;
+ protected:
+   virtual void MakePrimaryDevice(bool On);
+--- nit.c.org	2009-06-17 23:01:03.000000000 -0400
++++ nit.c	2009-06-17 23:01:53.000000000 -0400
+@@ -129,6 +129,11 @@
+                  char Polarization = Polarizations[sd->getPolarization()];
+                  static int CodeRates[] = { FEC_NONE, FEC_1_2, FEC_2_3, FEC_3_4, FEC_5_6, FEC_7_8, FEC_AUTO, FEC_AUTO, FEC_AUTO, FEC_AUTO, FEC_AUTO, FEC_AUTO, FEC_AUTO, FEC_AUTO, FEC_AUTO, FEC_NONE };
+                  int CodeRate = CodeRates[sd->getFecInner()];
++                 static int Modulations[] = { QAM_AUTO, QPSK, PSK_8, QAM_16 };
++                 int Modulation = Modulations[sd->getModulationType()];
++                 int System = sd->getModulationSystem() ? SYS_DVBS2 : SYS_DVBS;
++//                 static int RollOffs[] = { ROLLOFF_35, ROLLOFF_25, ROLLOFF_20, ROLLOFF_AUTO };
++//                 int RollOff = sd->getModulationSystem() ? RollOffs[sd->getRollOff()] : ROLLOFF_AUTO;
+                  int SymbolRate = BCD2INT(sd->getSymbolRate()) / 10;
+                  if (ThisNIT >= 0) {
+                     for (int n = 0; n < NumFrequencies; n++) {
+@@ -155,14 +160,14 @@
+                                   }
+                               }
+                            if (ISTRANSPONDER(cChannel::Transponder(Frequency, Polarization), Transponder())) // only modify channels if we're actually receiving this transponder
+-                              Channel->SetSatTransponderData(Source, Frequency, Polarization, SymbolRate, CodeRate);
++                              Channel->SetSatTransponderData(Source, Frequency, Polarization, SymbolRate, CodeRate, Modulation, System);
+                            }
+                         }
+                     if (!found) {
+                        for (int n = 0; n < NumFrequencies; n++) {
+                            cChannel *Channel = new cChannel;
+                            Channel->SetId(ts.getOriginalNetworkId(), ts.getTransportStreamId(), 0, 0);
+-                           if (Channel->SetSatTransponderData(Source, Frequencies[n], Polarization, SymbolRate, CodeRate))
++                           if (Channel->SetSatTransponderData(Source, Frequencies[n], Polarization, SymbolRate, CodeRate, Modulation, System))
+                               EITScanner.AddTransponder(Channel);
+                            else
+                               delete Channel;
+--- channels.c.org	2009-06-17 23:01:03.000000000 -0400
++++ channels.c	2009-06-17 23:01:53.000000000 -0400
+@@ -31,7 +31,6 @@
+   {   6, BANDWIDTH_6_MHZ },
+   {   7, BANDWIDTH_7_MHZ },
+   {   8, BANDWIDTH_8_MHZ },
+-  { 999, BANDWIDTH_AUTO },
+   { -1 }
+   };
+ 
+@@ -45,21 +44,33 @@
+   {  67, FEC_6_7 },
+   {  78, FEC_7_8 },
+   {  89, FEC_8_9 },
++  { 910, FEC_9_10 },
+   { 999, FEC_AUTO },
+   { -1 }
+   };
+ 
+ const tChannelParameterMap ModulationValues[] = {
+-  {   0, QPSK },
+   {  16, QAM_16 },
+   {  32, QAM_32 },
+   {  64, QAM_64 },
+   { 128, QAM_128 },
+   { 256, QAM_256 },
+-  { 999, QAM_AUTO },
++  {   2, QPSK },
++  {   5, PSK_8 },
++  {   6, APSK_16 },
++  {  10, VSB_8 },
++  {  11, VSB_16 },
++  { 998, QAM_AUTO },
+   { -1 }
+   };
+ 
++const tChannelParameterMap SystemValues[] = {
++  {   0, SYS_DVBS },
++  {   1, SYS_DVBS2 },
++  { -1 }
++  };
++
++
+ const tChannelParameterMap TransmissionValues[] = {
+   {   2, TRANSMISSION_MODE_2K },
+   {   8, TRANSMISSION_MODE_8K },
+@@ -85,6 +96,14 @@
+   { -1 }
+   };
+ 
++const tChannelParameterMap RollOffValues[] = {
++  {   0, ROLLOFF_AUTO },
++  {  20, ROLLOFF_20 },
++  {  25, ROLLOFF_25 },
++  {  35, ROLLOFF_35 },
++  { -1 }
++  };
++
+ int UserIndex(int Value, const tChannelParameterMap *Map)
+ {
+   const tChannelParameterMap *map = Map;
+@@ -283,7 +302,7 @@
+      }
+ }
+ 
+-bool cChannel::SetSatTransponderData(int Source, int Frequency, char Polarization, int Srate, int CoderateH)
++bool cChannel::SetSatTransponderData(int Source, int Frequency, char Polarization, int Srate, int CoderateH, int Modulation, int System)
+ {
+   // Workarounds for broadcaster stupidity:
+   // Some providers broadcast the transponder frequency of their channels with two different
+@@ -297,7 +316,7 @@
+   if (abs(srate - Srate) <= 1)
+      Srate = srate;
+ 
+-  if (source != Source || frequency != Frequency || polarization != Polarization || srate != Srate || coderateH != CoderateH) {
++  if (source != Source || frequency != Frequency || polarization != Polarization || srate != Srate || coderateH != CoderateH || modulation != Modulation || system != System) {
+      if (Number()) {
+         dsyslog("changing transponder data of channel %d from %s:%d:%c:%d:%d to %s:%d:%c:%d:%d", Number(), *cSource::ToString(source), frequency, polarization, srate, coderateH, *cSource::ToString(Source), Frequency, Polarization, Srate, CoderateH);
+         modification |= CHANNELMOD_TRANSP;
+@@ -308,7 +327,8 @@
+      polarization = Polarization;
+      srate = Srate;
+      coderateH = CoderateH;
+-     modulation = QPSK;
++     modulation = Modulation;
++     system = System;
+      schedule = NULL;
+      }
+   return true;
+@@ -597,13 +617,15 @@
+   char *q = buffer;
+   *q = 0;
+   ST(" S ")  q += sprintf(q, "%c", polarization);
+-  ST("CST")  q += PrintParameter(q, 'I', MapToUser(inversion, InversionValues));
++  ST("  T")  q += PrintParameter(q, 'B', MapToUser(bandwidth, BandwidthValues));
+   ST("CST")  q += PrintParameter(q, 'C', MapToUser(coderateH, CoderateValues));
+   ST("  T")  q += PrintParameter(q, 'D', MapToUser(coderateL, CoderateValues));
+-  ST("C T")  q += PrintParameter(q, 'M', MapToUser(modulation, ModulationValues));
+-  ST("  T")  q += PrintParameter(q, 'B', MapToUser(bandwidth, BandwidthValues));
+-  ST("  T")  q += PrintParameter(q, 'T', MapToUser(transmission, TransmissionValues));
+   ST("  T")  q += PrintParameter(q, 'G', MapToUser(guard, GuardValues));
++  ST("CST")  q += PrintParameter(q, 'I', MapToUser(inversion, InversionValues));
++  ST("CST")  q += PrintParameter(q, 'M', MapToUser(modulation, ModulationValues));
++  ST(" S ")  q += PrintParameter(q, 'O', MapToUser(rollOff, RollOffValues));
++  ST("  T")  q += PrintParameter(q, 'T', MapToUser(transmission, TransmissionValues));
++  ST(" S ")  q += PrintParameter(q, 'S', MapToUser(system, SystemValues));
+   ST("  T")  q += PrintParameter(q, 'Y', MapToUser(hierarchy, HierarchyValues));
+   return buffer;
+ }
+@@ -624,10 +646,18 @@
+   return NULL;
+ }
+ 
++static const char *SkipDigits(const char *s)
++{
++  while (*++s && isdigit(*s))
++        ;
++  return s;
++}
++
+ bool cChannel::StringToParameters(const char *s)
+ {
+   while (s && *s) {
+         switch (toupper(*s)) {
++          case 'A': s = SkipDigits(s); break; // for compatibility with the "multiproto" approach - may be removed in future versions
+           case 'B': s = ParseParameter(s, bandwidth, BandwidthValues); break;
+           case 'C': s = ParseParameter(s, coderateH, CoderateValues); break;
+           case 'D': s = ParseParameter(s, coderateL, CoderateValues); break;
+@@ -636,10 +666,14 @@
+           case 'I': s = ParseParameter(s, inversion, InversionValues); break;
+           case 'L': polarization = *s++; break;
+           case 'M': s = ParseParameter(s, modulation, ModulationValues); break;
++          case 'O': s = ParseParameter(s, rollOff, RollOffValues); break;
++          case 'P': s = SkipDigits(s); break; // for compatibility with the "multiproto" approach - may be removed in future versions
+           case 'R': polarization = *s++; break;
++          case 'S': s = ParseParameter(s, system, SystemValues); break;
+           case 'T': s = ParseParameter(s, transmission, TransmissionValues); break;
+           case 'V': polarization = *s++; break;
+           case 'Y': s = ParseParameter(s, hierarchy, HierarchyValues); break;
++          case 'Z': s = SkipDigits(s); break; // for compatibility with the original DVB-S2 patch - may be removed in future versions
+           default: esyslog("ERROR: unknown parameter key '%c'", *s);
+                    return false;
+           }
+--- channels.h.org	2009-06-17 23:01:03.000000000 -0400
++++ channels.h	2009-06-17 23:01:53.000000000 -0400
+@@ -150,9 +150,11 @@
+   int coderateH;
+   int coderateL;
+   int modulation;
++  int system;
+   int transmission;
+   int guard;
+   int hierarchy;
++  int rollOff;
+   int __EndData__;
+   int modification;
+   mutable const cSchedule *schedule;
+@@ -204,9 +206,11 @@
+   int CoderateH(void) const { return coderateH; }
+   int CoderateL(void) const { return coderateL; }
+   int Modulation(void) const { return modulation; }
++  int System(void) const { return system; }
+   int Transmission(void) const { return transmission; }
+   int Guard(void) const { return guard; }
+   int Hierarchy(void) const { return hierarchy; }
++  int RollOff(void) const { return rollOff; }
+   const cLinkChannels* LinkChannels(void) const { return linkChannels; }
+   const cChannel *RefChannel(void) const { return refChannel; }
+   bool IsCable(void) const { return cSource::IsCable(source); }
+@@ -216,7 +220,7 @@
+   bool HasTimer(void) const;
+   int Modification(int Mask = CHANNELMOD_ALL);
+   void CopyTransponderData(const cChannel *Channel);
+-  bool SetSatTransponderData(int Source, int Frequency, char Polarization, int Srate, int CoderateH);
++  bool SetSatTransponderData(int Source, int Frequency, char Polarization, int Srate, int CoderateH, int Modulation, int System);
+   bool SetCableTransponderData(int Source, int Frequency, int Modulation, int Srate, int CoderateH);
+   bool SetTerrTransponderData(int Source, int Frequency, int Bandwidth, int Modulation, int Hierarchy, int CodeRateH, int CodeRateL, int Guard, int Transmission);
+   void SetId(int Nid, int Tid, int Sid, int Rid = 0);

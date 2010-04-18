@@ -1,0 +1,115 @@
+Index: device.c
+===================================================================
+--- device.c	(revision 1083)
++++ device.c	(working copy)
+@@ -89,6 +89,10 @@
+   liveSubtitle = NULL;
+   dvbSubtitleConverter = NULL;
+   autoSelectPreferredSubtitleLanguage = true;
++  tsToPesVideoBuffer = NULL;
++  tsToPesVideoLength = 0;
++  tsToPesAudioBuffer = NULL;
++  tsToPesAudioLength = 0;
+ 
+   for (int i = 0; i < MAXRECEIVERS; i++)
+       receiver[i] = NULL;
+@@ -1270,14 +1274,33 @@
+ 
+ int cDevice::PlayTsVideo(const uchar *Data, int Length)
+ {
++  // Play remains of last buffer if not completely played:
++  while (tsToPesVideoBuffer && tsToPesVideoLength > 0) {
++        int w = PlayVideo(tsToPesVideoBuffer, tsToPesVideoLength);
++        if (w <= 0)
++           return w;
++        tsToPesVideoBuffer += w;
++        tsToPesVideoLength -= w;
++        if (tsToPesVideoLength > 0) {
++           errno = EAGAIN;
++           return -1;
++           }
++        tsToPesVideoBuffer = tsToPesVideo.GetPes(tsToPesVideoLength);
++        }
++
+   // Video PES has no explicit length, so we can only determine the end of
+   // a PES packet when the next TS packet that starts a payload comes in:
+   if (TsPayloadStart(Data)) {
+-     int l;
+-     while (const uchar *p = tsToPesVideo.GetPes(l)) {
+-           int w = PlayVideo(p, l);
++     while ((tsToPesVideoBuffer = tsToPesVideo.GetPes(tsToPesVideoLength))) {
++           int w = PlayVideo(tsToPesVideoBuffer, tsToPesVideoLength);
+            if (w <= 0)
+               return w;
++           tsToPesVideoBuffer += w;
++           tsToPesVideoLength -= w;
++           if (tsToPesVideoLength > 0) {
++              errno = EAGAIN;
++              return -1;
++              }
+            }
+      tsToPesVideo.Reset();
+      }
+@@ -1287,12 +1310,31 @@
+ 
+ int cDevice::PlayTsAudio(const uchar *Data, int Length)
+ {
++  // Play remains of last buffer if not completely played:
++  if (tsToPesAudioBuffer && tsToPesAudioLength > 0) {
++     int w = PlayAudio(tsToPesAudioBuffer, tsToPesAudioLength, 0);
++     if (w <= 0)
++        return w;
++     tsToPesAudioBuffer += w;
++     tsToPesAudioLength -= w;
++     if (tsToPesAudioLength > 0) {
++        errno = EAGAIN;
++        return -1;
++        }
++     tsToPesAudio.Reset();
++     }
++
+   // Audio PES always has an explicit length and consists of single packets:
+-  int l;
+-  if (const uchar *p = tsToPesAudio.GetPes(l)) {
+-     int w = PlayAudio(p, l, 0);
++  if ((tsToPesAudioBuffer = tsToPesAudio.GetPes(tsToPesAudioLength))) {
++     int w = PlayAudio(tsToPesAudioBuffer, tsToPesAudioLength, 0);
+      if (w <= 0)
+         return w;
++     tsToPesAudioBuffer += w;
++     tsToPesAudioLength -= w;
++     if (tsToPesAudioLength > 0) {
++        errno = EAGAIN;
++        return -1;
++        }
+      tsToPesAudio.Reset();
+      }
+   tsToPesAudio.PutTs(Data, Length);
+@@ -1347,7 +1389,11 @@
+   else if (Data == NULL) {
+      patPmtParser.Reset();
+      tsToPesVideo.Reset();
++     tsToPesVideoBuffer = NULL;
++     tsToPesVideoLength = 0;
+      tsToPesAudio.Reset();
++     tsToPesAudioBuffer = NULL;
++     tsToPesAudioLength = 0;
+      tsToPesSubtitle.Reset();
+      }
+   return -1;
+Index: device.h
+===================================================================
+--- device.h	(revision 1083)
++++ device.h	(working copy)
+@@ -475,7 +475,11 @@
+   cPlayer *player;
+   cPatPmtParser patPmtParser;
+   cTsToPes tsToPesVideo;
++  const uchar *tsToPesVideoBuffer;
++  int tsToPesVideoLength;
+   cTsToPes tsToPesAudio;
++  const uchar *tsToPesAudioBuffer;
++  int tsToPesAudioLength;
+   cTsToPes tsToPesSubtitle;
+   bool isPlayingVideo;
+ protected:

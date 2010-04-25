@@ -34,7 +34,9 @@ src_unpack() {
 		EHG_REVISION="86d76957aad5" # <--- IKS
 	else
 		if use old_card; then
-			EHG_REVISION="641db65ec8ac" #<< works with updating the card
+				EHG_REVISION="641db65ec8ac" #<< works with updating the card
+		else
+			EHG_REVISION="fa524a3311c8" #<< works with updating the card
 		fi
 	fi
 

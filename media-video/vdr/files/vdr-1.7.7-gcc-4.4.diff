@@ -1,0 +1,121 @@
+Index: vdr-1.7.7/recording.c
+===================================================================
+--- vdr-1.7.7.orig/recording.c
++++ vdr-1.7.7/recording.c
+@@ -622,8 +622,8 @@ cRecording::cRecording(cTimer *Timer, co
+      Utf8Strn0Cpy(SubtitleBuffer, Subtitle, MAX_SUBTITLE_LENGTH);
+      Subtitle = SubtitleBuffer;
+      }
+-  char *macroTITLE   = strstr(Timer->File(), TIMERMACRO_TITLE);
+-  char *macroEPISODE = strstr(Timer->File(), TIMERMACRO_EPISODE);
++  const char *macroTITLE   = strstr(Timer->File(), TIMERMACRO_TITLE);
++  const char *macroEPISODE = strstr(Timer->File(), TIMERMACRO_EPISODE);
+   if (macroTITLE || macroEPISODE) {
+      name = strdup(Timer->File());
+      name = strreplace(name, TIMERMACRO_TITLE, Title);
+@@ -672,7 +672,7 @@ cRecording::cRecording(const char *FileN
+   sortBuffer = NULL;
+   fileName = strdup(FileName);
+   FileName += strlen(VideoDirectory) + 1;
+-  char *p = strrchr(FileName, '/');
++  const char *p = strrchr(FileName, '/');
+ 
+   name = NULL;
+   info = new cRecordingInfo;
+@@ -1155,7 +1155,7 @@ void cRecordings::DelByName(const char *
+   if (recording) {
+      cThreadLock DeletedRecordingsLock(&DeletedRecordings);
+      Del(recording, false);
+-     char *ext = strrchr(recording->FileName(), '.');
++     char *ext = strrchr(recording->fileName, '.');
+      if (ext) {
+         strncpy(ext, DELEXT, strlen(ext));
+         recording->fileSizeMB = DirSizeMB(recording->FileName());
+Index: vdr-1.7.7/svdrp.c
+===================================================================
+--- vdr-1.7.7.orig/svdrp.c
++++ vdr-1.7.7/svdrp.c
+@@ -739,7 +739,7 @@ void cSVDRP::CmdGRAB(const char *Option)
+      char *strtok_next;
+      FileName = strtok_r(p, delim, &strtok_next);
+      // image type:
+-     char *Extension = strrchr(FileName, '.');
++     const char *Extension = strrchr(FileName, '.');
+      if (Extension) {
+         if (strcasecmp(Extension, ".jpg") == 0 || strcasecmp(Extension, ".jpeg") == 0)
+            Jpeg = true;
+@@ -798,16 +798,17 @@ void cSVDRP::CmdGRAB(const char *Option)
+      char RealFileName[PATH_MAX];
+      if (FileName) {
+         if (grabImageDir) {
+-           cString s;
+-           char *slash = strrchr(FileName, '/');
++           cString s(FileName);
++           FileName = s;
++           const char *slash = strrchr(FileName, '/');
+            if (!slash) {
+               s = AddDirectory(grabImageDir, FileName);
+               FileName = s;
+               }
+            slash = strrchr(FileName, '/'); // there definitely is one
+-           *slash = 0;
+-           char *r = realpath(FileName, RealFileName);
+-           *slash = '/';
++           cString t(s);
++           t.Truncate(slash - FileName);
++           char *r = realpath(t, RealFileName);
+            if (!r) {
+               LOG_ERROR_STR(FileName);
+               Reply(501, "Invalid file name \"%s\"", FileName);
+Index: vdr-1.7.7/channels.c
+===================================================================
+--- vdr-1.7.7.orig/channels.c
++++ vdr-1.7.7/channels.c
+@@ -606,7 +606,7 @@ void cChannel::SetLinkChannels(cLinkChan
+      }
+   else
+      q += sprintf(q, " none");
+-  dsyslog(buffer);
++  dsyslog("%s", buffer);
+ }
+ 
+ void cChannel::SetRefChannel(cChannel *RefChannel)
+Index: vdr-1.7.7/device.c
+===================================================================
+--- vdr-1.7.7.orig/device.c
++++ vdr-1.7.7/device.c
+@@ -396,7 +396,7 @@ void cDevice::GetVideoSize(int &Width, i
+   Aspect = va4_3;
+ }
+ 
+-//#define PRINTPIDS(s) { char b[500]; char *q = b; q += sprintf(q, "%d %s ", CardIndex(), s); for (int i = 0; i < MAXPIDHANDLES; i++) q += sprintf(q, " %s%4d %d", i == ptOther ? "* " : "", pidHandles[i].pid, pidHandles[i].used); dsyslog(b); }
++//#define PRINTPIDS(s) { char b[500]; char *q = b; q += sprintf(q, "%d %s ", CardIndex(), s); for (int i = 0; i < MAXPIDHANDLES; i++) q += sprintf(q, " %s%4d %d", i == ptOther ? "* " : "", pidHandles[i].pid, pidHandles[i].used); dsyslog("%s", b); }
+ #define PRINTPIDS(s)
+ 
+ bool cDevice::HasPid(int Pid) const
+Index: vdr-1.7.7/pat.c
+===================================================================
+--- vdr-1.7.7.orig/pat.c
++++ vdr-1.7.7/pat.c
+@@ -144,7 +144,7 @@ void cCaDescriptors::AddCaDescriptor(SI:
+   q += sprintf(q, "CAM: %04X %5d %5d %04X %d -", source, transponder, serviceId, d->getCaType(), Stream);
+   for (int i = 0; i < nca->Length(); i++)
+       q += sprintf(q, " %02X", nca->Data()[i]);
+-  dsyslog(buffer);
++  dsyslog("%s", buffer);
+ #endif
+ }
+ 
+Index: vdr-1.7.7/receiver.c
+===================================================================
+--- vdr-1.7.7.orig/receiver.c
++++ vdr-1.7.7/receiver.c
+@@ -40,7 +40,7 @@ cReceiver::~cReceiver()
+ {
+   if (device) {
+      const char *msg = "ERROR: cReceiver has not been detached yet! This is a design fault and VDR will segfault now!";
+-     esyslog(msg);
++     esyslog("%s", msg);
+      fprintf(stderr, "%s\n", msg);
+      *(char *)0 = 0; // cause a segfault
+      }

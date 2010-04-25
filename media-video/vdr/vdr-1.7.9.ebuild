@@ -1,4 +1,4 @@
-# Copyright 1999-2010 Gentoo Foundation
+# Copyright 1999-2009 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
 # $Header: /var/cvsroot/gentoo-x86/media-video/vdr/vdr-1.6.0_p1.ebuild,v 1.6 2008/05/21 05:50:50 zzam Exp $
 
@@ -7,19 +7,20 @@ EAPI="2"
 inherit eutils flag-o-matic multilib
 
 # Switches supported by extensions-patch
-EXT_PATCH_FLAGS="alternatechannel atsc channelprovide cutterlimit cutterqueue cuttime
-	ddepgentry dolbyinrec graphtft hardlinkcutter
-	jumpplay lnbshare mainmenuhooks menuorg noepg pinplugin
-	rotor setup sortrecords sourcecaps status_extension ttxtsubs
-	validinput yaepg
-	dvlfriendlynames dvlscriptaddon dvlvidprefer
-	volctrl wareagleicon lircsettings deltimeshiftrec"
+EXT_PATCH_FLAGS="analogtv atsc cmdsubmenu cutterlimit cutterqueue cuttime ddepgentry
+	dolbyinrec dvbsetup dvdarchive dvdchapjump graphtft hardlinkcutter
+	jumpplay lnbshare mainmenuhooks menuorg noepg osdmaxitems parentalrating pinplugin
+	rotor settime setup sortrecords softosd sourcecaps streamdevext ttxtsubs
+	timercmd timerinfo validinput yaepg
+	dvlfriendlyfnames dvlrecscriptaddon dvlvidprefer
+	volctrl wareagleicon lircsettings deltimeshiftrec em84xx
+	cmdreccmdi18n ehd"
 
 # names of the use-flags
 EXT_PATCH_FLAGS_RENAMED="iptv liemikuutio"
 
 # names ext-patch uses internally, here only used for maintainer checks
-EXT_PATCH_FLAGS_RENAMED_EXT_NAME="pluginparam liemiext jumpingseconds"
+EXT_PATCH_FLAGS_RENAMED_EXT_NAME="pluginparam liemiext"
 
 IUSE="debug vanilla dxr3 ${EXT_PATCH_FLAGS} ${EXT_PATCH_FLAGS_RENAMED}"
 
@@ -27,15 +28,15 @@ MY_PV="${PV%_p*}"
 MY_P="${PN}-${MY_PV}"
 S="${WORKDIR}/${MY_P}"
 
-EXT_P=vdr-1.7.12_ExtP-NG-v1.2-r1
-#externer reel patch
-#EXT_REELPATCH=vdr-1.7.11_ehd_svn13986
+EXT_V="1.7.9"
+EXT_P=VDR-Extensions-Patch-${EXT_V}
+EXT_DIR=${WORKDIR}/${EXT_P}/
+EXT_VDR_PV="${PV/_p/-}"
 
 DESCRIPTION="Video Disk Recorder - turns a pc into a powerful set top box for DVB"
 HOMEPAGE="http://www.tvdr.de/"
 SRC_URI="ftp://ftp.tvdr.de/vdr/Developer/${MY_P}.tar.bz2
-		http://vdr.websitec.de/download/${EXT_P}.diff"
-#		http://copperhead.vdr-developer.org/downloads/extensionpatch/${EXT_P}.diff
+	http://vdr.websitec.de/download/ext-patch/${EXT_P}.tar.bz2"
 
 KEYWORDS="~amd64 ~ppc ~x86"
 
@@ -46,8 +47,8 @@ COMMON_DEPEND="media-libs/jpeg
 	sys-libs/libcap
 	>=media-libs/fontconfig-2.4.2
 	>=media-libs/freetype-2
-	sys-devel/gettext"
-#	dvdarchive? ( dvdchapjump? ( media-libs/libdvdnav ) )
+	sys-devel/gettext
+	dvdarchive? ( dvdchapjump? ( media-libs/libdvdnav ) )"
 
 DEPEND="${COMMON_DEPEND}
 	~media-tv/linuxtv-dvb-headers-5
@@ -170,6 +171,8 @@ EOT
 src_prepare() {
 	#applying maintainace-patches
 
+	epatch "${FILESDIR}"/vdr-1.7.9-dvb-api-test.diff
+
 	ebegin "Changing pathes for gentoo"
 
 	sed \
@@ -215,7 +218,7 @@ src_prepare() {
 
 		# http://www.vdr-portal.de/board/thread.php?postid=808350#post808350
 		# still needed?
-#		DEFINES += -D__KERNEL_STRICT_NAMES
+		DEFINES += -D__KERNEL_STRICT_NAMES
 
 	EOT
 	eend 0
@@ -238,31 +241,34 @@ src_prepare() {
 	if ! use vanilla; then
 		cd "${S}"
 		# Now apply extensions patch
-#		local fname="${EXT_DIR}/${PN}-${EXT_VDR_PV:-${PV}}_extensions.diff"
-		local fname="${DISTDIR}/${EXT_P}.diff"
+		local fname="${EXT_DIR}/${PN}-${EXT_VDR_PV:-${PV}}_extensions.diff"
 
 		# fix for wrong header include #263840 ; this need >libdvdread-0.9.7
 		sed -e "s:dvdread:dvdnav:g" -i "${fname}"
 
 		epatch "${fname}"
 
-		# fix for file collision debugmacros.h
-#		rm ${S}/debugmacros.h
+		# other gentoo patches
+		# epatch "${FILESDIR}/..."
+		epatch "${FILESDIR}/${P}-extensions-gcc-4.4.diff"
+
+		# ehd patch
+		use ehd && epatch "${FILESDIR}/${P}-ext_reelbox7_gentoo.diff"
 
 		# This allows us to start even if some plugin does not exist
 		# or is not loadable.
 		enable_patch PLUGINMISSING
 
-		# was default enabled in old versions of extpatch
-		enable_patch MCLI
-		enable_patch CHANNELBIND
+		# Patch necessary for media-plugins/vdr-reelchannelscan
+		# it does not change anything when plugin is not used
+		enable_patch CHANNELSCAN
 
 		if [[ -n ${VDR_MAINTAINER_MODE} ]]; then
 			einfo "Doing maintainer checks:"
 
 			# these patches we do not support
 			# (or have them already hard enabled)
-			local IGNORE_PATCHES="pluginmissing mcli channelbind"
+			local IGNORE_PATCHES="channelscan pluginapi pluginmissing"
 
 			extensions_all_defines > "${T}"/new.IUSE
 			echo $EXT_PATCH_FLAGS $EXT_PATCH_FLAGS_RENAMED_EXT_NAME \
@@ -289,8 +295,6 @@ src_prepare() {
 		# patches that got renamed
 		use iptv && enable_patch pluginparam
 		use liemikuutio && enable_patch liemiext
-		use liemikuutio && enable_patch jumpingseconds
-#		use ehd && enable_patch reelplugin
 		eend 0
 
 		extensions_add_make_conf
@@ -300,8 +304,6 @@ src_prepare() {
 		eend $? "make depend failed"
 
 		[[ -z "$NO_UNIFDEF" ]] && do_unifdef
-
-#		use ehd && epatch "${WORKDIR}/${P}_ehd_svn13986.patch"
 
 		use iptv && sed -i sources.conf -e 's/^#P/P/'
 	fi
@@ -341,8 +343,11 @@ src_prepare() {
 
 	echo -e ${CAPS} > "${CAP_FILE}"
 
-	epatch "${FILESDIR}/vdr-1.7.12-na-eit-0.1.2.diff"
+	epatch "${FILESDIR}/vdr-1.7.10-na-eit-0.0.4.diff"
 
+	if use amd64; then
+		epatch "${FILESDIR}/vdr-1.7.10-amd64.diff"
+	fi
 }
 
 src_install() {
@@ -381,11 +386,6 @@ src_install() {
 		insinto "${SOURCES_DEST}"
 		doins -r "${T}"/source-tree/*
 		keepdir "${SOURCES_DEST}"/PLUGINS/lib
-	fi
-
-	if use alternatechannel; then
-		insinto /etc/vdr
-		doins "${FILESDIR}"/channel_alternative.conf
 	fi
 
 	if use setup; then
@@ -479,10 +479,4 @@ pkg_postinst() {
 	elog ""
 	elog "To get an idea how to proceed now, have a look at our vdr-guide:"
 	elog "\thttp://www.gentoo.org/doc/en/vdr-guide.xml"
-	elog
-	elog "For Full Featured DVB Cards you need up from now an externel plugin!"
-	elog "emerge media-plugins/vdr-dvbsddevice"
-	elog
-	elog "use-flag ehd removed, >=media-plugins/vdr-reelbox-14440 will compile without vdr patch"
-	elog
 }

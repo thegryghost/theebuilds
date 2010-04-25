@@ -1,0 +1,11 @@
+--- dvbdevice.h.org	2009-05-20 11:26:53.000000000 -0400
++++ dvbdevice.h	2009-05-20 11:27:04.000000000 -0400
+@@ -10,6 +10,8 @@
+ #ifndef __DVBDEVICE_H
+ #define __DVBDEVICE_H
+ 
++typedef unsigned char __u8;
++
+ #include <linux/dvb/frontend.h>
+ #include <linux/dvb/version.h>
+ #include "device.h"

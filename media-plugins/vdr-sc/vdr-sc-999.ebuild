@@ -5,7 +5,6 @@
 inherit eutils mercurial flag-o-matic versionator vdr-plugin
 
 EHG_REPO_URI="http://85.17.209.13:6100/sc"
-#EHG_REVISION="641db65ec8ac" #<< works with updating the card
 
 DESCRIPTION="vdr-sc from the hg repo"
 HOMEPAGE="http://85.17.209.13:6100/sc"
@@ -14,7 +13,7 @@ LICENSE="GPL-2"
 SLOT="0"
 KEYWORDS="~x86 ~amd64"
 IUSE="seca irdeto conax viaccess cryptoworks nagra constcw
-      shl vg2 cardclient nocache optimize nds iks debug old_card"
+      shl vg2 cardclient nocache optimize nds debug old_card"
 
 RESTRICT="strip"
 
@@ -29,15 +28,8 @@ pkg_setup() {
 
 
 src_unpack() {
-	if use iks
-	then
-		EHG_REVISION="86d76957aad5" # <--- IKS
-	else
-		if use old_card; then
-				EHG_REVISION="641db65ec8ac" #<< works with updating the card
-		else
-			EHG_REVISION="fa524a3311c8" #<< works with updating the card
-		fi
+	if use old_card; then
+		EHG_REVISION="641db65ec8ac" #<< works with updating the card
 	fi
 
         mercurial_src_unpack
@@ -86,8 +78,6 @@ src_unpack() {
 
 	if [ "$EHG_REVISION" = "641db65ec8ac" ]; then
 		epatch ${FILESDIR}/newcamd_test.patch
-	elif use iks; then
-		epatch ${FILESDIR}/sc_iks-public.diff
 	fi
 
 	if use nocache

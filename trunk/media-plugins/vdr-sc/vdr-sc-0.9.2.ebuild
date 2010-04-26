@@ -58,8 +58,6 @@ src_unpack() {
 
 	epatch ${FILESDIR}/why_is_this_broken.diff
 	epatch ${FILESDIR}/newcamd_test.patch
-	#epatch ${FILESDIR}/0.9.1/newcamd_fix.patch
-	#epatch ${FILESDIR}/newcamd_force_emm.patch
 
 	if use nocache
 	then

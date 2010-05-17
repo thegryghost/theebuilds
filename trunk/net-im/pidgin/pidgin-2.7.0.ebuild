@@ -159,6 +159,8 @@ src_configure() {
 		$(use_enable idn) \
 		"--with-dynamic-prpls=${DYNAMIC_PRPLS}" \
 		--disable-mono \
+		--disable-gstreamer \
+		--disable-farsight \
 		--disable-vv \
 		--x-includes=/usr/include/X11 \
 		${myconf}

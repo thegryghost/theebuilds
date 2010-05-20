@@ -1,0 +1,131 @@
+--- a/include/drm/i915_drm.h
++++ b/include/drm/i915_drm.h
+@@ -616,7 +616,9 @@ struct drm_i915_gem_execbuffer2 {
+ 	__u32 num_cliprects;
+ 	/** This is a struct drm_clip_rect *cliprects */
+ 	__u64 cliprects_ptr;
+-	__u64 flags; /* currently unused */
++#define ON_RENDER_RING		(1 << 0)
++#define ON_BSD_RING		(1 << 1)
++	__u64 flags;
+ 	__u64 rsvd1;
+ 	__u64 rsvd2;
+ };
+--- a/intel/intel_bufmgr.c
++++ b/intel/intel_bufmgr.c
+@@ -145,6 +145,19 @@ drm_intel_bo_exec(drm_intel_bo *bo, int used,
+ 	return bo->bufmgr->bo_exec(bo, used, cliprects, num_cliprects, DR4);
+ }
+ 
++int
++drm_intel_bo_mrb_exec(drm_intel_bo *bo, int used,
++		drm_clip_rect_t * cliprects, int num_cliprects, int DR4, 
++		int ring_flag)
++{
++	if (bo->bufmgr->bo_mrb_exec)
++		return bo->bufmgr->bo_mrb_exec(bo, used, 
++					cliprects, num_cliprects, DR4, 
++					ring_flag);
++
++	return -ENODEV;
++}
++
+ void drm_intel_bufmgr_set_debug(drm_intel_bufmgr *bufmgr, int enable_debug)
+ {
+ 	bufmgr->debug = enable_debug;
+diff --git a/intel/intel_bufmgr.h b/intel/intel_bufmgr.h
+index 0984ab0..4a9bce6 100644
+--- a/intel/intel_bufmgr.h
++++ b/intel/intel_bufmgr.h
+@@ -106,6 +106,9 @@ void drm_intel_bufmgr_set_debug(drm_intel_bufmgr *bufmgr, int enable_debug);
+ void drm_intel_bufmgr_destroy(drm_intel_bufmgr *bufmgr);
+ int drm_intel_bo_exec(drm_intel_bo *bo, int used,
+ 		      drm_clip_rect_t * cliprects, int num_cliprects, int DR4);
++int drm_intel_bo_mrb_exec(drm_intel_bo *bo, int used,
++			drm_clip_rect_t * cliprects, int num_cliprects, int DR4, 
++			int ring_flag);
+ int drm_intel_bufmgr_check_aperture_space(drm_intel_bo ** bo_array, int count);
+ 
+ int drm_intel_bo_emit_reloc(drm_intel_bo *bo, uint32_t offset,
+diff --git a/intel/intel_bufmgr_gem.c b/intel/intel_bufmgr_gem.c
+index 8e46e37..c7ffca3 100644
+--- a/intel/intel_bufmgr_gem.c
++++ b/intel/intel_bufmgr_gem.c
+@@ -1530,14 +1530,17 @@ drm_intel_gem_bo_exec(drm_intel_bo *bo, int used,
+ }
+ 
+ static int
+-drm_intel_gem_bo_exec2(drm_intel_bo *bo, int used,
+-		       drm_clip_rect_t *cliprects, int num_cliprects,
+-		       int DR4)
++drm_intel_gem_bo_mrb_exec2(drm_intel_bo *bo, int used,
++			drm_clip_rect_t *cliprects, int num_cliprects, int DR4,
++			int ring_flag)
+ {
+ 	drm_intel_bufmgr_gem *bufmgr_gem = (drm_intel_bufmgr_gem *)bo->bufmgr;
+ 	struct drm_i915_gem_execbuffer2 execbuf;
+ 	int ret, i;
+ 
++	if ((ring_flag != ON_RENDER_RING) && (ring_flag != ON_BSD_RING))
++		ring_flag = ON_RENDER_RING;
++		
+ 	pthread_mutex_lock(&bufmgr_gem->lock);
+ 	/* Update indices and set up the validate list. */
+ 	drm_intel_gem_bo_process_reloc2(bo);
+@@ -1555,7 +1558,7 @@ drm_intel_gem_bo_exec2(drm_intel_bo *bo, int used,
+ 	execbuf.num_cliprects = num_cliprects;
+ 	execbuf.DR1 = 0;
+ 	execbuf.DR4 = DR4;
+-	execbuf.flags = 0;
++	execbuf.flags = ring_flag;
+ 	execbuf.rsvd1 = 0;
+ 	execbuf.rsvd2 = 0;
+ 
+@@ -1597,6 +1600,16 @@ drm_intel_gem_bo_exec2(drm_intel_bo *bo, int used,
+ }
+ 
+ static int
++drm_intel_gem_bo_exec2(drm_intel_bo *bo, int used,
++		       drm_clip_rect_t *cliprects, int num_cliprects,
++		       int DR4)
++{
++	return drm_intel_gem_bo_mrb_exec2(bo, used, 
++					cliprects, num_cliprects, DR4,
++					ON_RENDER_RING);
++}
++
++static int
+ drm_intel_gem_bo_pin(drm_intel_bo *bo, uint32_t alignment)
+ {
+ 	drm_intel_bufmgr_gem *bufmgr_gem = (drm_intel_bufmgr_gem *) bo->bufmgr;
+@@ -2066,9 +2079,10 @@ drm_intel_bufmgr_gem_init(int fd, int batch_size)
+ 	bufmgr_gem->bufmgr.bo_set_tiling = drm_intel_gem_bo_set_tiling;
+ 	bufmgr_gem->bufmgr.bo_flink = drm_intel_gem_bo_flink;
+ 	/* Use the new one if available */
+-	if (exec2)
++	if (exec2) {
+ 		bufmgr_gem->bufmgr.bo_exec = drm_intel_gem_bo_exec2;
+-	else
++		bufmgr_gem->bufmgr.bo_mrb_exec = drm_intel_gem_bo_mrb_exec2;
++	} else
+ 		bufmgr_gem->bufmgr.bo_exec = drm_intel_gem_bo_exec;
+ 	bufmgr_gem->bufmgr.bo_busy = drm_intel_gem_bo_busy;
+ 	bufmgr_gem->bufmgr.bo_madvise = drm_intel_gem_bo_madvise;
+diff --git a/intel/intel_bufmgr_priv.h b/intel/intel_bufmgr_priv.h
+index fb84e70..76ad960 100644
+--- a/intel/intel_bufmgr_priv.h
++++ b/intel/intel_bufmgr_priv.h
+@@ -173,6 +173,13 @@ struct _drm_intel_bufmgr {
+ 			drm_clip_rect_t *cliprects, int num_cliprects,
+ 			int DR4);
+ 
++	/** Executes the command buffer pointed to by bo on the selected 
++	 * ring buffer 
++	 */
++	int (*bo_mrb_exec) (drm_intel_bo *bo, int used,
++			drm_clip_rect_t *cliprects, int num_cliprects,
++			int DR4, int ring_flag);
++
+ 	/**
+ 	 * Pin a buffer to the aperture and fix the offset until unpinned
+ 	 *

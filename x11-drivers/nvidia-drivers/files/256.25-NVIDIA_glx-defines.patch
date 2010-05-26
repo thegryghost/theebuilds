@@ -1,0 +1,11 @@
+diff -NuarpbB NVIDIA-Linux-x86-256.25-ori/glx.h NVIDIA-Linux-x86-256.25/glx.h
+--- NVIDIA-Linux-x86-256.25-ori/glx.h	2009-11-25 18:58:42.000000000 +0100
++++ NVIDIA-Linux-x86-256.25/glx.h	2010-05-22 02:11:52.000000000 +0200
+@@ -145,6 +145,7 @@ typedef XID GLXContextID;
+ typedef XID GLXPixmap;
+ typedef XID GLXDrawable;
+ typedef XID GLXPbuffer;
++typedef XID GLXPbufferSGIX;
+ typedef XID GLXWindow;
+ typedef XID GLXFBConfigID;
+ 

@@ -1,0 +1,14 @@
+diff -NuarpbB NVIDIA-Linux-x86-256.25-ori/gl.h NVIDIA-Linux-x86-256.25/gl.h
+--- NVIDIA-Linux-x86-256.25-ori/gl.h	2009-11-25 18:58:42.000000000 +0100
++++ NVIDIA-Linux-x86-256.25/gl.h	2010-05-22 02:12:55.000000000 +0200
+@@ -66,6 +66,10 @@ typedef double GLdouble;
+ typedef double GLclampd;
+ typedef void GLvoid;
+ 
++/* Patching for some better defines in the global system */
++#ifndef GL_GLEXT_LEGACY
++#include <GL/glext.h>
++#endif
+ 
+ /*************************************************************/
+ 

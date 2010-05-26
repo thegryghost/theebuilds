@@ -1,0 +1,14 @@
+diff -u kernel/os-agp.c kernel.675177/os-agp.c
+--- kernel/os-agp.c	2010-05-18 20:38:57.000000000 -0700
++++ kernel.675177/os-agp.c	2010-05-21 17:31:37.772251149 -0700
+@@ -168,8 +168,8 @@
+     agp_info.mode &= (0xff000000 | agp_mode);
+     NV_AGPGART_BACKEND_ENABLE(drm_agp_p, nvl->agp_bridge, agp_info.mode);
+ 
+-    *ap_phys_base = agp_info.aper_base;
+-    *ap_limit = (agp_info.aper_size << 20) - 1;
++    *ap_phys_base = (unsigned)agp_info.aper_base;
++    *ap_limit = (unsigned)(agp_info.aper_size << 20) - 1;
+ 
+     return RM_OK;
+ 

@@ -17,6 +17,11 @@ KEYWORDS="~alpha ~amd64 ~hppa ~ia64 ~ppc ~ppc64 ~sparc ~x86"
 IUSE="dbus debug doc eds gadu gnutls idn meanwhile networkmanager"
 IUSE+=" perl silc tcl tk spell qq gadu +gtk sasl +startup-notification"
 IUSE+=" ncurses groupwise prediction +xscreensaver zephyr zeroconf" # mono"
+#	=media-libs/gstreamer-0.10*
+#	=media-libs/gst-plugins-good-0.10*
+#	>=net-libs/farsight2-0.0.14
+#	media-plugins/gst-plugins-meta
+#	media-plugins/gst-plugins-gconf
 
 RDEPEND="
 	>=dev-libs/glib-2.12
@@ -102,6 +107,8 @@ pkg_setup() {
 
 src_prepare() {
 	epatch "${FILESDIR}/${P}-icq-fix.patch"
+	epatch "${FILESDIR}/${P}-fix-build-without-gst.patch"
+
 	intltoolize --automake --copy --force || die
 	eautoreconf
 }
@@ -160,9 +167,12 @@ src_configure() {
 		"--with-dynamic-prpls=${DYNAMIC_PRPLS}" \
 		--disable-mono \
 		--disable-gstreamer \
-		--disable-gstreamer-interfaces \
 		--disable-farsight \
 		--disable-vv \
+
+#		--enable-gstreamer \
+#		--enable-farsight \
+#		--enable-vv \
 		--x-includes=/usr/include/X11 \
 		${myconf}
 		#$(use_enable mono) \

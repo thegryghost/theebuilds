@@ -16,9 +16,9 @@ KEYWORDS="~x86 ~amd64"
 
 RDEPEND=""
 
-src_compile() {
-	emake posix
-}
+#src_compile() {
+#	emake
+#}
 
 src_install() {
 	doman ${PN}.1

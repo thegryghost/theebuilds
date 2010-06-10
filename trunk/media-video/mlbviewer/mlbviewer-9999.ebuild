@@ -13,7 +13,7 @@ IUSE=""
 RDEPEND="dev-python/suds
          dev-python/pyxml
          dev-python/simplejson
-         media-libs/rtmpdump"
+         media-video/rtmpdump"
 
 DEPEND="${RDEPEND}"
 

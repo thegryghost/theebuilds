@@ -1,0 +1,83 @@
+--- cfg-common-opts.h.org	2010-06-14 17:14:27.000000000 -0400
++++ cfg-common-opts.h	2010-06-14 17:15:14.000000000 -0400
+@@ -286,6 +286,9 @@
+     {"xvidopts", xvid_dec_opts, CONF_TYPE_SUBCONFIG, 0, 0, 0, NULL},
+ #endif
+     {"codecs-file", &codecs_file, CONF_TYPE_STRING, 0, 0, 0, NULL},
++    //Auto-detect AC3 channels with -af lavcac3enc
++    {"lavc_ac3_detect", &lavc_ac3_detect, CONF_TYPE_INT, 0, 0, 0, NULL},
++
+ // ------------------------- subtitles options --------------------
+ 
+     {"sub", &sub_name, CONF_TYPE_STRING_LIST, 0, 0, 0, NULL},
+--- cfg-common.h.org	2010-06-14 17:14:21.000000000 -0400
++++ cfg-common.h	2010-06-14 17:15:14.000000000 -0400
+@@ -39,6 +39,8 @@
+ extern int field_dominance;
+ 
+ /* from dec_audio, currently used for ac3surround decoder only */
++extern int lavc_ac3_detect;
++extern int lavc_ac3_num_detected;
+ extern int audio_output_channels;
+ extern int fakemono;
+ 
+--- mplayer.c.org	2010-06-14 17:14:32.000000000 -0400
++++ mplayer.c	2010-06-14 17:16:30.000000000 -0400
+@@ -591,6 +591,11 @@
+     mp_msg(MSGT_IDENTIFY,MSGL_INFO,"ID_AUDIO_BITRATE=%d\n", mpctx->sh_audio->i_bps*8);
+     mp_msg(MSGT_IDENTIFY,MSGL_INFO,"ID_AUDIO_RATE=%d\n", mpctx->sh_audio->samplerate);
+     mp_msg(MSGT_IDENTIFY,MSGL_INFO,"ID_AUDIO_NCH=%d\n", mpctx->sh_audio->channels);
++    if (lavc_ac3_detect) {
++      mp_msg(MSGT_IDENTIFY,MSGL_INFO,"Autodetecting number of channels=%d\n", mpctx->sh_audio->channels);
++      audio_output_channels = mpctx->sh_audio->channels;
++      lavc_ac3_num_detected = mpctx->sh_audio->channels;
++    }
+     start_pts = ds_get_next_pts(mpctx->d_audio);
+   }
+   if (video_start_pts != MP_NOPTS_VALUE) {
+--- libmpcodecs/dec_audio.c.orig	2010-01-30 11:57:40.000000000 -0500
++++ libmpcodecs/dec_audio.c	2010-05-07 15:23:40.096774562 -0400
+@@ -48,6 +48,8 @@
+ /* used for ac3surround decoder - set using -channels option */
+ int audio_output_channels = 2;
+ af_cfg_t af_cfg = { 1, NULL };	// Configuration for audio filters
++extern int lavc_ac3_detect;
++extern int lavc_ac3_num_detected;
+ 
+ void afm_help(void)
+ {
+@@ -132,6 +134,10 @@
+     mp_msg(MSGT_IDENTIFY, MSGL_INFO,
+ 	   "ID_AUDIO_BITRATE=%d\nID_AUDIO_RATE=%d\n" "ID_AUDIO_NCH=%d\n",
+ 	   sh_audio->i_bps * 8, sh_audio->samplerate, sh_audio->channels);
++    if ((lavc_ac3_detect) && (lavc_ac3_num_detected == 0)) {
++        lavc_ac3_num_detected = sh_audio->channels;
++        audio_output_channels = sh_audio->channels;
++    }
+ 
+     sh_audio->a_out_buffer_size = 0;
+     sh_audio->a_out_buffer = NULL;
+--- libaf/af_lavcac3enc.c.orig	2010-01-11 15:40:51.000000000 -0500
++++ libaf/af_lavcac3enc.c	2010-05-07 15:23:40.096774562 -0400
+@@ -47,6 +47,8 @@
+ } af_ac3enc_t;
+ 
+ extern int  avcodec_initialized;
++int lavc_ac3_detect = 0;
++int lavc_ac3_num_detected = 0;
+ 
+ // Initialization and runtime control
+ static int control(struct af_instance_s *af, int cmd, void *arg)
+@@ -128,6 +130,12 @@
+         }
+         if (s->min_channel_num == 0)
+             s->min_channel_num = 5;
++
++        if (lavc_ac3_detect) {
++            mp_msg(MSGT_AFILTER, MSGL_V, "af_lavcac3enc using auto-detect on channels: %d\n", lavc_ac3_num_detected);
++            s->min_channel_num = lavc_ac3_num_detected;
++        }
++
+         mp_msg(MSGT_AFILTER, MSGL_V, "af_lavcac3enc config spdif:%d, bitrate:%d, "
+                "minchnum:%d.\n", s->add_iec61937_header, s->bit_rate,
+                s->min_channel_num);

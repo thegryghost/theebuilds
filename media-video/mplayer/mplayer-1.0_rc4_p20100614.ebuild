@@ -18,7 +18,7 @@ gif ggi -gmplayer +iconv ipv6 jack joystick jpeg jpeg2k kernel_linux ladspa
 libcaca lirc +live lzo mad md5sum +mmx mmxext mng +mp3 nas +network nut openal
 amr +opengl +osdmenu oss png pnm pulseaudio pvr +quicktime radio +rar +real +rtc
 samba +shm +schroedinger sdl +speex sse sse2 ssse3 svga tga +theora +tremor
-+truetype +toolame +twolame +unicode v4l v4l2 vdpau vidix +vorbis vpx
++truetype +toolame +twolame +unicode v4l v4l2 vaapi vdpau vidix +vorbis vpx
 win32codecs +X +x264 xanim xinerama +xscreensaver +xv +xvid xvmc zoran"
 [[ ${PV} == *9999* ]] && IUSE+=" external-ffmpeg"
 
@@ -86,6 +86,7 @@ RDEPEND+="
 		)
 		opengl? ( virtual/opengl )
 		vdpau? ( || ( x11-libs/libvdpau >=x11-drivers/nvidia-drivers-180.51 ) )
+		vaapi? ( >=libva-0.31.1_p1 )
 		xinerama? ( x11-libs/libXinerama )
 		xscreensaver? ( x11-libs/libXScrnSaver )
 		xv? (
@@ -282,6 +283,12 @@ src_prepare() {
 	epatch ${FILESDIR}/vdpau/vdpau_crop_02152010.patch
 	epatch ${FILESDIR}/vdpau/fix_deint_02202010.patch
 
+	if use vaapi; then
+		epatch ${FILESDIR}/vaapi/mplayer-vaapi.patch
+		epatch ${FILESDIR}/vaapi/mplayer-vaapi-gma500-workaround.patch
+		epatch ${FILESDIR}/vaapi/mplayer-vaapi-0.29.patch
+		epatch ${FILESDIR}/vaapi/mplayer-vdpau.patch2
+	fi
 }
 
 src_configure() {

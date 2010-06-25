@@ -86,7 +86,7 @@ RDEPEND+="
 		)
 		opengl? ( virtual/opengl )
 		vdpau? ( || ( x11-libs/libvdpau >=x11-drivers/nvidia-drivers-180.51 ) )
-		vaapi? ( >=libva-0.31.1_p1 )
+		vaapi? ( >=x11-libs/libva-0.31.1_p1 )
 		xinerama? ( x11-libs/libXinerama )
 		xscreensaver? ( x11-libs/libXScrnSaver )
 		xv? (

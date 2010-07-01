@@ -242,7 +242,9 @@ src_prepare() {
 		local fname="${DISTDIR}/${EXT_P}.diff"
 
 		epatch "${fname}"
-		epatch "${FILESDIR}/vdr-1.7.15-sourcecaps.patch"
+		if use sourcecaps; then
+			epatch "${FILESDIR}/vdr-1.7.15-sourcecaps.patch"
+		fi
 
 #		enable_patch SOURCECAPS
 		# fix for broken limikuutio patch

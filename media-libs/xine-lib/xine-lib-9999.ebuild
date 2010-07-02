@@ -18,7 +18,7 @@ IUSE="aalib libcaca arts esd win32codecs nls dvd X directfb vorbis alsa
 gnome sdl speex theora ipv6 altivec opengl aac fbcon xv xvmc
 samba dxr3 vidix mng flac oss v4l xinerama vcd a52 mad imagemagick dts
 debug modplug gtk pulseaudio mmap truetype wavpack musepack xcb jack
-real vdr"
+real vdr vdpau"
 
 RDEPEND="X? ( x11-libs/libXext
 	x11-libs/libX11 )
@@ -55,7 +55,8 @@ RDEPEND="X? ( x11-libs/libXext
 	truetype? ( =media-libs/freetype-2* media-libs/fontconfig )
 	virtual/libiconv
 	wavpack? ( >=media-sound/wavpack-4.31 )
-	musepack? ( media-libs/libmpcdec )
+	musepack? ( media-sound/musepack-tools )
+	vdpau? ( || ( x11-libs/libvdpau >=x11-drivers/nvidia-drivers-180.51 ) )
 	xcb? ( >=x11-libs/libxcb-1.0 )
 	jack? ( >=media-sound/jack-audio-connection-kit-0.100 )
 	real? (
@@ -72,6 +73,7 @@ DEPEND="${RDEPEND}
 	v4l? ( virtual/os-headers )
 	dev-util/pkgconfig
 	sys-devel/libtool
+	sys-devel/automake:1.9
 	nls? ( sys-devel/gettext )"
 
 S="${WORKDIR}/xine-lib-1.2"
@@ -134,7 +136,8 @@ src_compile() {
 		$(use_enable a52 a52dec) --with-external-a52dec \
 		$(use_enable mad) --with-external-libmad \
 		$(use_enable dts) --with-external-libdts \
-		$(use_enable musepack) --with-external-libmpcdec \
+		$(use_enable vdpau) --enable-vdpau \
+		$(use_enable musepack) --enable-musepack \
 		\
 		$(use_with X x) \
 		$(use_enable xinerama) \

@@ -180,6 +180,7 @@ src_compile() {
 #		--with-external-ffmpeg \
 #		--disable-optimizations \
 #		--disable-syncfb \
+		--disable-vcd \
 		${myconf} \
 		--with-xv-path=/usr/$(get_libdir) \
 		--with-w32-path=/usr/$(ABI=x86 get_libdir)/win32 \

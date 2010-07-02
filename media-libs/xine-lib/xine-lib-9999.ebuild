@@ -14,7 +14,7 @@ LICENSE="GPL-2"
 SLOT="1"
 KEYWORDS="~amd64 ~x86"
 
-IUSE="aalib libcaca arts esd win32codecs nls dvd X directfb vorbis alsa
+IUSE="aalib libcaca esd win32codecs nls dvd X directfb vorbis alsa
 gnome sdl speex theora ipv6 altivec opengl aac fbcon xv xvmc
 samba dxr3 vidix mng flac oss v4l xinerama vcd a52 mad imagemagick dts
 debug modplug gtk pulseaudio mmap truetype wavpack musepack xcb jack
@@ -28,7 +28,6 @@ RDEPEND="X? ( x11-libs/libXext
 	win32codecs? ( >=media-libs/win32codecs-0.50 )
 	esd? ( media-sound/esound )
 	dvd? ( >=media-libs/libdvdcss-1.2.7 )
-	arts? ( kde-base/arts )
 	alsa? ( media-libs/alsa-lib )
 	aalib? ( media-libs/aalib )
 	directfb? ( >=dev-libs/DirectFB-0.9.9 )
@@ -75,7 +74,13 @@ DEPEND="${RDEPEND}
 	sys-devel/libtool
 	sys-devel/automake:1.9
 	app-text/docbook-xml-dtd:4.4
-	nls? ( sys-devel/gettext )"
+	nls? ( sys-devel/gettext )
+	userland_GNU? ( sys-apps/which )
+	|| (
+		www-client/lynx
+		www-client/links
+		www-client/elinks
+		virtual/w3m )"
 
 S="${WORKDIR}/xine-lib-1.2"
 
@@ -134,9 +139,9 @@ src_compile() {
 		$(use_with theora) \
 		$(use_with wavpack) \
 		$(use_enable modplug) \
-		$(use_enable a52 a52dec) --with-external-a52dec \
-		$(use_enable mad) --with-external-libmad \
-		$(use_enable dts) --with-external-libdts \
+#		$(use_enable a52 a52dec) --with-external-a52dec \
+#		$(use_enable mad) --with-external-libmad \
+#		$(use_enable dts) --with-external-libdts \
 		$(use_enable vdpau) --enable-vdpau \
 		$(use_enable musepack) --enable-musepack \
 		\
@@ -155,12 +160,12 @@ src_compile() {
 		\
 		$(use_enable oss) \
 		$(use_with alsa) \
-		$(use_with arts) \
+#		$(use_with arts) \
 		$(use_with esd esound) \
 		$(use_with pulseaudio) \
 		$(use_with jack) \
 		\
-		$(use_enable vcd) --without-internal-vcdlibs \
+#		$(use_enable vcd) --without-internal-vcdlibs \
 		\
 		$(use_enable win32codecs w32dll) \
 		$(use_enable real real-codecs) \
@@ -172,9 +177,9 @@ src_compile() {
 		\
 		$(use_enable debug) \
 		--enable-asf \
-		--with-external-ffmpeg \
-		--disable-optimizations \
-		--disable-syncfb \
+#		--with-external-ffmpeg \
+#		--disable-optimizations \
+#		--disable-syncfb \
 		${myconf} \
 		--with-xv-path=/usr/$(get_libdir) \
 		--with-w32-path=/usr/$(ABI=x86 get_libdir)/win32 \

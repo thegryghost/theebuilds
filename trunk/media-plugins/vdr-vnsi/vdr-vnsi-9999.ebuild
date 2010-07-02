@@ -41,7 +41,8 @@ src_unpack() {
 		cd "${S}"
 		rm -f configure
 		sed -i receiver.c \
-                	-e "s:<libsi/section.h>:<vdr/libsi/section.h>:"
+                	-e "s:<libsi/section.h>:<vdr/libsi/section.h>:" \
+                	-e "s:<libsi/descriptor.h>:<vdr/libsi/descriptor.h>:"
 
 	else
 		unpack ${A}

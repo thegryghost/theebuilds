@@ -40,6 +40,9 @@ src_unpack() {
 		subversion_src_unpack
 		cd "${S}"
 		rm -f configure
+		sed -i receiver.c \
+                	-e "s:<libsi/section.h>:<vdr/libsi/section.h>:"
+
 	else
 		unpack ${A}
 		cd "${S}"

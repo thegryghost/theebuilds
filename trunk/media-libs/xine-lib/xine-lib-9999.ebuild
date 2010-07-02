@@ -165,7 +165,7 @@ src_compile() {
 		$(use_with pulseaudio) \
 		$(use_with jack) \
 		\
-#		$(use_enable vcd) --without-internal-vcdlibs \
+		$(use_enable vcd) --without-internal-vcdlibs \
 		\
 		$(use_enable win32codecs w32dll) \
 		$(use_enable real real-codecs) \

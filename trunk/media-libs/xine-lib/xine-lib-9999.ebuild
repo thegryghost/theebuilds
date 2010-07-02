@@ -173,7 +173,6 @@ src_compile() {
 		\
 		$(use_enable debug) \
 		--enable-asf \
-		--disable-vcd \
 		${myconf} \
 		--with-xv-path=/usr/$(get_libdir) \
 		--with-w32-path=/usr/$(ABI=x86 get_libdir)/win32 \

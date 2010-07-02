@@ -139,9 +139,6 @@ src_compile() {
 		$(use_with theora) \
 		$(use_with wavpack) \
 		$(use_enable modplug) \
-#		$(use_enable a52 a52dec) --with-external-a52dec \
-#		$(use_enable mad) --with-external-libmad \
-#		$(use_enable dts) --with-external-libdts \
 		$(use_enable vdpau) --enable-vdpau \
 		$(use_enable musepack) --enable-musepack \
 		\
@@ -160,7 +157,6 @@ src_compile() {
 		\
 		$(use_enable oss) \
 		$(use_with alsa) \
-#		$(use_with arts) \
 		$(use_with esd esound) \
 		$(use_with pulseaudio) \
 		$(use_with jack) \
@@ -177,9 +173,6 @@ src_compile() {
 		\
 		$(use_enable debug) \
 		--enable-asf \
-#		--with-external-ffmpeg \
-#		--disable-optimizations \
-#		--disable-syncfb \
 		--disable-vcd \
 		${myconf} \
 		--with-xv-path=/usr/$(get_libdir) \

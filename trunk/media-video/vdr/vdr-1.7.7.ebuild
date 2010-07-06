@@ -11,7 +11,7 @@ EXT_PATCH_FLAGS="analogtv atsc cmdsubmenu cutterlimit cutterqueue cuttime ddepge
 	dolbyinrec dvbsetup dvdarchive dvdchapjump graphtft hardlinkcutter
 	jumpplay lnbshare mainmenuhooks menuorg noepg osdmaxitems parentalrating pinplugin
 	rotor settime setup sortrecords softosd sourcecaps streamdevext ttxtsubs
-	timercmd timerinfo validinput yaepg
+	timercmd timerinfo validinput yaepg livebuffer
 	dvlfriendlyfnames dvlrecscriptaddon dvlvidprefer
 	volctrl wareagleicon lircsettings deltimeshiftrec em84xx
 	cmdreccmdi18n ehd"

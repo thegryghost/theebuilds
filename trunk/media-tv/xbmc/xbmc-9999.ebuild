@@ -8,7 +8,7 @@ inherit eutils python
 
 # Use XBMC_ESVN_REPO_URI to track a different branch
 #ESVN_REPO_URI=${XBMC_ESVN_REPO_URI:-http://xbmc.svn.sourceforge.net/svnroot/xbmc/trunk}
-ESVN_REPO_URI=${XBMC_ESVN_REPO_URI:-http://xbmc.svn.sourceforge.net/svnroot/xbmc/branches/pvr-testing2}
+ESVN_REPO_URI=${XBMC_ESVN_REPO_URI:-https://xbmc.svn.sourceforge.net/svnroot/xbmc/branches/pvr-testing2}
 ESVN_PROJECT=${ESVN_REPO_URI##*/svnroot/}
 ESVN_PROJECT=${ESVN_PROJECT%/*}
 if [[ ${PV} == "9999" ]] ; then

@@ -1,0 +1,156 @@
+--- mplayer.c.org	2010-07-09 23:02:39.000000000 -0400
++++ mplayer.c	2010-07-09 22:56:45.000000000 -0400
+@@ -109,6 +109,10 @@
+ 
+ char *heartbeat_cmd;
+ 
++extern double first_pts_hack;
++extern int growing_file_pause_enable;
++off_t growing_file_hack = 0;
++
+ #define ROUND(x) ((int)((x)<0 ? (x)-0.5 : (x)+0.5))
+ 
+ #ifdef HAVE_RTC
+@@ -2614,7 +2618,40 @@
+ // return -1 if seek failed (non-seekable stream?), 0 otherwise
+ static int seek(MPContext *mpctx, double amount, int style)
+ {
++    int skip=0;
+     current_module = "seek";
++
++    if (growing_file_pause_enable)
++    {
++      if (growing_file_hack)
++      {
++        if (growing_file_hack == mpctx->demuxer->movi_end)
++          skip=1;
++      }
++      else
++        growing_file_hack = mpctx->demuxer->movi_end;
++
++      if (!skip && amount > 0 && mpctx->demuxer->movi_end > mpctx->demuxer->filepos)
++      {
++        sh_video_t *sh_video = mpctx->demuxer->video->sh;
++        if (growing_file_hack)
++           growing_file_hack = mpctx->demuxer->movi_end;
++
++        if (sh_video)
++        {
++            double new_pts = sh_video->pts - first_pts_hack;
++            double seek_allow_size = ((double)mpctx->demuxer->filepos / new_pts) * (amount+1+growing_file_pause_enable);
++            //printf("movi_end > filepos: %0.2f (%0.2f) -- %0.2f -------- \n", sh_video->pts, new_pts, seek_allow_size);
++            if ((double)(mpctx->demuxer->movi_end - mpctx->demuxer->filepos) < seek_allow_size)
++            {
++              set_osd_msg(OSD_MSG_TEXT, 1, 0, "LIVE");
++              usec_sleep(10000);
++              return -1;
++            }
++        }
++      }
++    }
++
+     if (demux_seek(mpctx->demuxer, amount, audio_delay, style) == 0)
+ 	return -1;
+ 
+--- cfg-mplayer.h.org	2010-07-09 23:01:16.000000000 -0400
++++ cfg-mplayer.h	2010-07-09 23:04:32.000000000 -0400
+@@ -69,6 +69,8 @@
+ extern int sws_flags;
+ extern char* pp_help;
+ 
++extern int growing_file_pause_enable;
++
+ const m_option_t vd_conf[]={
+     {"help", "Use MPlayer with an appropriate video file instead of live partners to avoid vd.\n", CONF_TYPE_PRINT, CONF_NOCFG|CONF_GLOBAL, 0, 0, NULL},
+     {NULL, NULL, 0, 0, 0, 0, NULL}
+@@ -371,6 +373,8 @@
+ 
+ #include "cfg-common-opts.h"
+ 
++    {"livepause", &growing_file_pause_enable, CONF_TYPE_INT, CONF_RANGE, 0, 60, NULL},
++
+     {"list-properties", &list_properties, CONF_TYPE_FLAG, CONF_GLOBAL, 0, 1, NULL},
+     {"identify", &mp_msg_levels[MSGT_IDENTIFY], CONF_TYPE_FLAG, CONF_GLOBAL, 0, MSGL_V, NULL},
+     {"-help", help_text, CONF_TYPE_PRINT, CONF_NOCFG|CONF_GLOBAL, 0, 0, NULL},
+--- libmpdemux/demuxer.c.org	2010-07-09 23:03:20.000000000 -0400
++++ libmpdemux/demuxer.c	2010-07-09 22:55:17.000000000 -0400
+@@ -188,6 +188,10 @@
+     NULL
+ };
+ 
++
++double first_pts_hack = 0;
++int growing_file_pause_enable=0;
++
+ void free_demuxer_stream(demux_stream_t *ds)
+ {
+     ds_free_packs(ds);
+@@ -604,6 +608,11 @@
+     while (1) {
+         if (ds->packs) {
+             demux_packet_t *p = ds->first;
++            if (growing_file_pause_enable)
++            {
++               if (demux->stream->end_pos > demux->movi_end)
++                  demux->movi_end = demux->stream->end_pos;
++            }
+ #if 0
+             if (demux->reference_clock != MP_NOPTS_VALUE) {
+                 if (   p->pts != MP_NOPTS_VALUE
+@@ -832,6 +841,23 @@
+         if (!demux_fill_buffer(demux, ds))
+             return MP_NOPTS_VALUE;
+     }
++    if (growing_file_pause_enable)
++    {
++      if (ds && ds->first)
++      {
++           if (first_pts_hack == 0)
++               first_pts_hack = ds->first->pts;
++           else if (ds->first->pts <  first_pts_hack)
++               first_pts_hack = ds->first->pts;
++      }
++      if (ds && ds->current)
++      {
++           if (first_pts_hack == 0)
++               first_pts_hack = ds->current->pts;
++           else if (ds->first->pts <  first_pts_hack)
++               first_pts_hack = ds->current->pts;
++      }
++    }
+     // take pts from "current" if we never read from it.
+     if (ds->current && !ds->buffer_pos)
+         return ds->current->pts;
+@@ -1403,6 +1429,11 @@
+         get_time_ans = demuxer->stream_pts;
+     else if (sh_video)
+         get_time_ans = sh_video->pts;
++    if (growing_file_pause_enable)
++    {
++      if (get_time_ans - first_pts_hack > 0)
++          return (int)get_time_ans - first_pts_hack;
++    }
+     return (int) get_time_ans;
+ }
+ 
+--- stream/stream_file.c.org	2010-07-09 23:03:03.000000000 -0400
++++ stream/stream_file.c	2010-07-09 22:58:21.000000000 -0400
+@@ -51,8 +51,18 @@
+   stream_opts_fields
+ };
+ 
++static int control(stream_t *s, int cmd, void *arg);
++extern int growing_file_pause_enable;
++
+ static int fill_buffer(stream_t *s, char* buffer, int max_len){
+   int r = read(s->fd,buffer,max_len);
++  if (growing_file_pause_enable)
++  {
++    off_t sz = 0;
++    control(s, STREAM_CTRL_GET_SIZE, &sz);
++    if (sz > s->end_pos)
++        s->end_pos = sz;
++  }
+   return (r <= 0) ? -1 : r;
+ }
+ 

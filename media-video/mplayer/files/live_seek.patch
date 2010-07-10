@@ -1,50 +1,42 @@
 --- mplayer.c.org	2010-07-09 23:02:39.000000000 -0400
-+++ mplayer.c	2010-07-09 22:56:45.000000000 -0400
-@@ -109,6 +109,10 @@
++++ mplayer.c	2010-07-09 23:54:44.000000000 -0400
+@@ -109,6 +109,9 @@
  
  char *heartbeat_cmd;
  
 +extern double first_pts_hack;
 +extern int growing_file_pause_enable;
-+off_t growing_file_hack = 0;
 +
  #define ROUND(x) ((int)((x)<0 ? (x)-0.5 : (x)+0.5))
  
  #ifdef HAVE_RTC
-@@ -2614,7 +2618,40 @@
- // return -1 if seek failed (non-seekable stream?), 0 otherwise
+@@ -2615,6 +2618,33 @@
  static int seek(MPContext *mpctx, double amount, int style)
  {
-+    int skip=0;
      current_module = "seek";
 +
 +    if (growing_file_pause_enable)
 +    {
-+      if (growing_file_hack)
-+      {
-+        if (growing_file_hack == mpctx->demuxer->movi_end)
-+          skip=1;
-+      }
-+      else
-+        growing_file_hack = mpctx->demuxer->movi_end;
-+
-+      if (!skip && amount > 0 && mpctx->demuxer->movi_end > mpctx->demuxer->filepos)
++      if (amount > 0 && mpctx->demuxer->movi_end > mpctx->demuxer->filepos)
 +      {
 +        sh_video_t *sh_video = mpctx->demuxer->video->sh;
-+        if (growing_file_hack)
-+           growing_file_hack = mpctx->demuxer->movi_end;
-+
 +        if (sh_video)
 +        {
 +            double new_pts = sh_video->pts - first_pts_hack;
-+            double seek_allow_size = ((double)mpctx->demuxer->filepos / new_pts) * (amount+1+growing_file_pause_enable);
-+            //printf("movi_end > filepos: %0.2f (%0.2f) -- %0.2f -------- \n", sh_video->pts, new_pts, seek_allow_size);
-+            if ((double)(mpctx->demuxer->movi_end - mpctx->demuxer->filepos) < seek_allow_size)
++            double seek_1_second = ((double)mpctx->demuxer->filepos / new_pts);
++            double size_now_to_end = (double)(mpctx->demuxer->movi_end - mpctx->demuxer->filepos);
++            double time_to_end = size_now_to_end/seek_1_second;
++
++//            printf("..... time_to_end: %0.2f -------- \n", time_to_end);
++            if (time_to_end < (4 + growing_file_pause_enable))
 +            {
-+              set_osd_msg(OSD_MSG_TEXT, 1, 0, "LIVE");
-+              usec_sleep(10000);
-+              return -1;
++                set_osd_msg(OSD_MSG_TEXT, 1, osd_duration, "LIVE");
++                return -1;
 +            }
++            if (time_to_end < amount + 2 + growing_file_pause_enable)
++                amount = time_to_end - (2 + growing_file_pause_enable);
++//            printf("..... amount to ff: %0.2f -------- \n", amount);
++
 +        }
 +      }
 +    }

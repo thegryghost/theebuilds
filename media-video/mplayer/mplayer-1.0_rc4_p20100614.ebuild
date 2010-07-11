@@ -282,7 +282,7 @@ src_prepare() {
 	epatch ${FILESDIR}/demux_ts_h264.patch
 	epatch ${FILESDIR}/vdpau/vdpau_crop_02152010.patch
 	epatch ${FILESDIR}/vdpau/fix_deint_02202010.patch
-	epatch ${FILESDIR}/live_seek.patch
+	epatch ${FILESDIR}/live_seek2.patch
 
 	if use vaapi; then
 		epatch ${FILESDIR}/vaapi/mplayer-vaapi.patch

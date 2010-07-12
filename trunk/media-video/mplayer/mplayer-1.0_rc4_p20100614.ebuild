@@ -288,7 +288,7 @@ src_prepare() {
 		epatch ${FILESDIR}/vaapi/mplayer-vaapi.patch
 		epatch ${FILESDIR}/vaapi/mplayer-vaapi-gma500-workaround.patch
 		epatch ${FILESDIR}/vaapi/mplayer-vaapi-0.29.patch
-		epatch ${FILESDIR}/vaapi/mplayer-vdpau.patch2
+		#epatch ${FILESDIR}/vaapi/mplayer-vdpau.patch2
 	fi
 }
 

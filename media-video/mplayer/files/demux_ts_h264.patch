@@ -45,3 +45,14 @@
  		return 1;
  	}
  	else if ((stream_id == 0xfa))
+--- libmpdemux/demux_ts.h.org	2010-07-12 00:39:27.000000000 -0400
++++ libmpdemux/demux_ts.h	2010-07-12 00:39:35.000000000 -0400
+@@ -21,7 +21,7 @@
+ 
+ #include <stdint.h>
+ 
+-#define TS_MAX_PROBE_SIZE 2000000
++#define TS_MAX_PROBE_SIZE 9000000
+ 
+ int mp_a52_framesize(uint8_t *buf, int *srate);
+ 

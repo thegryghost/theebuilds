@@ -60,7 +60,7 @@ src_prepare() {
 	fi
 
 #	epatch "${FILESDIR}"/${PN}-2.3.2-enable-valid.patch
-	epatch "${FILESDIR}"/infinality.patch
+	epatch "${FILESDIR}"/infinality-2.4.2.patch
 
 	if use utils; then
 		cd "${WORKDIR}/ft2demos-${PV}"

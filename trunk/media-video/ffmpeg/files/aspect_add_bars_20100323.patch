@@ -1,0 +1,134 @@
+--- ffmpeg.c.orig	2010-02-01 17:08:45.000000000 -0500
++++ ffmpeg.c	2010-03-23 15:41:29.000000000 -0400
+@@ -113,6 +113,8 @@
+ 
+ static int frame_width  = 0;
+ static int frame_height = 0;
++static int cl_width  = 0;
++static int cl_height = 0;
+ static float frame_aspect_ratio = 0;
+ static enum PixelFormat frame_pix_fmt = PIX_FMT_NONE;
+ static enum SampleFormat audio_sample_fmt = SAMPLE_FMT_NONE;
+@@ -2597,6 +2599,105 @@
+     }
+ }
+ 
++#define ROUND_NUM(number) (float)(((int) ((float)number*100.0))/100.0)
++
++static void cl_opt_frame_aspect_ratio(const char *arg)
++{
++    int x = 0, y = 0, i=0;
++    double ar = 0, a,b,c = 0;
++    const char *p;
++    char *end, type=0;
++
++    p = strchr(arg, ':');
++    if (p) {
++        x = strtol(arg, &end, 10);
++        if (end == p)
++            y = strtol(end+1, &end, 10);
++        if (x > 0 && y > 0)
++            ar = (double)x / (double)y;
++    } else
++        ar = strtod(arg, NULL);
++
++    if (!ar) {
++        fprintf(stderr, "Incorrect aspect ratio specification.\n");
++        exit(1);
++    }
++    frame_aspect_ratio = ar;
++
++    if (cl_width > 0 && cl_height > 0)
++    {
++        a = ROUND_NUM((double)x/(double)y);
++        b = ROUND_NUM((double)cl_width/(double)cl_height);
++        printf("[CL] We want an apsect of %f, the current aspect is %f (%dx%d)\n", a, b, cl_width, cl_height);
++
++        i=(int)((double)cl_width * y/x) - (double)cl_height;
++
++        if (i<0)
++        {
++            // Portait?
++            i=(int)((double)cl_height * x/y) - (double)cl_width;
++            type = 1;
++        }
++
++        if (i)
++        {
++            if (type == 0)
++            {
++                a = (double)frame_height/(double) (cl_height+i);
++                i = ROUND_NUM((double)i*a);
++                c = modf((double)i*a, &b);
++                if (c)
++                   i++;
++
++                frame_padtop = i/2;
++                frame_padbottom = i/2;
++                if (i%2) frame_padbottom++;
++
++                y = frame_height;
++                frame_height = ROUND_NUM(a * (double)cl_height);
++
++                printf("[CL] Setting padtop %d, padbottom %d, frame height: %d -- Our Total is %d, should be %d \n",
++                               frame_padtop, frame_padbottom, frame_height, 
++                               frame_padtop+frame_padbottom+frame_height, y);
++
++                if (frame_padtop+frame_padbottom+frame_height != y)
++                {
++                    int diff=(int)y-(int)(frame_padtop+frame_padbottom+frame_height);
++
++                    printf("Fixing Top with %d\n", diff);
++                    frame_padtop+=diff;
++                }
++            }
++            else
++            {
++                a = (double)frame_width/(double)(cl_width+i);
++                i = ROUND_NUM((double)i*a);
++                c = modf((double)i*a, &b);
++                if (c)
++                   i++;
++
++                frame_padleft = i/2;
++                frame_padright = i/2;
++                if (i%2) frame_padright++;
++
++                y = frame_width;
++                frame_width = ROUND_NUM(a * (double)cl_width);
++
++                printf("[CL] Setting padleft %d, padright %d, frame width: %d -- Our Total is %d, should be %d \n",
++                               frame_padleft, frame_padright, frame_width, 
++                               frame_padleft+frame_padright+frame_width, y);
++
++                if (frame_padleft+frame_padright+frame_width != y)
++                {
++                    int diff=(int)y-(int)(frame_padleft+frame_padright+frame_width);
++                    frame_padleft+=diff;
++                    printf("Padding Left with %d\n", diff);
++                }
++            }
++        }
++    }
++}
++
+ static void opt_frame_aspect_ratio(const char *arg)
+ {
+     int x = 0, y = 0;
+@@ -2958,6 +3059,8 @@
+             set_context_opts(enc, avcodec_opts[CODEC_TYPE_VIDEO], AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM);
+             frame_height = enc->height;
+             frame_width = enc->width;
++           cl_height = frame_height = enc->height;
++           cl_width = frame_width = enc->width;
+             if(ic->streams[i]->sample_aspect_ratio.num)
+                 frame_aspect_ratio=av_q2d(ic->streams[i]->sample_aspect_ratio);
+             else
+@@ -3903,6 +4006,7 @@
+     { "r", OPT_FUNC2 | HAS_ARG | OPT_VIDEO, {(void*)opt_frame_rate}, "set frame rate (Hz value, fraction or abbreviation)", "rate" },
+     { "s", HAS_ARG | OPT_VIDEO, {(void*)opt_frame_size}, "set frame size (WxH or abbreviation)", "size" },
+     { "aspect", HAS_ARG | OPT_VIDEO, {(void*)opt_frame_aspect_ratio}, "set aspect ratio (4:3, 16:9 or 1.3333, 1.7777)", "aspect" },
++    { "claspect", HAS_ARG | OPT_VIDEO, {(void*)cl_opt_frame_aspect_ratio}, "set aspect ratio (4:3, 16:9 or 1.3333, 1.7777)", "aspect" },
+     { "pix_fmt", HAS_ARG | OPT_EXPERT | OPT_VIDEO, {(void*)opt_frame_pix_fmt}, "set pixel format, 'list' as argument shows all the pixel formats supported", "format" },
+     { "croptop", HAS_ARG | OPT_VIDEO, {(void*)opt_frame_crop_top}, "set top crop band size (in pixels)", "size" },
+     { "cropbottom", HAS_ARG | OPT_VIDEO, {(void*)opt_frame_crop_bottom}, "set bottom crop band size (in pixels)", "size" },

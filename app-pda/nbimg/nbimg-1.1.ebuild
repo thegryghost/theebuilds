@@ -20,6 +20,6 @@ src_compile() {
 }
 
 src_install() {
-	insinto /usr/bin
+	exeinto /usr/bin
 	doexe nbimg
 }

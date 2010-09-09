@@ -91,7 +91,7 @@ pkg_setup() {
 src_unpack() {
 	distutils_src_unpack
 	epatch "${FILESDIR}"/${P}-mplayerargs.patch
-	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.2_new2.patch
+	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.2_new3.patch
 	epatch "${FILESDIR}"/ed/python2.6.patch
 }
 

@@ -69,6 +69,16 @@
      sh_audio->a_out_buffer = NULL;
 --- libaf/af_lavcac3enc.c.orig	2010-10-06 22:50:05.667450541 -0400
 +++ libaf/af_lavcac3enc.c	2010-10-06 22:50:19.794838878 -0400
+@@ -35,6 +35,9 @@
+ #include "libavcodec/ac3.h"
+ #include "libavutil/intreadwrite.h"
+ 
++int lavc_ac3_detect = 0;
++int lavc_ac3_num_detected = 0;
++
+ // Data for specific instances of this filter
+ typedef struct af_ac3enc_s {
+     struct AVCodec        *lavc_acodec;
 @@ -130,6 +130,12 @@
          }
          if (s->min_channel_num == 0)

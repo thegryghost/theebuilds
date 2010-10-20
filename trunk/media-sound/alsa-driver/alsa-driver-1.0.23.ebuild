@@ -113,14 +113,12 @@ pkg_setup() {
 		export CHOST="sparc64-unknown-linux-gnu"
 	fi
 }
-src_prepare() {
-	epatch ${FIELSDIR}/alsa-driver-1.0.23-1.patch
-}
 
 src_unpack() {
 	unpack ${A}
 
 	cd "${S}"
+	epatch ${FIELSDIR}/alsa-driver-1.0.23-1.patch
 
 	convert_to_m "${S}/Makefile"
 	sed -i -e 's:\(.*depmod\):#\1:' "${S}/Makefile"

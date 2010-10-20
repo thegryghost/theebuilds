@@ -118,7 +118,7 @@ src_unpack() {
 	unpack ${A}
 
 	cd "${S}"
-	epatch ${FIELSDIR}/alsa-driver-1.0.23-1.patch
+	epatch ${FILESDIR}/alsa-driver-1.0.23-1.patch
 
 	convert_to_m "${S}/Makefile"
 	sed -i -e 's:\(.*depmod\):#\1:' "${S}/Makefile"

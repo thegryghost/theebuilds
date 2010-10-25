@@ -20,6 +20,7 @@ RDEPEND="dev-python/pygame
 	dev-python/pyxml
 	dev-python/elementtree
 	dev-python/imaging
+	dev-python/numeric
 	dev-python/beautifulsoup
 	>=dev-python/twisted-2.5
 	>=dev-python/twisted-web-0.6

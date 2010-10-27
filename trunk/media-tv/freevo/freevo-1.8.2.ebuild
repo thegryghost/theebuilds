@@ -94,6 +94,7 @@ src_unpack() {
 	epatch "${FILESDIR}"/${P}-mplayerargs.patch
 	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.2_new3.patch
 	epatch "${FILESDIR}"/ed/python2.6.patch
+	epatch "${FILESDIR}"/ed/record_fix.patch
 }
 
 src_install() {

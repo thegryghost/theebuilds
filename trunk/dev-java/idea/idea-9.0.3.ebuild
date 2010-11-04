@@ -8,18 +8,27 @@ SLOT="$(get_major_version)"
 RDEPEND=">=virtual/jdk-1.6"
 
 MY_PV="95.429"
+MY_TYPE="IU"
 
 RESTRICT="strip"
 QA_TEXTRELS="opt/${P}/bin/libbreakgen.so"
 
 DESCRIPTION="IntelliJ IDEA is an intelligent Java IDE"
 HOMEPAGE="http://jetbrains.com/idea/"
-#SRC_URI="http://download.jetbrains.com/${PN}/${PN}IU-${PV}.tar.gz"
-SRC_URI="http://download.jetbrains.com/${PN}/${PN}IC-${PV}.tar.gz"
+SRC_URI="http://download.jetbrains.com/${PN}/${PN}IU-${PV}.tar.gz
+	http://download.jetbrains.com/${PN}/${PN}IC-${PV}.tar.gz"
 LICENSE="IntelliJ-IDEA"
-IUSE=""
+IUSE="+community"
 KEYWORDS="~x86 ~amd64"
 S="${WORKDIR}/${PN}-IU-${MY_PV}"
+
+src_unpack() {
+	if use community; then
+		MY_TYPE="IC"
+		S="${WORKDIR}/${PN}-${MY_TYPE}-${MY_PV}"
+	fi
+	unpack ${PN}${MY_TYPE}-${PV}.tar.gz
+}
 
 src_install() {
 	local dir="/opt/${P}"

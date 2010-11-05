@@ -277,8 +277,8 @@ diff -Naur freevo-1.8.2.org/src/tv/plugins/dvb_atsc.py freevo-1.8.2/src/tv/plugi
 +            print 'stream url: %s' % self.stream_url
 +            print 'stream opt: %s' % opts
 +
-+            self.stream_pid = subprocess.Popen([self.stream_cmd, '-O', '-', self.stream_url], stdout=PIPE)
-+            self.stream_pid2 = subprocess.Popen(['/usr/bin/ts_filter', self.stream_file], stdin=self.stream_pid.stdout)  
++            self.stream_pid = subprocess.Popen([self.stream_cmd, '-O', self.stream_file, self.stream_url], stdout=PIPE)
++            #self.stream_pid2 = subprocess.Popen(['/usr/bin/ts_filter', self.stream_file], stdin=self.stream_pid.stdout)  
 +            #output = self.stream_pid2.communicate()[0]
 +            #self.stream_pid = subprocess.Popen(['/bin/bash', '/etc/freevo/filter', self.stream_url, opts]).pid
 +            #self.stream_pid = os.spawnlp(os.P_NOWAIT, self.stream_cmd, self.stream_cmd, self.stream_url, opts)

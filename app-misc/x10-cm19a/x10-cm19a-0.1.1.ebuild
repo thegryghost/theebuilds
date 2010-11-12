@@ -23,11 +23,6 @@ src_prepare() {
 	epatch ${FILESDIR}/fix.patch
 }
 
-#pkg_setup() {
-#	linux-mod_pkg_setup
-#	BUILD_PARAMS="KDIR=${KV_DIR}"
-#}
-
 src_install() {
 	linux-mod_src_install
 }

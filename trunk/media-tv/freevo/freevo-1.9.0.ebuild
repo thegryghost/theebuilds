@@ -67,7 +67,8 @@ pkg_setup() {
 }
 
 src_prepare() {
-	epatch "${FILESDIR}"/ed/vdr_streamdev_1.9.0.patch
+	epatch "${FILESDIR}"/ed/vdr_streamdev_1.9.0_new3.patch
+	epatch "${FILESDIR}"/ed/record_fix_1.9.0.patch
 }
 
 src_install() {

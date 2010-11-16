@@ -12,17 +12,17 @@ recordserver=`grep ^recordserver= /etc/conf.d/freevo | cut -d'"' -f2`
 if [ "x$1" != "xstop" ]; then
 	if [ "$recordserver" == "yes" ]; then
 		echo "Starting Freevo recordserver"
-		/usr/bin/freevo recordserver start
+		/usr/bin/freevo recordserver --daemon
 	fi
 
 	if [ "$webserver" == "yes" ]; then
 		echo "Starting Freevo webserver"
-		/usr/bin/freevo webserver start
+		/usr/bin/freevo webserver --daemon
 	fi
 
 	if [ "$freevo" == "daemon" ] && [ "x$1" != "xstartx" ]; then
 		echo "Starting Freevo daemon"
-		/usr/bin/freevo daemon start
+		/usr/bin/freevo --daemon
 	elif [ "$freevo" == "yes" ] || [ "x$1" == "xstartx" ] ; then
 		echo "Starting Freevo"
 		if egrep -q '^display.*(x11|dga)' /etc/freevo/freevo.conf ; then
@@ -32,26 +32,26 @@ if [ "x$1" != "xstop" ]; then
 				/usr/bin/freevo &>/dev/null
 			fi	
 		else
-			/usr/bin/freevo start
+			/usr/bin/freevo --daemon
 		fi
 	fi
 
 else
 	if [ "$freevo" == "daemon" ] && [ "x$1" != "xstopx" ]; then
 		echo "Stopping Freevo daemon"
-		/usr/bin/freevo daemon stop
+		/usr/bin/freevo --stop
 	elif [ "$freevo" == "yes" ] || [ "x$1" == "xstopx" ] ; then
 		echo "Stopping Freevo"
-		/usr/bin/freevo stop
+		/usr/bin/freevo --stop
 	fi
 
         if [ "$webserver" == "yes" ]; then
                 echo "Stopping Freevo webserver"
-                /usr/bin/freevo webserver stop
+                /usr/bin/freevo webserver --stop
         fi
 
         if [ "$recordserver" == "yes" ]; then
                 echo "Stopping Freevo recordserver"
-                /usr/bin/freevo recordserver stop
+		/usr/bin/freevo recordserver --stop
         fi
 fi

@@ -13,6 +13,19 @@ if [ "x$1" != "xstop" ]; then
 	if [ "$recordserver" == "yes" ]; then
 		echo "Starting Freevo recordserver"
 		/usr/bin/freevo recordserver --daemon
+
+		i=0
+		TMP=""
+		COUNT=8
+
+		while [ $i -lt $COUNT ]; do
+			TMP=`netstat -l | grep "18001"`
+			if [ ${#TMP} -gt 1 ]; then
+				i=$COUNT
+			fi
+			i=$[$i+1]
+		sleep 1
+		done
 	fi
 
 	if [ "$webserver" == "yes" ]; then

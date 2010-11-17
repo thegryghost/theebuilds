@@ -99,7 +99,7 @@ src_install() {
 	fi
 
 	exeinto /usr/bin
-	newexe "${FILESDIR}"/${PN}-1.8.2.boot freevoboot
+	newexe "${FILESDIR}"/${PN}-1.9.0.boot freevoboot
 	newconfd "${FILESDIR}/freevo.conf" freevo
 
 	rm -rf "${D}/usr/share/doc"

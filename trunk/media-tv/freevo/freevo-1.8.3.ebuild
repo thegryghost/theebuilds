@@ -96,6 +96,7 @@ src_unpack() {
 	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.3_new3.patch
 	epatch "${FILESDIR}"/ed/python2.6.patch
 	epatch "${FILESDIR}"/ed/record_fix.patch
+	epatch "${FILESDIR}"/ed/update_python.patch
 }
 
 src_install() {

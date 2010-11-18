@@ -1,6 +1,6 @@
 # Copyright 1999-2010 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
-# $Header: Exp $
+# $Header: /var/cvsroot/gentoo-x86/media-video/mplayer/mplayer-1.0_rc4_p20101114.ebuild,v 1.1 2010/11/14 15:13:00 polynomial-c Exp $
 
 EAPI=3
 
@@ -10,17 +10,18 @@ ESVN_REPO_URI="svn://svn.mplayerhq.hu/mplayer/trunk"
 inherit toolchain-funcs eutils flag-o-matic multilib base ${SVN_ECLASS}
 
 # BUMP ME PLZ, NO COOKIES OTHERWISE
-[[ ${PV} != *9999* ]] && MPLAYER_REVISION=SVN-r32533
+[[ ${PV} != *9999* ]] && MPLAYER_REVISION=SVN-r32624
 
 IUSE="3dnow 3dnowext +a52 aalib +alsa altivec aqua +ass bidi bindist bl bluray
 bs2b +cddb +cdio cdparanoia cpudetection custom-cpuopts debug dga +dirac
 directfb doc +dts +dv dvb +dvd +dvdnav dxr3 +enca +encode esd +faac +faad fbcon
-ffmpeg-mt ftp gif ggi gsm +iconv ipv6 jack joystick jpeg jpeg2k kernel_linux ladspa
-libcaca lirc +live lzo mad md5sum +mmx mmxext mng +mp3 nas +network nut openal
-amr +opengl +osdmenu oss png pnm pulseaudio pvr +quicktime radio +rar +real +rtc
-rtmp samba +shm +schroedinger sdl +speex sse sse2 ssse3 tga +theora +tremor
-+truetype +toolame +twolame +unicode v4l v4l2 vdpau vidix +vorbis vpx
-win32codecs +X +x264 xanim xinerama +xscreensaver +xv +xvid xvmc zoran"
+ftp gif ggi gsm +iconv ipv6 jack joystick jpeg jpeg2k kernel_linux ladspa
+libcaca libmpeg2 lirc +live lzo mad md5sum +mmx mmxext mng +mp3 mpg123 nas
++network nut openal amr +opengl +osdmenu oss png pnm pulseaudio pvr +quicktime
+radio +rar +real +rtc rtmp samba +shm +schroedinger sdl +speex sse sse2 ssse3
+tga +theora +tremor +truetype +toolame +twolame +unicode v4l v4l2 vdpau vidix
++vorbis vpx win32codecs +X +x264 xanim xinerama +xscreensaver +xv +xvid xvmc
+zoran"
 [[ ${PV} == *9999* ]] && IUSE+=" external-ffmpeg"
 
 VIDEO_CARDS="s3virge mga tdfx vesa"
@@ -28,7 +29,6 @@ for x in ${VIDEO_CARDS}; do
 	IUSE+=" video_cards_${x}"
 done
 
-RESTRICT="nomirror"
 FONT_URI="
 	mirror://mplayer/releases/fonts/font-arial-iso-8859-1.tar.bz2
 	mirror://mplayer/releases/fonts/font-arial-iso-8859-2.tar.bz2
@@ -37,10 +37,9 @@ FONT_URI="
 if [[ ${PV} == *9999* ]]; then
 	RELEASE_URI=""
 else
-	RELEASE_URI="http://foss.math.aegean.gr/~realnc/mplayer/${P}.tar.bz2"
+	RELEASE_URI="mirror://gentoo/${P}.tar.xz"
 fi
 SRC_URI="${RELEASE_URI}
-	ffmpeg-mt? ( http://foss.math.aegean.gr/~realnc/mplayer/${P}-ffmpeg-mt.patch )
 	!truetype? ( ${FONT_URI} )"
 
 DESCRIPTION="Media Player for Linux"
@@ -98,6 +97,10 @@ RDEPEND+="
 	dts? ( media-libs/libdca )
 	dv? ( media-libs/libdv )
 	dvb? ( media-tv/linuxtv-dvb-headers )
+	dvd? (
+		>=media-libs/libdvdread-4.1.3
+		dvdnav? ( >=media-libs/libdvdnav-4.1.3 )
+	)
 	encode? (
 		!twolame? ( toolame? ( media-sound/toolame ) )
 		twolame? ( media-sound/twolame )
@@ -113,15 +116,17 @@ RDEPEND+="
 	gsm? ( media-sound/gsm )
 	iconv? ( virtual/libiconv )
 	jack? ( media-sound/jack-audio-connection-kit )
-	jpeg? ( media-libs/jpeg )
+	jpeg? ( virtual/jpeg )
 	jpeg2k? ( media-libs/openjpeg )
 	ladspa? ( media-libs/ladspa-sdk )
 	libcaca? ( media-libs/libcaca )
+	libmpeg2? ( media-libs/libmpeg2 )
 	lirc? ( app-misc/lirc )
 	live? ( media-plugins/live )
 	lzo? ( >=dev-libs/lzo-2 )
 	mad? ( media-libs/libmad )
 	mng? ( media-libs/libmng )
+	mpg123? ( media-sound/mpg123 )
 	nas? ( media-libs/nas )
 	nut? ( >=media-libs/libnut-661 )
 	openal? ( media-libs/openal )
@@ -172,7 +177,7 @@ DEPEND="${RDEPEND}
 SLOT="0"
 LICENSE="GPL-2"
 if [[ ${PV} != *9999* ]]; then
-	KEYWORDS="~alpha ~amd64 ~arm ~hppa ~ia64 ~ppc ~ppc64 ~sparc ~x86 ~x86-fbsd ~amd64-linux ~x86-linux ~ppc-macos ~x86-macos ~sparc-solaris ~x86-solaris ~x64-macos"
+	KEYWORDS="~alpha ~amd64 ~arm ~hppa ~ia64 ~ppc ~ppc64 ~sparc ~x86 ~x86-fbsd ~amd64-linux ~x86-linux ~ppc-macos ~x64-macos ~x86-macos ~sparc-solaris ~x86-solaris"
 else
 	KEYWORDS=""
 fi
@@ -248,8 +253,6 @@ src_prepare() {
 	# fix path to bash executable in configure scripts
 	sed -i -e "1c\#!${EPREFIX}/bin/bash" configure version.sh || die
 
-	use ffmpeg-mt && epatch "${DISTDIR}/${P}-ffmpeg-mt.patch"
-
 	base_src_prepare
 	epatch ${FILESDIR}/lavc_ac3_detect_20101009.patch
 	epatch ${FILESDIR}/demux_ts_h264.patch
@@ -257,7 +260,6 @@ src_prepare() {
 	epatch ${FILESDIR}/vdpau/fix_deint_02202010.patch
 	epatch ${FILESDIR}/vdpau/detect_int.patch
 	epatch ${FILESDIR}/live_seek3.patch
-
 }
 
 src_configure() {
@@ -321,8 +323,8 @@ src_configure() {
 	# dvdread - accessing a DVD
 	# dvdnav - navigation of menus
 	#
-	# internal dvdread and dvdnav use flags enable internal
-	# versions of the libraries, which are snapshots of the fork.
+	# use external libdvdcss, dvdread and dvdnav
+	myconf+=" --disable-dvdread-internal --disable-libdvdcss-internal"
 
 	if use dvd; then
 		use dvdnav || myconf+=" --disable-dvdnav"
@@ -330,8 +332,6 @@ src_configure() {
 		myconf+="
 			--disable-dvdnav
 			--disable-dvdread
-			--disable-dvdread-internal
-			--disable-libdvdcss-internal
 		"
 	fi
 
@@ -393,7 +393,7 @@ src_configure() {
 	##########
 	myconf+=" --disable-musepack" # Use internal musepack codecs for SV7 and SV8 support
 	myconf+=" --disable-faad-internal" # always use system media-libs/faad2
-	myconf+=" --disable-libmpeg2-internal" # always use system version
+	myconf+=" --disable-libmpeg2-internal" # always use system media-libs/libmpeg2
 	use dirac || myconf+=" --disable-libdirac-lavc"
 	use dts || myconf+=" --disable-libdca"
 	if ! use mp3; then
@@ -412,7 +412,7 @@ src_configure() {
 	# https://bugs.gentoo.org/show_bug.cgi?id=299405#c6
 	{ use amr && use !bindist ; } || myconf+=" --disable-libopencore_amrnb --disable-libopencore_amrwb"
 
-	uses="faad gif jpeg live mad mng png pnm speex tga theora xanim"
+	uses="faad gif jpeg libmpeg2 live mad mng mpg123 png pnm speex tga theora xanim"
 	for i in ${uses}; do
 		use ${i} || myconf+=" --disable-${i}"
 	done
@@ -489,7 +489,7 @@ src_configure() {
 	use libcaca || myconf+=" --disable-caca"
 	use zoran || myconf+=" --disable-zr"
 
-	if ! use kernel_linux && ! use video_cards_mga; then
+	if ! use kernel_linux || ! use video_cards_mga; then
 		 myconf+=" --disable-mga --disable-xmga"
 	fi
 
@@ -616,7 +616,6 @@ src_configure() {
 		myconf+="
 			--enable-macosx-finder
 			--enable-macosx-bundle
-			--enable-libdvdcss-internal
 		"
 	fi
 
@@ -627,12 +626,12 @@ src_configure() {
 		use external-ffmpeg && myconf+=" --disable-ffmpeg_a"
 	fi
 
-	myconf="--cc=$(tc-getCC) \
-		--host-cc=$(tc-getBUILD_CC) \
-		--prefix=${EPREFIX}/usr \
-		--confdir=${EPREFIX}/etc/mplayer \
-		--datadir=${EPREFIX}/usr/share/mplayer \
-		--libdir=${EPREFIX}/usr/$(get_libdir) \
+	myconf="--cc=$(tc-getCC)
+		--host-cc=$(tc-getBUILD_CC)
+		--prefix=${EPREFIX}/usr
+		--confdir=${EPREFIX}/etc/mplayer
+		--datadir=${EPREFIX}/usr/share/mplayer
+		--libdir=${EPREFIX}/usr/$(get_libdir)
 		${myconf}"
 
 	CFLAGS="${CFLAGS}" ./configure ${myconf} || die "configure died"

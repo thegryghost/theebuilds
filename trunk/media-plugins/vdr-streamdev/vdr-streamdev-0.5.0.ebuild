@@ -4,12 +4,14 @@
 
 EAPI="2"
 
+PV="0.5.0"
+
 MY_P="${PN}-${PV/_pre/-pre-}"
 inherit vdr-plugin eutils
 
 DESCRIPTION="vdr Plugin: Client/Server streaming plugin"
 HOMEPAGE="http://streamdev.vdr-developer.org/"
-SRC_URI="http://vdr.websitec.de/download/${PN}/${MY_P}.tgz"
+SRC_URI="http://streamdev.vdr-developer.org/releases/vdr-streamdev-${PV}.tgz"
 
 LICENSE="GPL-2"
 SLOT="0"
@@ -34,7 +36,6 @@ pkg_setup() {
 src_prepare() {
 	vdr-plugin_src_prepare
 	cd "${S}"
-
 	# Moving externremux.sh out of /root
 	sed -i remux/extern.c \
 		-e "s#/root/externremux.sh#${EXTERNREMUX_PATH}#"
@@ -52,6 +53,9 @@ src_prepare() {
 		fi
 	done
 
+#	epatch "${FILESDIR}/streamdev-cvs100210-ReplaceRecordingStreaming.patch"
+#	epatch "${FILESDIR}/streamdev-cvs221109-AddCallbackMsg.diff"
+#	epatch "${FILESDIR}/streamdev-cvs221109-AddFemonV1_1.diff"
 	fix_vdr_libsi_include server/livestreamer.c
 }
 

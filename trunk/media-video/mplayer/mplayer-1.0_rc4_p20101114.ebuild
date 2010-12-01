@@ -260,7 +260,7 @@ src_prepare() {
 	epatch ${FILESDIR}/vdpau/vdpau_crop_02152010.patch
 	epatch ${FILESDIR}/vdpau/fix_deint_02202010.patch
 	epatch ${FILESDIR}/vdpau/detect_int.patch
-	epatch ${FILESDIR}/live_seek3.patch
+	epatch ${FILESDIR}/live_seek4.patch
 }
 
 src_configure() {

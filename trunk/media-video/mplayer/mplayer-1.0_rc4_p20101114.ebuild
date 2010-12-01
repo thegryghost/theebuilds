@@ -60,6 +60,7 @@ X_RDEPS="
 RDEPEND+="
 	sys-libs/ncurses
 	app-arch/bzip2
+	app-arch/xz-utils
 	sys-libs/zlib
 	!bindist? (
 		x86? (

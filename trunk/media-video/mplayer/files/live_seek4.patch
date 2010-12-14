@@ -35,7 +35,7 @@
          if (!demux_fill_buffer(demux, ds))
              return MP_NOPTS_VALUE;
      }
-+    if (growing_file_pause_enable)
++    if (growing_file_pause_enable && !first_pts_hack)
 +    {
 +      if (ds && ds->first)
 +      {
@@ -59,7 +59,7 @@
          get_time_ans = demuxer->stream_pts;
      else if (sh_video)
          get_time_ans = sh_video->pts;
-+    if (growing_file_pause_enable)
++    if (0 && growing_file_pause_enable)
 +    {
 +      if (get_time_ans - first_pts_hack > 0)
 +          return (int)get_time_ans - first_pts_hack;
@@ -90,8 +90,8 @@
        if(size != (off_t)-1) {
          *((off_t*)arg) = size;
          return 1;
---- mplayer.c.org	2010-12-01 16:45:57.000000000 -0500
-+++ mplayer.c	2010-12-01 17:35:01.000000000 -0500
+--- mplayer.c.org	2010-12-03 01:00:20.000000000 -0500
++++ mplayer.c	2010-12-03 01:02:39.000000000 -0500
 @@ -148,6 +152,8 @@
  double start_pts = MP_NOPTS_VALUE;
  char *heartbeat_cmd;
@@ -101,7 +101,7 @@
  #define ROUND(x) ((int)((x)<0 ? (x)-0.5 : (x)+0.5))
  
  
-@@ -2674,7 +2685,92 @@
+@@ -2674,7 +2685,98 @@
  // return -1 if seek failed (non-seekable stream?), 0 otherwise
  static int seek(MPContext *mpctx, double amount, int style)
  {
@@ -137,10 +137,15 @@
 +
 +              if (time_to_end < growing_file_pause_enable)
 +              {
++                  int count = 0;
 +                  do
 +                  {
-+                      (*st->control)(st,STREAM_CTRL_GET_SIZE, &sz);
 +
++                      count++;
++                      if (count > growing_file_pause_enable)
++                          break;
++
++                      (*st->control)(st,STREAM_CTRL_GET_SIZE, &sz);
 +                      if (sz > mpctx->demuxer->movi_end)
 +                          mpctx->demuxer->movi_end = sz;
 +                      else if (sz == mpctx->demuxer->movi_end)
@@ -149,6 +154,7 @@
 +                      size_now_to_end = (double)(mpctx->demuxer->movi_end - mpctx->demuxer->filepos);
 +                      time_to_end = size_now_to_end/seek_1_second;
 +                      set_osd_msg(OSD_MSG_TEXT, 1, osd_duration, "LIVE: %0.2f", time_to_end);
++                      sleep(1);
 +                  }
 +                  while (time_to_end < growing_file_pause_enable);
 +
@@ -194,20 +200,28 @@
      if (demux_seek(mpctx->demuxer, amount, audio_delay, style) == 0)
  	return -1;
  
-@@ -3725,6 +3821,19 @@
+@@ -3725,6 +3827,27 @@
    mpctx->eof=PT_NEXT_ENTRY; goto goto_next_file;
  }
  
 +if (growing_file_pause_enable && mpctx->stream && mpctx->demuxer)
 +{
 +    off_t sz = 0;
++    int count = 0;
 +    double size_1_second = (((double)mpctx->demuxer->filepos / first_pts_hack) * 90000);
-+    //printf("POOP: %0.2f, %s\n", size_1_second, st->url);
++    //printf("POOP, 1 sec%0.2f, %s, pos: %d, first: %0.2f\n", size_1_second, mpctx->stream->url, mpctx->demuxer->filepos, first_pts_hack);
 +    do
 +    {
 +        (*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
-+        sleep(.100);
-+    } while( sz/size_1_second < growing_file_pause_enable );
++        //printf("SZ: %d\n", sz);
++        sleep(1);
++        count++;
++        if (count > growing_file_pause_enable)
++        {
++            //printf("HMMMM: %d, %d, %0.2f, %0.2f\n", count, sz, size_1_second, (double)sz/size_1_second);
++            break;
++        }
++    } while( (int)(sz/size_1_second) < growing_file_pause_enable );
 +    //printf("MOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO!!!!!!!!!!!!!!!!!!!!!!!!\n");
 +}
 +

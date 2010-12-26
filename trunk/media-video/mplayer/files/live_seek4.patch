@@ -216,7 +216,7 @@
 +        //printf("SZ: %d\n", sz);
 +        sleep(1);
 +        count++;
-+        if (count > growing_file_pause_enable)
++        //if (count > growing_file_pause_enable)
 +        {
 +            //printf("HMMMM: %d, %d, %0.2f, %0.2f\n", count, sz, size_1_second, (double)sz/size_1_second);
 +            break;

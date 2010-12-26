@@ -93,7 +93,7 @@ src_unpack() {
 	distutils_src_unpack
 	#epatch "${FILESDIR}"/${P}-mplayerargs.patch
 	#epatch "${FILESDIR}"/freevo-1.8.2-mplayerargs.patch
-	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.3_new3.patch
+	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.3_new4.patch
 	epatch "${FILESDIR}"/ed/python2.6.patch
 	epatch "${FILESDIR}"/ed/record_fix.patch
 	epatch "${FILESDIR}"/ed/fix_thumbs_vdpau.patch

@@ -13,29 +13,6 @@ diff -Naur src/audio/plugins/mplayer.py src-new/audio/plugins/mplayer.py
  
          if config.DEBUG_CHILDAPP:
              mpl += ' -v'
-diff -Naur src/event.py src-new/event.py
---- src/event.py	2008-11-16 13:20:46.000000000 -0500
-+++ src-new/event.py	2009-01-03 15:56:52.000000000 -0500
-@@ -168,6 +168,9 @@
- TV_GOTO_LIVE_PLAY      = Event('TV_GOTO_LIVE_PLAY')
- VIDEO_NEXT_FILLMODE    = Event('VIDEO_NEXT_FILLMODE')
- VIDEO_NEXT_AUDIOMODE   = Event('VIDEO_NEXT_AUDIOMODE')
-+ZOOMIN                 = Event('ZOOMIN')
-+ZOOMOUT                = Event('ZOOMOUT')
-+ASPECT                 = Event('ASPECT')
- 
- #
- # Global playing events
-@@ -367,6 +370,9 @@
-     '7'         : INPUT_7,
-     '8'         : INPUT_8,
-     '9'         : INPUT_9,
-+    'ZOOMIN'    : ZOOMIN,
-+    'ZOOMOUT'   : ZOOMOUT,
-+    'ASPECT'    : ASPECT,
-     }
- 
- VIDEO_EVENTS = {
 diff -Naur src/video/plugins/mplayer.py src-new/video/plugins/mplayer.py
 --- src/video/plugins/mplayer.py	2008-11-30 21:42:54.000000000 -0500
 +++ src-new/video/plugins/mplayer.py	2009-01-03 15:58:43.000000000 -0500
@@ -240,14 +217,35 @@ diff -Naur src/video/plugins/xine.py src-new/video/plugins/xine.py
  
          self.thread.mode     = 'record'
          self.thread.prog     = rec_prog
+--- src/event.py.org	2010-12-26 23:20:37.621719970 -0500
++++ src/event.py	2010-12-26 23:20:50.232719970 -0500
+@@ -168,6 +168,9 @@
+ TV_GOTO_LIVE_PLAY      = Event('TV_GOTO_LIVE_PLAY')
+ VIDEO_NEXT_FILLMODE    = Event('VIDEO_NEXT_FILLMODE')
+ VIDEO_NEXT_AUDIOMODE   = Event('VIDEO_NEXT_AUDIOMODE')
++ASPECT                 = Event('ASPECT')
++Audio                  = Event('Audio')
++Sub                    = Event('Sub')
+ 
+ #
+ # Global playing events
+@@ -367,6 +370,9 @@
+     '7'         : INPUT_7,
+     '8'         : INPUT_8,
+     '9'         : INPUT_9,
++    'ASPECT'    : ASPECT,
++    'Audio'     : Audio,
++    'Sub'       : Sub,
+     }
+ 
+ VIDEO_EVENTS = {
 diff -Naur src/tv/plugins/dvb_atsc.py src-new/tv/plugins/dvb_atsc.py
---- src/tv/plugins/dvb_atsc.py	1969-12-31 19:00:00.000000000 -0500
-+++ src-new/tv/plugins/dvb_atsc.py	2009-01-03 15:56:52.000000000 -0500
-diff -Naur 1/dvb_atsc.py 2/dvb_atsc.py
-@@ -0,0 +1,347 @@
+--- src/tv/plugins/dvb_atsc.py  1969-12-31 19:00:00.000000000 -0500
++++ src-new/tv/plugins/dvb_atsc.py      2009-01-03 15:56:52.000000000 -0500
+@@ -0,0 +1,343 @@
 +# -*- coding: iso-8859-1 -*-
 +# -----------------------------------------------------------------------
-+# dvb_atsc.py
++# dvb_atsc.py - implementation of a TV function using Xine TS
 +# -----------------------------------------------------------------------
 +#
 +# Notes:
@@ -409,6 +407,7 @@ diff -Naur 1/dvb_atsc.py 2/dvb_atsc.py
 +
 +            self.stream_pid = subprocess.Popen([self.stream_cmd, '-O', '-', self.stream_url], stdout=PIPE)
 +            self.stream_pid2 = subprocess.Popen(['/usr/bin/ffmpeg', '-y','-i', '-', '-acodec', 'copy', '-vcodec', 'copy', '-f', 'matroska', self.stream_file], stdin=self.stream_pid.stdout)
++            #self.stream_pid2 = subprocess.Popen(['/usr/bin/ffmpeg', '-y','-i', '-', '-acodec', 'copy', '-vcodec', 'copy', '-f', 'matroska', self.stream_file, '-newaudio'], stdin=self.stream_pid.stdout)
 +
 +            print 'stream pid: %d' % self.stream_pid.pid
 +
@@ -486,6 +485,7 @@ diff -Naur 1/dvb_atsc.py 2/dvb_atsc.py
 +    def eventhandler(self, event, menuw=None):
 +        s_event = '%s' % event
 +
++        print "EVEN: %s .. %s" % (s_event, event) 
 +        if event == em.STOP or event == em.PLAY_END:
 +            print "STOP"
 +
@@ -547,13 +547,7 @@ diff -Naur 1/dvb_atsc.py 2/dvb_atsc.py
 +              self.aspect_r = 0
 +           return True
 +
-+        if event == em.ZOOMIN:
-+            return True
-+
-+        if event == em.ZOOMOUT:
-+            return True
-+
-+        elif event == em.TOGGLE_OSD:
++        if event == em.TOGGLE_OSD:
 +            #self.app.write('OSDStreamInfos\n')
 +            self.app.write('osd\n')
 +            return TRUE
@@ -568,12 +562,6 @@ diff -Naur 1/dvb_atsc.py 2/dvb_atsc.py
 +            if tmpevent == 2 :
 +               self.app.write('audio_delay -0.100\n')
 +
-+            if tmpevent == 7 :
-+               self.app.write('ToggleInterleave\n')
-+
-+            if tmpevent == 8 :
-+               self.app.write('switch_audio\n')
-+
 +            if tmpevent == 9 :
 +               print 'Not deleting'
 +               if self.save_rec == 0 :
@@ -584,6 +572,12 @@ diff -Naur 1/dvb_atsc.py 2/dvb_atsc.py
 +                   self.save_rec = 0
 +                
 +            return TRUE     
++
++        if event == em.Audio:
++            self.app.write('switch_audio\n')
++
++        if event == em.Sub:
++            self.app.write('sub_visibility\n')
 +
 +        if event == em.SEEK:
 +            pos = int(event.arg)

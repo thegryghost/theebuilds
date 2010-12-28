@@ -108,7 +108,7 @@
 +    //double time_to_end = 0;
      current_module = "seek";
 +
-+    printf("------- SEEK STYLE: %d, amount: %0.2f, len : %0.2f --------------\n", style, amount, demuxer_get_time_length(mpctx->demuxer));
++    //printf("------- SEEK STYLE: %d, amount: %0.2f, len : %0.2f --------------\n", style, amount, demuxer_get_time_length(mpctx->demuxer));
 +    if (live_pause_enable && style == 0)
 +    {
 +        sh_video_t *sh_video = mpctx->demuxer->video->sh;
@@ -155,7 +155,7 @@
 +            }
 +        }
 +    }
-+    printf("Seeking amount: %0.2f, style: %d\n", amount, style);
++    //printf("Seeking amount: %0.2f, style: %d\n", amount, style);
      if (demux_seek(mpctx->demuxer, amount, audio_delay, style) == 0)
  	return -1;
  

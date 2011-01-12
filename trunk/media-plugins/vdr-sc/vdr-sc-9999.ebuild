@@ -59,6 +59,8 @@ src_unpack() {
 
 	sed -i -e "s:PARALLEL   ?= PARALLEL_32_INT:PARALLEL   ?= ${OPT_MODE}:g" Makefile
 
+	epatch ${FILESDIR}/na_emm_upd-0.9.3.patch
+
 	if use nocache
         then
                 epatch ${FILESDIR}/no_cache.patch
@@ -98,6 +100,7 @@ src_unpack() {
 		rm -rf systems/cryptoworks
 		rm -rf systems/sc-cryptoworks
 	fi
+
 	if ! use nagra
 	then
 		einfo "Not using nagra"

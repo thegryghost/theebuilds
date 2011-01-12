@@ -8,18 +8,18 @@ inherit eutils flag-o-matic multilib
 
 # Switches supported by extensions-patch
 EXT_PATCH_FLAGS="alternatechannel channelprovide cutterlimit cutterqueue cuttime
-	ddepgentry graphtft hardlinkcutter
+	ddepgentry dolbyinrec graphtft hardlinkcutter
 	jumpplay lnbshare mainmenuhooks menuorg noepg pinplugin
-	rotor setup sortrecords status_extension timerinfo ttxtsubs
+	rotor setup sortrecords sourcecaps status_extension ttxtsubs
 	validinput yaepg
 	dvlfriendlynames dvlscriptaddon dvlvidprefer
-	volctrl wareagleicon lircsettings"
+	volctrl wareagleicon lircsettings deltimeshiftrec"
 
 # names of the use-flags
-EXT_PATCH_FLAGS_RENAMED="liemikuutio" #iptv/pluginparam
+EXT_PATCH_FLAGS_RENAMED="iptv liemikuutio"
 
 # names ext-patch uses internally, here only used for maintainer checks
-EXT_PATCH_FLAGS_RENAMED_EXT_NAME="liemiext jumpingseconds"
+EXT_PATCH_FLAGS_RENAMED_EXT_NAME="pluginparam liemiext jumpingseconds"
 
 IUSE="debug vanilla dxr3 ${EXT_PATCH_FLAGS} ${EXT_PATCH_FLAGS_RENAMED}"
 
@@ -27,16 +27,15 @@ MY_PV="${PV%_p*}"
 MY_P="${PN}-${MY_PV}"
 S="${WORKDIR}/${MY_P}"
 
-EXT_P=ExtP-NG-vdr-1.7.14-V7
+EXT_P=vdr-1.7.12_ExtP-NG-v1.2-r1
 #externer reel patch
 #EXT_REELPATCH=vdr-1.7.11_ehd_svn13986
 
 DESCRIPTION="Video Disk Recorder - turns a pc into a powerful set top box for DVB"
 HOMEPAGE="http://www.tvdr.de/"
 SRC_URI="ftp://ftp.tvdr.de/vdr/Developer/${MY_P}.tar.bz2
-		http://copperhead.vdr-developer.org/downloads/extensionpatch/Older%20ExtP_NG%20Versions/${EXT_P}.diff"
-#		http://copperhead.vdr-developer.org/downloads/extensionpatch/${EXT_P}.diff"
-#		http://vdr.websitec.de/download/${EXT_P}.tar.bz2
+		http://vdr.websitec.de/download/${EXT_P}.diff"
+#		http://copperhead.vdr-developer.org/downloads/extensionpatch/${EXT_P}.diff
 
 KEYWORDS="~amd64 ~ppc ~x86"
 
@@ -48,6 +47,7 @@ COMMON_DEPEND="media-libs/jpeg
 	>=media-libs/fontconfig-2.4.2
 	>=media-libs/freetype-2
 	sys-devel/gettext"
+#	dvdarchive? ( dvdchapjump? ( media-libs/libdvdnav ) )
 
 DEPEND="${COMMON_DEPEND}
 	~media-tv/linuxtv-dvb-headers-5
@@ -213,6 +213,10 @@ src_prepare() {
 		DEFINES			+= -DCONFDIR=\"\$(CONFDIR)\"
 		INCLUDES		+= -I\$(DVBDIR)
 
+		# http://www.vdr-portal.de/board/thread.php?postid=808350#post808350
+		# still needed?
+#		DEFINES += -D__KERNEL_STRICT_NAMES
+
 	EOT
 	eend 0
 
@@ -236,6 +240,9 @@ src_prepare() {
 		# Now apply extensions patch
 #		local fname="${EXT_DIR}/${PN}-${EXT_VDR_PV:-${PV}}_extensions.diff"
 		local fname="${DISTDIR}/${EXT_P}.diff"
+
+		# fix for wrong header include #263840 ; this need >libdvdread-0.9.7
+		sed -e "s:dvdread:dvdnav:g" -i "${fname}"
 
 		epatch "${fname}"
 
@@ -280,6 +287,7 @@ src_prepare() {
 		done
 
 		# patches that got renamed
+		use iptv && enable_patch pluginparam
 		use liemikuutio && enable_patch liemiext
 		use liemikuutio && enable_patch jumpingseconds
 #		use ehd && enable_patch reelplugin
@@ -295,6 +303,7 @@ src_prepare() {
 
 #		use ehd && epatch "${WORKDIR}/${P}_ehd_svn13986.patch"
 
+		use iptv && sed -i sources.conf -e 's/^#P/P/'
 	fi
 
 	# apply local patches defined by variable VDR_LOCAL_PATCHES_DIR
@@ -331,10 +340,8 @@ src_prepare() {
 			CAP_SHUTDOWN_AUTO_RETRY
 
 	echo -e ${CAPS} > "${CAP_FILE}"
-
-	epatch "${FILESDIR}/vdr-1.7.14-na-eit-0.1.4.diff"
-	epatch "${FILESDIR}/vdr-1.7.15-amd64.diff"
-
+	epatch ${FILESDIR}/vdr-1.7.12-na-eit-0.1.2.diff
+	epatch ${FILESDIR}/vdr-1.7.10-atsc-0.0.4.diff
 }
 
 src_install() {
@@ -448,11 +455,11 @@ pkg_postinst() {
 		fi
 	fi
 
-#	if use atsc; then
-#		ewarn "ATSC is only supported by a rudimentary patch"
-#		einfo "and need at least this patch and a plugin installed"
-#		einfo "emerge media-plugins/vdr-atscepg"
-#	fi
+	#if use atsc; then
+	#	ewarn "ATSC is only supported by a rudimentary patch"
+	#	einfo "and need at least this patch and a plugin installed"
+	#	einfo "emerge media-plugins/vdr-atscepg"
+	#fi
 
 	if [[ $previous_less_than_1_6_0 = 0 ]]; then
 		elog "By default vdr is now started with utf8 character encoding"

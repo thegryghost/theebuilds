@@ -1,7 +1,7 @@
-diff -Nur vdr-1.7.14.orig/channels.c vdr-1.7.14/channels.c
---- vdr-1.7.14.orig/channels.c	2010-02-21 08:36:04.000000000 -0500
-+++ vdr-1.7.14/channels.c	2010-03-28 12:57:06.000000000 -0400
-@@ -842,6 +842,20 @@
+diff -Nur vdr-1.7.12.orig/channels.c vdr-1.7.12/channels.c
+--- vdr-1.7.12.orig/channels.c	2010-01-02 12:38:40.000000000 -0500
++++ vdr-1.7.12/channels.c	2010-01-31 13:07:36.000000000 -0500
+@@ -1106,6 +1106,20 @@
       }
    return NULL;
  }
@@ -22,10 +22,10 @@ diff -Nur vdr-1.7.14.orig/channels.c vdr-1.7.14/channels.c
  cChannel *cChannels::GetByTransponderID(tChannelID ChannelID)
  {
    int source = ChannelID.Source();
-diff -Nur vdr-1.7.14.orig/channels.h vdr-1.7.14/channels.h
---- vdr-1.7.14.orig/channels.h	2010-03-07 08:47:13.000000000 -0500
-+++ vdr-1.7.14/channels.h	2010-03-28 12:57:06.000000000 -0400
-@@ -213,6 +213,7 @@
+diff -Nur vdr-1.7.12.orig/channels.h vdr-1.7.12/channels.h
+--- vdr-1.7.12.orig/channels.h	2009-12-06 07:57:45.000000000 -0500
++++ vdr-1.7.12/channels.h	2010-01-31 13:07:36.000000000 -0500
+@@ -255,6 +255,7 @@
    cChannel *GetByNumber(int Number, int SkipGap = 0);
    cChannel *GetByServiceID(int Source, int Transponder, unsigned short ServiceID);
    cChannel *GetByChannelID(tChannelID ChannelID, bool TryWithoutRid = false, bool TryWithoutPolarization = false);
@@ -33,9 +33,9 @@ diff -Nur vdr-1.7.14.orig/channels.h vdr-1.7.14/channels.h
    cChannel *GetByTransponderID(tChannelID ChannelID);
    int BeingEdited(void) { return beingEdited; }
    void IncBeingEdited(void) { beingEdited++; }
-diff -Nur vdr-1.7.14.orig/eit.c vdr-1.7.14/eit.c
---- vdr-1.7.14.orig/eit.c	2010-01-08 10:17:09.000000000 -0500
-+++ vdr-1.7.14/eit.c	2010-03-28 12:57:06.000000000 -0400
+diff -Nur vdr-1.7.12.orig/eit.c vdr-1.7.12/eit.c
+--- vdr-1.7.12.orig/eit.c	2010-01-08 10:17:09.000000000 -0500
++++ vdr-1.7.12/eit.c	2010-01-31 13:07:36.000000000 -0500
 @@ -16,6 +16,7 @@
  #include "i18n.h"
  #include "libsi/section.h"
@@ -162,9 +162,9 @@ diff -Nur vdr-1.7.14.orig/eit.c vdr-1.7.14/eit.c
              cSchedulesLock SchedulesLock(true, 10);
              cSchedules *Schedules = (cSchedules *)cSchedules::Schedules(SchedulesLock);
              if (Schedules)
-diff -Nur vdr-1.7.14.orig/epg.c vdr-1.7.14/epg.c
---- vdr-1.7.14.orig/epg.c	2010-02-28 09:24:55.000000000 -0500
-+++ vdr-1.7.14/epg.c	2010-04-01 21:54:51.000000000 -0400
+diff -Nur vdr-1.7.12.orig/epg.c vdr-1.7.12/epg.c
+--- vdr-1.7.12.orig/epg.c	2010-01-08 10:20:28.000000000 -0500
++++ vdr-1.7.12/epg.c	2010-01-31 13:09:36.000000000 -0500
 @@ -114,6 +114,7 @@
    components = NULL;
    memset(contents, 0, sizeof(contents));
@@ -240,7 +240,7 @@ diff -Nur vdr-1.7.14.orig/epg.c vdr-1.7.14/epg.c
       if (components) {
          for (int i = 0; i < components->NumComponents(); i++) {
              tComponent *p = components->Component(i);
-@@ -478,7 +515,13 @@
+@@ -480,7 +517,13 @@
                      }
                }
                break;
@@ -255,27 +255,9 @@ diff -Nur vdr-1.7.14.orig/epg.c vdr-1.7.14/epg.c
                break;
      case 'X': if (!components)
                   components = new cComponents;
-@@ -1230,7 +1273,7 @@
- 
- cSchedule *cSchedules::AddSchedule(tChannelID ChannelID)
- {
--  ChannelID.ClrRid();
-+  //ChannelID.ClrRid();
-   cSchedule *p = (cSchedule *)GetSchedule(ChannelID);
-   if (!p) {
-      p = new cSchedule(ChannelID);
-@@ -1244,7 +1287,7 @@
- 
- const cSchedule *cSchedules::GetSchedule(tChannelID ChannelID) const
- {
--  ChannelID.ClrRid();
-+  //ChannelID.ClrRid();
-   for (cSchedule *p = First(); p; p = Next(p)) {
-       if (p->ChannelID() == ChannelID)
-          return p;
-diff -Nur vdr-1.7.14.orig/epg.h vdr-1.7.14/epg.h
---- vdr-1.7.14.orig/epg.h	2010-01-08 10:20:34.000000000 -0500
-+++ vdr-1.7.14/epg.h	2010-03-28 12:57:06.000000000 -0400
+diff -Nur vdr-1.7.12.orig/epg.h vdr-1.7.12/epg.h
+--- vdr-1.7.12.orig/epg.h	2010-01-08 10:20:34.000000000 -0500
++++ vdr-1.7.12/epg.h	2010-01-31 13:08:46.000000000 -0500
 @@ -18,6 +18,7 @@
  #include "tools.h"
  
@@ -318,9 +300,9 @@ diff -Nur vdr-1.7.14.orig/epg.h vdr-1.7.14/epg.h
    void SetStartTime(time_t StartTime);
    void SetDuration(int Duration);
    void SetVps(time_t Vps);
-diff -Nur vdr-1.7.14.orig/libsi/dish.c vdr-1.7.14/libsi/dish.c
---- vdr-1.7.14.orig/libsi/dish.c	1969-12-31 19:00:00.000000000 -0500
-+++ vdr-1.7.14/libsi/dish.c	2010-03-28 12:57:06.000000000 -0400
+diff -Nur vdr-1.7.12.orig/libsi/dish.c vdr-1.7.12/libsi/dish.c
+--- vdr-1.7.12.orig/libsi/dish.c	1969-12-31 19:00:00.000000000 -0500
++++ vdr-1.7.12/libsi/dish.c	2010-01-31 13:07:36.000000000 -0500
 @@ -0,0 +1,257 @@
 +/***************************************************************************
 + *                                                                         *
@@ -579,9 +561,9 @@ diff -Nur vdr-1.7.14.orig/libsi/dish.c vdr-1.7.14/libsi/dish.c
 +};
 +
 +} //end of namespace
-diff -Nur vdr-1.7.14.orig/libsi/dish.h vdr-1.7.14/libsi/dish.h
---- vdr-1.7.14.orig/libsi/dish.h	1969-12-31 19:00:00.000000000 -0500
-+++ vdr-1.7.14/libsi/dish.h	2010-03-28 12:57:06.000000000 -0400
+diff -Nur vdr-1.7.12.orig/libsi/dish.h vdr-1.7.12/libsi/dish.h
+--- vdr-1.7.12.orig/libsi/dish.h	1969-12-31 19:00:00.000000000 -0500
++++ vdr-1.7.12/libsi/dish.h	2010-01-31 13:07:36.000000000 -0500
 @@ -0,0 +1,46 @@
 +/***************************************************************************
 + *                                                                         *
@@ -629,9 +611,9 @@ diff -Nur vdr-1.7.14.orig/libsi/dish.h vdr-1.7.14/libsi/dish.h
 +} //end of namespace 
 +
 +#endif //LIBSI_DISH_H
-diff -Nur vdr-1.7.14.orig/libsi/Makefile vdr-1.7.14/libsi/Makefile
---- vdr-1.7.14.orig/libsi/Makefile	2006-05-26 06:40:19.000000000 -0400
-+++ vdr-1.7.14/libsi/Makefile	2010-03-28 12:57:06.000000000 -0400
+diff -Nur vdr-1.7.12.orig/libsi/Makefile vdr-1.7.12/libsi/Makefile
+--- vdr-1.7.12.orig/libsi/Makefile	2006-05-26 06:40:19.000000000 -0400
++++ vdr-1.7.12/libsi/Makefile	2010-01-31 13:07:36.000000000 -0500
 @@ -23,7 +23,7 @@
  
  ### The object files (add further files here):
@@ -648,9 +630,9 @@ diff -Nur vdr-1.7.14.orig/libsi/Makefile vdr-1.7.14/libsi/Makefile
 -   libsi/util.h libsi/si.h libsi/section.h libsi/descriptor.h libsi/headers.h libsi/Makefile libsi/gendescr.pl
 +   libsi/util.h libsi/si.h libsi/section.h libsi/descriptor.h libsi/headers.h libsi/Makefile libsi/gendescr.pl \
 +   libsi/dish.c
-diff -Nur vdr-1.7.14.orig/libsi/si.c vdr-1.7.14/libsi/si.c
---- vdr-1.7.14.orig/libsi/si.c	2010-02-13 05:31:52.000000000 -0500
-+++ vdr-1.7.14/libsi/si.c	2010-03-28 12:57:06.000000000 -0400
+diff -Nur vdr-1.7.12.orig/libsi/si.c vdr-1.7.12/libsi/si.c
+--- vdr-1.7.12.orig/libsi/si.c	2009-12-05 11:20:12.000000000 -0500
++++ vdr-1.7.12/libsi/si.c	2010-01-31 13:07:36.000000000 -0500
 @@ -17,6 +17,7 @@
  #include <stdlib.h> // for broadcaster stupidity workaround
  #include <string.h>
@@ -659,7 +641,7 @@ diff -Nur vdr-1.7.14.orig/libsi/si.c vdr-1.7.14/libsi/si.c
  
  namespace SI {
  
-@@ -606,6 +607,10 @@
+@@ -605,6 +606,10 @@
           case ExtensionDescriptorTag:
              d=new ExtensionDescriptor();
              break;
@@ -670,9 +652,9 @@ diff -Nur vdr-1.7.14.orig/libsi/si.c vdr-1.7.14/libsi/si.c
  
           //note that it is no problem to implement one
           //of the unimplemented descriptors.
-diff -Nur vdr-1.7.14.orig/libsi/si.h vdr-1.7.14/libsi/si.h
---- vdr-1.7.14.orig/libsi/si.h	2010-02-13 05:31:34.000000000 -0500
-+++ vdr-1.7.14/libsi/si.h	2010-03-28 12:57:06.000000000 -0400
+diff -Nur vdr-1.7.12.orig/libsi/si.h vdr-1.7.12/libsi/si.h
+--- vdr-1.7.12.orig/libsi/si.h	2009-12-06 06:37:35.000000000 -0500
++++ vdr-1.7.12/libsi/si.h	2010-01-31 13:07:36.000000000 -0500
 @@ -122,6 +122,9 @@
                 AdaptationFieldDataDescriptorTag = 0x70,
                 ServiceIdentifierDescriptorTag = 0x71,
@@ -683,22 +665,43 @@ diff -Nur vdr-1.7.14.orig/libsi/si.h vdr-1.7.14/libsi/si.h
    // defined by ETSI (EN 300 468) v 1.7.1
                 DefaultAuthorityDescriptorTag = 0x73,
                 RelatedContentDescriptorTag = 0x74,
-diff -Nur vdr-1.7.14.orig/pat.c vdr-1.7.14/pat.c
---- vdr-1.7.14.orig/pat.c	2010-03-06 07:00:30.000000000 -0500
-+++ vdr-1.7.14/pat.c	2010-03-28 12:58:18.000000000 -0400
-@@ -448,7 +448,7 @@
+diff -Nur vdr-1.7.12.orig/pat.c vdr-1.7.12/pat.c
+--- vdr-1.7.12.orig/pat.c	2010-01-01 10:40:05.000000000 -0500
++++ vdr-1.7.12/pat.c	2010-01-31 13:07:36.000000000 -0500
+@@ -447,6 +447,29 @@
+                          }
                        }
                        break;
-               case 0x81: // STREAMTYPE_USER_PRIVATE
--                      if (Channel->IsAtsc()) { // ATSC AC-3
-+                      { // ATSC AC-3
-                          char lang[MAXLANGCODE1] = { 0 };
-                          SI::Descriptor *d;
-                          for (SI::Loop::Iterator it; (d = stream.streamDescriptors.getNext(it)); ) {
-diff -Nur vdr-1.7.14.orig/skinclassic.c vdr-1.7.14/skinclassic.c
---- vdr-1.7.14.orig/skinclassic.c	2010-02-13 08:44:48.000000000 -0500
-+++ vdr-1.7.14/skinclassic.c	2010-03-28 12:57:06.000000000 -0400
-@@ -374,6 +374,13 @@
++              case 0x81: // DN/ATSC AC-3
++                      {
++                      char lang[MAXLANGCODE1] = { 0 };
++                      SI::Descriptor *d;
++                      for (SI::Loop::Iterator it; (d = stream.streamDescriptors.getNext(it)); ) {
++                          switch (d->getDescriptorTag()) {
++                            case SI::ISO639LanguageDescriptorTag: {
++                                 SI::ISO639LanguageDescriptor *ld = (SI::ISO639LanguageDescriptor *)d;
++                                 strn0cpy(lang, I18nNormalizeLanguageCode(ld->languageCode), MAXLANGCODE1);
++                                 }
++                                 break;
++                            default: ;
++                            }
++                          delete d;
++                          }
++                      if (NumDpids < MAXDPIDS) {
++                         Dpids[NumDpids] = esPid;
++                         strn0cpy(DLangs[NumDpids], lang, MAXLANGCODE1);
++                         NumDpids++;
++                         }
++                      ProcessCaDescriptors = true;
++                      }
++                      break;
+               default: ;//printf("PID: %5d %5d %2d %3d %3d\n", pmt.getServiceId(), stream.getPid(), stream.getStreamType(), pmt.getVersionNumber(), Channel->Number());
+               }
+             if (ProcessCaDescriptors) {
+diff -Nur vdr-1.7.12.orig/skinclassic.c vdr-1.7.12/skinclassic.c
+--- vdr-1.7.12.orig/skinclassic.c	2010-01-03 09:55:10.000000000 -0500
++++ vdr-1.7.12/skinclassic.c	2010-01-31 13:07:36.000000000 -0500
+@@ -372,6 +372,13 @@
       textScroller.Set(osd, x1, y, x2 - x1, y3 - y, Event->Description(), font, Theme.Color(clrMenuEventDescription), Theme.Color(clrBackground));
       SetTextScrollbar();
       }
@@ -712,7 +715,7 @@ diff -Nur vdr-1.7.14.orig/skinclassic.c vdr-1.7.14/skinclassic.c
  }
  
  void cSkinClassicDisplayMenu::SetRecording(const cRecording *Recording)
-@@ -418,6 +425,13 @@
+@@ -416,6 +423,13 @@
       textScroller.Set(osd, x1, y, x2 - x1, y3 - y, Info->Description(), font, Theme.Color(clrMenuEventDescription), Theme.Color(clrBackground));
       SetTextScrollbar();
       }
@@ -726,10 +729,10 @@ diff -Nur vdr-1.7.14.orig/skinclassic.c vdr-1.7.14/skinclassic.c
  }
  
  void cSkinClassicDisplayMenu::SetText(const char *Text, bool FixedFont)
-diff -Nur vdr-1.7.14.orig/skinsttng.c vdr-1.7.14/skinsttng.c
---- vdr-1.7.14.orig/skinsttng.c	2010-02-13 08:30:59.000000000 -0500
-+++ vdr-1.7.14/skinsttng.c	2010-03-28 12:57:06.000000000 -0400
-@@ -631,6 +631,16 @@
+diff -Nur vdr-1.7.12.orig/skinsttng.c vdr-1.7.12/skinsttng.c
+--- vdr-1.7.12.orig/skinsttng.c	2010-01-03 09:51:35.000000000 -0500
++++ vdr-1.7.12/skinsttng.c	2010-01-31 13:07:36.000000000 -0500
+@@ -629,6 +629,16 @@
       osd->DrawEllipse  (x1, yb,             x2, yb + Roundness, frameColor, -2);
       SetTextScrollbar();
       }
@@ -746,7 +749,7 @@ diff -Nur vdr-1.7.14.orig/skinsttng.c vdr-1.7.14/skinsttng.c
  }
  
  void cSkinSTTNGDisplayMenu::SetRecording(const cRecording *Recording)
-@@ -685,6 +695,16 @@
+@@ -683,6 +693,16 @@
       osd->DrawEllipse  (x1, yb,             x2, yb + Roundness, frameColor, -2);
       SetTextScrollbar();
       }

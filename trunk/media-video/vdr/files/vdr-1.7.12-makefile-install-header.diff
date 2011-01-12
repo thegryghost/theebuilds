@@ -27,7 +27,7 @@ Index: vdr-1.5.13/Makefile
 +
 +install-header:
 +	@mkdir -p $(DESTDIR)$(INCDIR)/vdr $(DESTDIR)$(INCDIR)/vdr/libsi
-+	@cp *.h Make.config Make.global $(DESTDIR)$(INCDIR)/vdr
++	@cp *.h Make.config $(DESTDIR)$(INCDIR)/vdr
 +	@cp libsi/*.h $(DESTDIR)$(INCDIR)/vdr/libsi
 +
  # Source documentation:

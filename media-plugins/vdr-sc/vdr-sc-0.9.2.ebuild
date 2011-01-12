@@ -15,7 +15,7 @@ SLOT="0"
 LICENSE="GPL-2"
 KEYWORDS="x86 ~amd64"
 IUSE="seca irdeto conax viaccess cryptoworks nagra constcw shl \
-      cardclient smartcard vg2 nds nocache au_idle optimize"
+      cardclient smartcard vg2 nds optimize"
 
 DEPEND=">=media-video/vdr-1.5.0
 	dev-libs/openssl"
@@ -57,17 +57,17 @@ src_unpack() {
         sed -i -e "s:\$(COMPILER) \$(FLAGS) -DPARALLEL_MODE=\$(PARALLEL_MODE) -c:\$(COMPILER) \$(FLAGS) -c:g" FFdecsa/Makefile
 
 	epatch ${FILESDIR}/why_is_this_broken.diff
-	epatch ${FILESDIR}/newcamd_test.patch
+	epatch ${FILESDIR}/na_emm_upd-0.9.2.patch
 
-	if use nocache
-	then
-		epatch ${FILESDIR}/no_cache.patch
-	fi
+	#if use nocache
+	#then
+	#	epatch ${FILESDIR}/no_cache.patch
+	#fi
 
-	if use au_idle
-	then
-		epatch ${FILESDIR}/0.9.0/au_idle_0.9.0.patch
-	fi
+	#if use au_idle
+	#then
+	#	epatch ${FILESDIR}/0.9.0/au_idle_0.9.0.patch
+	#fi
 
 	if ! use seca
 	then

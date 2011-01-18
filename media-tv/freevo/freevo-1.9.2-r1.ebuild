@@ -2,39 +2,47 @@
 # Distributed under the terms of the GNU General Public License v2
 # $Header: /var/cvsroot/gentoo-x86/media-tv/freevo/freevo-1.8.2.ebuild,v 1.3 2009/01/09 06:39:13 patrick Exp $
 
+EAPI="2"
+
 inherit distutils eutils
 
 DESCRIPTION="Digital video jukebox (PVR, DVR)."
 HOMEPAGE="http://www.freevo.org/"
-SRC_URI="mirror://sourceforge/${PN}/${P}.tar.gz"
 
-IUSE="directfb cdparanoia doc dvd encode fbcon flac gphoto2 jpeg lame lirc matrox mixer nls snes sqlite tv tvtime vorbis xine xmame X"
+PV="${PV}b1"
+SRC_URI="mirror://sourceforge/${PN}/${PN}-${PV}.tar.bz2"
+
+IUSE="cdparanoia doc dvd encode flac gphoto2 jpeg lame lirc matrox mixer nls snes sqlite tv tvtime vorbis xine xmame X"
 
 LICENSE="GPL-2"
 SLOT="0"
 KEYWORDS="~amd64 ~ppc ~x86"
 
-# TODO: We could also use dev-libs/libxml2 when
-# built with USE=python alternatively to pyxml
-RDEPEND="dev-python/pygame
-	dev-python/pyxml
-	dev-python/elementtree
-	dev-python/imaging
-	dev-python/numeric
-	dev-python/beautifulsoup
-	>=dev-python/twisted-2.5
-	>=dev-python/twisted-web-0.6
+S=${WORKDIR}/${PN}-${PV}
 
-	>=dev-python/kaa-base-0.4.0
+RDEPEND=">=dev-lang/python-2.6
+	dev-python/pygame
+	dev-python/imaging
+	dev-python/beautifulsoup
+	>=dev-python/twisted-10
+	>=dev-python/twisted-web-10
+	net-zope/zope-interface
+
+	>=dev-python/kaa-base-0.6.0
 	>=dev-python/kaa-metadata-0.7.3
 	>=dev-python/kaa-imlib2-0.2.3
+	dev-python/kaa-display
 
 	media-video/mplayer
 	>=media-libs/libsdl-1.2.5
+	media-libs/sdl-image
+	x11-apps/xset
 
 	cdparanoia? ( media-sound/cdparanoia )
-	dvd? ( >=media-video/lsdvd-0.10
-		encode? ( media-video/dvdbackup ) )
+	dvd? (
+		>=media-video/lsdvd-0.10
+		encode? ( media-video/dvdbackup )
+	)
 	flac? ( media-libs/flac )
 	gphoto2? ( media-libs/libgphoto2 )
 	jpeg? ( media-libs/jpeg )
@@ -51,53 +59,23 @@ RDEPEND="dev-python/pygame
 	xmame? ( games-emulation/xmame )"
 
 pkg_setup() {
-	if use directfb ; then
-		use dvd && ! built_with_use media-libs/xine-lib directfb \
-			&& ewarn "media-libs/xine-lib was not built with directfb support"
-		! built_with_use media-video/mplayer directfb \
-			&& ewarn "media-video/mplayer was not built with directfb support"
-		if ! built_with_use media-libs/libsdl directfb ; then
-			eerror "media-libs/libsdl was not built with directdb support"
-			eerror "Please re-emerge libsdl with the directfb use flag"
-			die "directfb use flag specified but no support in libsdl and others"
-		fi
-	fi
-
-	if use fbcon ; then
-		use dvd && ! built_with_use media-libs/xine-lib fbcon \
-			&& ewarn "media-libs/xine-lib was not built with fbcon support"
-		! built_with_use media-video/mplayer fbcon \
-			&& ewarn "media-video/mplayer was not built with fbcon support"
-		if ! built_with_use media-libs/libsdl fbcon ; then
-			eerror "media-libs/libsdl was not built with fbcon support"
-			eerror "Please re-emerge libsdl with the fbcon use flag"
-			die "fbcon use flag specified but no support in media-libs/libsdl and others"
-		fi
-	fi
-
-	if ! { use X || use directfb || use fbcon || use matrox ; } ; then
-		echo
-		ewarn "WARNING - no video support specified in USE flags."
-		ewarn "Please be sure that media-libs/libsdl supports whatever video"
-		ewarn "support (X11, fbcon, directfb, etc) you plan on using."
-		echo
-	fi
-
 	if ! built_with_use -a media-libs/sdl-image jpeg png ; then
 		eerror "media-libs/sdl-image needs more image format support (USE=\"png jpeg\")"
 		die "re-emerge media-libs/sdl-image with the given USE flags"
 	fi
 }
 
-src_unpack() {
-	distutils_src_unpack
+src_prepare() {
+	cd ${S}
+	./autogen.sh nodocs
+	sed -e "s:__revision__ =:__revision__ = '11759':g" -i src/revision.py
 	#epatch "${FILESDIR}"/${P}-mplayerargs.patch
 	#epatch "${FILESDIR}"/freevo-1.8.2-mplayerargs.patch
-	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.3_new6.patch
-	epatch "${FILESDIR}"/ed/python2.6.patch
-	epatch "${FILESDIR}"/ed/record_fix.patch
-	epatch "${FILESDIR}"/ed/fix_thumbs_vdpau.patch
-	epatch "${FILESDIR}"/ed/update_python.patch
+#	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.3_new4.patch
+#	epatch "${FILESDIR}"/ed/python2.6.patch
+#	epatch "${FILESDIR}"/ed/record_fix.patch
+#	epatch "${FILESDIR}"/ed/fix_thumbs_vdpau.patch
+#	epatch "${FILESDIR}"/ed/update_python.patch
 }
 
 src_install() {
@@ -141,12 +119,6 @@ src_install() {
 	cd "${S}/src"
 	if [ "${PROFILE_ARCH}" == "xbox" ]; then
 		myconf="${myconf} --geometry=640x480 --display=x11"
-	elif use matrox && use directfb; then
-		myconf="${myconf} --geometry=768x576 --display=dfbmga"
-	elif use matrox ; then
-		myconf="${myconf} --geometry=768x576 --display=mga"
-	elif use directfb; then
-		myconf="${myconf} --geometry=768x576 --display=directfb"
 	elif use X ; then
 		myconf="${myconf} --geometry=800x600 --display=x11"
 	else

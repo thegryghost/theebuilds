@@ -1,28 +1,26 @@
 # Copyright 1999-2010 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
-# $Header: /var/cvsroot/gentoo-x86/media-video/mplayer/mplayer-1.0_rc4_p20101219.ebuild,v 1.1 2010/12/19 10:54:52 scarabeus Exp $
+# $Header: $
 
 EAPI=3
 
-ESVN_REPO_URI="svn://svn.mplayerhq.hu/mplayer/trunk"
-[[ ${PV} = *9999* ]] && SVN_ECLASS="subversion" || SVN_ECLASS=""
+[[ ${PV} = *9999* ]] && VCS_ECLASS="git" || VCS_ECLASS=""
 
-inherit toolchain-funcs eutils flag-o-matic multilib base ${SVN_ECLASS}
+inherit toolchain-funcs eutils flag-o-matic multilib base ${VCS_ECLASS}
 
-# BUMP ME PLZ, NO COOKIES OTHERWISE
-[[ ${PV} != *9999* ]] && MPLAYER_REVISION=SVN-r32719
+namesuf="${PN/mplayer/}"
 
 IUSE="3dnow 3dnowext +a52 aalib +alsa altivec aqua +ass bidi bindist bl bluray
-bs2b +cddb +cdio cdparanoia cpudetection custom-cpuopts debug dga +dirac
-directfb doc +dts +dv dvb +dvd +dvdnav dxr3 +enca +encode esd +faac +faad fbcon
+bs2b +cddb +cdio cdparanoia cpudetection custom-cpuopts custom-cflags debug dga +dirac
+directfb doc +dts +dv dvb +dvd +dvdnav dxr3 +enca esd +faad fbcon
 ftp gif ggi gsm +iconv ipv6 jack joystick jpeg jpeg2k kernel_linux ladspa
 libcaca libmpeg2 lirc +live lzo mad md5sum +mmx mmxext mng +mp3 mpg123 nas
-+network nut openal amr +opengl +osdmenu oss png pnm pulseaudio pvr +quicktime
-radio +rar +real +rtc rtmp samba +shm +schroedinger sdl +speex sse sse2 ssse3
-tga +theora +tremor +truetype +toolame +twolame +unicode v4l v4l2 vdpau vidix
-+vorbis vpx win32codecs +X +x264 xanim xinerama +xscreensaver +xv +xvid xvmc
++network nut amr +opengl +osdmenu oss png pnm pulseaudio pvr +quicktime
+radio +rar +real +rtc rtmp samba +shm +schroedinger +hardcoded-tables sdl +speex sse sse2 ssse3
+tga +theora threads +tremor +truetype +unicode v4l v4l2 vdpau vidix
++vorbis vpx win32codecs +X xanim xinerama +xscreensaver +xv xvmc
 zoran"
-[[ ${PV} == *9999* ]] && IUSE+=" external-ffmpeg"
+IUSE+=" +ffmpeg-mt -external-ffmpeg symlink"
 
 VIDEO_CARDS="s3virge mga tdfx vesa"
 for x in ${VIDEO_CARDS}; do
@@ -35,14 +33,17 @@ FONT_URI="
 	mirror://mplayer/releases/fonts/font-arial-cp1250.tar.bz2
 "
 if [[ ${PV} == *9999* ]]; then
+	EGIT_REPO_URI="git://repo.or.cz/mplayer-build.git"
+	EGIT_PROJECT="${PN}-build"
 	RELEASE_URI=""
 else
-	RELEASE_URI="mirror://gentoo/${P}.tar.xz"
+	RELEASE_URI="http://rion-overlay.googlecode.com/files/${P}.tar.xz"
 fi
 SRC_URI="${RELEASE_URI}
-	!truetype? ( ${FONT_URI} )"
+	!truetype? ( ${FONT_URI} )
+"
 
-DESCRIPTION="Media Player for Linux"
+DESCRIPTION="Media Player for Linux, Uoti Urpala's fork"
 HOMEPAGE="http://www.mplayerhq.hu/"
 
 FONT_RDEPS="
@@ -54,7 +55,6 @@ X_RDEPS="
 	x11-libs/libXext
 	x11-libs/libXxf86vm
 "
-[[ ${PV} == *9999* ]] && RDEPEND+=" external-ffmpeg? ( media-video/ffmpeg )"
 # Rar: althrought -gpl version is nice, it cant do most functions normal rars can
 #	nemesi? ( net-libs/libnemesi )
 RDEPEND+="
@@ -85,14 +85,12 @@ RDEPEND+="
 	a52? ( media-libs/a52dec )
 	aalib? ( media-libs/aalib )
 	alsa? ( media-libs/alsa-lib )
-	amr? ( !bindist? ( media-libs/opencore-amr ) )
 	ass? ( ${FONT_RDEPS} >=media-libs/libass-0.9.10[enca?] )
 	bidi? ( dev-libs/fribidi )
 	bluray? ( media-libs/libbluray )
 	bs2b? ( media-libs/libbs2b )
 	cdio? ( dev-libs/libcdio )
 	cdparanoia? ( !cdio? ( media-sound/cdparanoia ) )
-	dirac? ( media-video/dirac )
 	directfb? ( dev-libs/DirectFB )
 	dts? ( media-libs/libdca )
 	dv? ( media-libs/libdv )
@@ -101,26 +99,15 @@ RDEPEND+="
 		>=media-libs/libdvdread-4.1.3
 		dvdnav? ( >=media-libs/libdvdnav-4.1.3 )
 	)
-	encode? (
-		!twolame? ( toolame? ( media-sound/toolame ) )
-		twolame? ( media-sound/twolame )
-		faac? ( !bindist? ( media-libs/faac ) )
-		mp3? ( media-sound/lame )
-		x264? ( >=media-libs/x264-0.0.20100423 )
-		xvid? ( media-libs/xvid )
-	)
 	esd? ( media-sound/esound )
 	enca? ( app-i18n/enca )
 	faad? ( media-libs/faad2 )
 	gif? ( media-libs/giflib )
-	gsm? ( media-sound/gsm )
 	iconv? ( virtual/libiconv )
 	jack? ( media-sound/jack-audio-connection-kit )
-	jpeg? ( virtual/jpeg )
-	jpeg2k? ( media-libs/openjpeg )
+	jpeg? ( media-libs/jpeg )
 	ladspa? ( media-libs/ladspa-sdk )
 	libcaca? ( media-libs/libcaca )
-	libmpeg2? ( media-libs/libmpeg2 )
 	lirc? ( app-misc/lirc )
 	live? ( media-plugins/live )
 	lzo? ( >=dev-libs/lzo-2 )
@@ -129,7 +116,6 @@ RDEPEND+="
 	mpg123? ( media-sound/mpg123 )
 	nas? ( media-libs/nas )
 	nut? ( >=media-libs/libnut-661 )
-	openal? ( media-libs/openal )
 	png? ( media-libs/libpng )
 	pnm? ( media-libs/netpbm )
 	pulseaudio? ( media-sound/pulseaudio )
@@ -139,16 +125,26 @@ RDEPEND+="
 			app-arch/rar
 		)
 	)
-	rtmp? ( media-video/rtmpdump )
 	samba? ( net-fs/samba )
-	schroedinger? ( media-libs/schroedinger )
 	sdl? ( media-libs/libsdl )
 	speex? ( media-libs/speex )
-	theora? ( media-libs/libtheora[encode?] )
+	theora? ( media-libs/libtheora )
 	truetype? ( ${FONT_RDEPS} )
 	vorbis? ( media-libs/libvorbis )
-	vpx? ( media-libs/libvpx )
 	xanim? ( media-video/xanim )
+	external-ffmpeg? (
+		>=media-video/ffmpeg-0.6_p25423[amr?,dirac?,gsm?,hardcoded-tables?,jpeg2k?,rtmp?,schroedinger?,threads?,vpx?]
+	)
+	!external-ffmpeg? (
+		amr? ( media-libs/opencore-amr )
+		dirac? ( media-video/dirac )
+		gsm? ( >=media-sound/gsm-1.0.12-r1 )
+		jpeg2k? ( >=media-libs/openjpeg-1.3-r2 )
+		rtmp? ( media-video/rtmpdump )
+		schroedinger? ( media-libs/schroedinger )
+		vpx? ( media-libs/libvpx )
+	)
+	symlink? ( !media-video/mplayer )
 "
 
 X_DEPS="
@@ -158,6 +154,7 @@ X_DEPS="
 ASM_DEP="dev-lang/yasm"
 DEPEND="${RDEPEND}
 	dev-util/pkgconfig
+	dev-lang/python
 	X? (
 		${X_DEPS}
 		dga? ( x11-proto/xf86dgaproto )
@@ -177,7 +174,7 @@ DEPEND="${RDEPEND}
 SLOT="0"
 LICENSE="GPL-2"
 if [[ ${PV} != *9999* ]]; then
-	KEYWORDS="~alpha ~amd64 ~arm ~hppa ~ia64 ~ppc ~ppc64 ~sparc ~x86 ~x86-fbsd ~amd64-linux ~x86-linux ~ppc-macos ~x64-macos ~x86-macos ~sparc-solaris ~x86-solaris"
+	KEYWORDS="~alpha ~amd64 ~arm ~hppa ~ia64 ~ppc ~ppc64 ~sparc ~x86 ~x86-fbsd ~amd64-linux ~x86-linux ~ppc-macos ~x86-macos ~sparc-solaris ~x86-solaris ~x64-macos"
 else
 	KEYWORDS=""
 fi
@@ -189,7 +186,7 @@ pkg_setup() {
 	if [[ ${PV} == *9999* ]]; then
 		elog
 		elog "This is a live ebuild which installs the latest from upstream's"
-		elog "subversion repository, and is unsupported by Gentoo."
+		elog "${VCS_ECLASS} repository, and is unsupported by Gentoo."
 		elog "Everything but bugs in the ebuild itself will be ignored."
 		elog
 	fi
@@ -222,11 +219,45 @@ pkg_setup() {
 		ewarn "please make sure your CPU optimization use flags (3dnow"
 		ewarn "3dnowext mmx mmxext sse sse2 ssse3) are properly set."
 	fi
+
+	if use ffmpeg-mt && use external-ffmpeg; then
+		ewarn "USE flags ffmpeg-mt and external-ffmpeg are not compatible, external-ffmpeg will be used."
+	fi
 }
 
 src_unpack() {
 	if [[ ${PV} = *9999* ]]; then
-		subversion_src_unpack
+		git_src_unpack
+
+		EGIT_REPO_URI="git://repo.or.cz/mplayer.git"
+		EGIT_PROJECT="${PN}"
+		S+="/mplayer"
+		git_fetch
+		S="${WORKDIR}/${P}"
+
+		if ! use external-ffmpeg; then
+			if use ffmpeg-mt; then
+				EGIT_BRANCH="mt"
+				EGIT_COMMIT="mt"
+				S+="/ffmpeg-mt"
+			else
+				S+="/ffmpeg"
+			fi
+			EGIT_REPO_URI="git://repo.or.cz/FFMpeg-mirror/mplayer-patches.git"
+			EGIT_PROJECT="${PN}-ffmpeg"
+			git_fetch
+			EGIT_BRANCH="master"
+			unset EGIT_COMMIT
+
+			cd "${S}"
+			EGIT_REPO_URI="git://git.mplayerhq.hu/libswscale"
+			EGIT_PROJECT="libswscale"
+			EGIT_COMMIT="$(git submodule status -- libswscale|sed -e 's/^-\(.*\) .*/\1/')"
+			S+="/${EGIT_PROJECT}"
+			git_fetch
+
+			S="${WORKDIR}/${P}"
+		fi
 
 		cd "${WORKDIR}"
 	else
@@ -242,24 +273,60 @@ src_unpack() {
 
 src_prepare() {
 	if [[ ${PV} = *9999* ]]; then
-		# Set SVN version manually
-		subversion_wc_info
-		sed -i -e "s/UNKNOWN/${ESVN_WC_REVISION}/" "${S}/version.sh" || die
+		git_src_prepare
+		# Set GIT version manually
+		pushd mplayer
+		echo "GIT-r$(git rev-list HEAD|wc -l)-$(git describe --always)" \
+			> VERSION || die "set vesrion failed"
+		popd
+
+		# remove internal libs and use system:
+		sed -e '/^mplayer: /s/libass//' -i Makefile || die "sed failed"
+		rm -rf \
+			libass \
+			mplayer/libfaad2 \
+			mplayer/libdvdcss \
+		|| die
+	fi
+
+	if use external-ffmpeg; then
+		sed -e '/^mplayer: /s/ffmpeg//' -i Makefile || die "sed failed"
 	else
-		# Set version #
-		sed -i -e "s/UNKNOWN/${MPLAYER_REVISION}/" "${S}/version.sh" || die
+		if use ffmpeg-mt; then
+			touch ffmpeg-mt-enabled || die "enable-mt failed"
+			rm -rf ffmpeg || die
+		else
+			rm -rf ffmpeg-mt || die
+		fi
+		sed -i \
+			-e "/'--cpu=host',/d" \
+			-e "/'--disable-debug',/d" \
+			-e "/'--enable-pthreads',/d" \
+			script/ffmpeg-config || die "sed failed"
 	fi
 
 	# fix path to bash executable in configure scripts
-	sed -i -e "1c\#!${EPREFIX}/bin/bash" configure version.sh || die
+	sed -i -e "1c\#!${EPREFIX}/bin/bash" \
+		ffmpeg*/configure ffmpeg*/version.sh \
+		mplayer/configure mplayer/version.sh \
+		|| ewarn
+
+	# We want mplayer${namesuf}
+	if [[ "${namesuf}" != "" ]]; then
+		pushd mplayer
+		sed -e "/elif linux ; then/a\  _exesuf=\"${namesuf}\"" \
+			-i configure || die "sed configure failed"
+		sed -e "/ -m 644 DOCS\/man\/en\/mplayer/i\	mv DOCS\/man\/en\/mplayer.1 DOCS\/man\/en\/mplayer${namesuf}.1" \
+			-e "/ -m 644 DOCS\/man\/\$(lang)\/mplayer/i\	mv DOCS\/man\/\$(lang)\/mplayer.1 DOCS\/man\/\$(lang)\/mplayer${namesuf}.1" \
+			-e "s/er.1/er${namesuf}.1/g" \
+			-i Makefile || die "sed Makefile failed"
+		sed -e "s/mplayer/mplayer${namesuf}/" \
+			-i TOOLS/midentify.sh || die "sed midentify failed"
+		popd
+	fi
 
 	base_src_prepare
-	epatch ${FILESDIR}/lavc_ac3_detect_20101009.patch
-	epatch ${FILESDIR}/demux_ts_h264.patch
-	epatch ${FILESDIR}/vdpau/vdpau_crop_02152010.patch
-	epatch ${FILESDIR}/vdpau/fix_deint_02202010.patch
-	#epatch ${FILESDIR}/vdpau/detect_int.patch
-	epatch ${FILESDIR}/live_seek5.patch
+	epatch ${FILESDIR}/misc.patch
 }
 
 src_configure() {
@@ -279,10 +346,8 @@ src_configure() {
 	###################
 	# disable svga since we don't want it
 	# disable arts since we don't have kde3
-	# always disable internal ass
 	myconf+="
 		--disable-svga --disable-svgalib_helper
-		--disable-ass-internal
 		--disable-arts
 		--disable-kai
 		$(use_enable network networking)
@@ -367,7 +432,7 @@ src_configure() {
 		if use radio && { use dvb || use v4l || use v4l2; }; then
 			myconf+="
 				--enable-radio
-				$(use_enable encode radio-capture)
+				--disable-radio-capture
 			"
 		else
 			myconf+="
@@ -393,30 +458,21 @@ src_configure() {
 	##########
 	myconf+=" --disable-musepack" # Use internal musepack codecs for SV7 and SV8 support
 	myconf+=" --disable-faad-internal" # always use system media-libs/faad2
-	myconf+=" --disable-libmpeg2-internal" # always use system media-libs/libmpeg2
-	use dirac || myconf+=" --disable-libdirac-lavc"
 	use dts || myconf+=" --disable-libdca"
 	if ! use mp3; then
 		myconf+="
 			--disable-mp3lame
-			--disable-mp3lame-lavc
 			--disable-mp3lib
 		"
 	fi
-	uses="a52 bs2b dv gsm lzo rtmp"
+	uses="a52 bs2b dv lzo"
 	for i in ${uses}; do
 		use ${i} || myconf+=" --disable-lib${i}"
 	done
-	use schroedinger || myconf+=" --disable-libschroedinger-lavc"
-	# Disable opencore-amr with bindist
-	# https://bugs.gentoo.org/show_bug.cgi?id=299405#c6
-	{ use amr && use !bindist ; } || myconf+=" --disable-libopencore_amrnb --disable-libopencore_amrwb"
-
 	uses="faad gif jpeg libmpeg2 live mad mng mpg123 png pnm speex tga theora xanim"
 	for i in ${uses}; do
 		use ${i} || myconf+=" --disable-${i}"
 	done
-	use jpeg2k || myconf+=" --disable-libopenjpeg"
 	if use vorbis || use tremor; then
 		use tremor || myconf+=" --disable-tremor-internal"
 		use vorbis || myconf+=" --disable-libvorbis"
@@ -427,26 +483,11 @@ src_configure() {
 			--disable-libvorbis
 		"
 	fi
-	use vpx || myconf+=" --disable-libvpx-lavc"
 	# Encoding
 	uses="faac x264 xvid toolame twolame"
-	if use encode; then
-		for i in ${uses}; do
-			use ${i} || myconf+=" --disable-${i}"
-		done
-		use faac || myconf+=" --disable-faac-lavc"
-		if use bindist && use faac; then
-			ewarn "faac is nonfree and cannot be distributed; disabling faac support."
-			myconf+=" --disable-faac --disable-faac-lavc"
-		fi
-	else
-		myconf+=" --disable-mencoder"
-		myconf+=" --disable-faac-lavc"
-		for i in ${uses}; do
-			myconf+=" --disable-${i}"
-			use ${i} && elog "Useflag \"${i}\" require \"encode\" useflag enabled to work."
-		done
-	fi
+	for i in ${uses}; do
+		myconf+=" --disable-${i}"
+	done
 
 	#################
 	# Binary codecs #
@@ -512,10 +553,11 @@ src_configure() {
 	################
 	# Audio Output #
 	################
-	uses="alsa esd jack ladspa nas openal"
+	uses="alsa esd jack ladspa nas"
 	for i in ${uses}; do
 		use ${i} || myconf+=" --disable-${i}"
 	done
+	#use openal && myconf+=" --enable-openal" # build fails
 	use pulseaudio || myconf+=" --disable-pulse"
 	if ! use radio; then
 		use oss || myconf+=" --disable-ossaudio"
@@ -560,7 +602,6 @@ src_configure() {
 	###########################
 	# X enabled configuration #
 	###########################
-	myconf+=" --disable-gui"
 	if use X; then
 		uses="dxr3 ggi xinerama"
 		for i in ${uses}; do
@@ -619,28 +660,109 @@ src_configure() {
 		"
 	fi
 
-	###################
-	# External FFmpeg #
-	###################
-	if [[ ${PV} == *9999* ]]; then
-		use external-ffmpeg && myconf+=" --disable-ffmpeg_a"
-	fi
-
-	myconf="--cc=$(tc-getCC)
+	common_options="
+		--cc=$(tc-getCC)
 		--host-cc=$(tc-getBUILD_CC)
+	"
+	myconf+="
 		--prefix=${EPREFIX}/usr
 		--confdir=${EPREFIX}/etc/mplayer
-		--datadir=${EPREFIX}/usr/share/mplayer
+		--datadir=${EPREFIX}/usr/share/mplayer${namesuf}
 		--libdir=${EPREFIX}/usr/$(get_libdir)
-		${myconf}"
+		"
 
-	CFLAGS="${CFLAGS}" ./configure ${myconf} || die "configure died"
+	echo "${common_options}" > common_options
+	echo "${myconf}" > mplayer_options
+
+	if ! use external-ffmpeg; then
+		local ffconf="
+			--enable-gpl
+			--enable-version3
+			--enable-postproc
+			--disable-stripping
+			"
+
+		# enabled by default
+		use debug || ffconf+=" --disable-debug"
+		use network || ffconf+=" --disable-network"
+
+		use custom-cflags && ffconf+=" --disable-optimizations"
+		use cpudetection && ffconf+=" --enable-runtime-cpudetect"
+
+		# Threads; we only support pthread for now but ffmpeg supports more
+		use threads || ffconf+=" --disable-pthreads"
+
+		# ffmpeg encoders
+		for i in faac mp3lame theora vorbis x264 xvid; do
+			ffconf+=" --disable-lib${i}"
+		done
+
+		# ffmpeg decoders
+		use amr && ffconf+=" --enable-libopencore-amrwb --enable-libopencore-amrnb"
+		for i in gsm dirac rtmp schroedinger speex vpx; do
+			use ${i} && ffconf+=" --enable-lib${i}"
+		done
+		use jpeg2k && ffconf+=" --enable-libopenjpeg"
+
+		# CPU features
+		for i in mmx ssse3 altivec ; do
+			use ${i} || ffconf+=" --disable-${i}"
+		done
+		use mmxext || ffconf+=" --disable-mmx2"
+		use 3dnow || ffconf+=" --disable-amd3dnow"
+		use 3dnowext || ffconf+=" --disable-amd3dnowext"
+		# disable mmx accelerated code if PIC is required
+		# as the provided asm decidedly is not PIC.
+		if gcc-specs-pie ; then
+			ffconf+=" --disable-mmx --disable-mmx2"
+		fi
+
+		# Try to get cpu type based on CFLAGS.
+		# Bug #172723
+		# We need to do this so that features of that CPU will be better used
+		# If they contain an unknown CPU it will not hurt since ffmpeg's configure
+		# will just ignore it.
+		for i in $(get-flag march) $(get-flag mcpu) $(get-flag mtune) ; do
+			[ "${i}" = "native" ] && i="host" # bug #273421
+			[[ ${i} = *-sse3 ]] && i="${i%-sse3}" # bug 283968
+			ffconf+=" --cpu=${i}"
+			break
+		done
+
+		# cross compile support
+		if tc-is-cross-compiler ; then
+			ffconf+=" --enable-cross-compile --arch=$(tc-arch-kernel) --cross-prefix=${CHOST}-"
+			case ${CHOST} in
+				*freebsd*)
+					ffconf+=" --target-os=freebsd"
+					;;
+				mingw32*)
+					ffconf+=" --target-os=mingw32"
+					;;
+				*linux*)
+					ffconf+=" --target-os=linux"
+					;;
+			esac
+		fi
+
+		# Misc stuff
+		use hardcoded-tables && ffconf+=" --enable-hardcoded-tables"
+
+		echo "${ffconf}" > ffmpeg_options
+	fi
+
+	sed -i \
+		-e 's/\t//g' \
+		-e 's/ --/\n--/g' \
+		-e '/^$/d' \
+		*_options || die "sed *_options failed"
 }
 
 src_compile() {
 	base_src_compile
 	# Build only user-requested docs if they're available.
 	if use doc ; then
+		pushd mplayer
 		# select available languages from $LINGUAS
 		LINGUAS=${LINGUAS/zh/zh_CN}
 		local ALLOWED_LINGUAS="cs de en es fr hu it pl ru zh_CN"
@@ -665,15 +787,17 @@ src_install() {
 		BINDIR="${ED}/usr/bin" \
 		LIBDIR="${ED}/usr/$(get_libdir)" \
 		CONFDIR="${ED}/etc/mplayer" \
-		DATADIR="${ED}/usr/share/mplayer" \
+		DATADIR="${ED}/usr/share/mplayer${namesuf}" \
 		MANDIR="${ED}/usr/share/man" \
 		INSTALLSTRIP="" \
 		install || die "emake install failed"
 
+	S+="/mplayer"
+	cd "${S}"
 	dodoc AUTHORS Changelog Copyright README etc/codecs.conf || die
 
 	docinto tech/
-	dodoc DOCS/tech/{*.txt,MAINTAINERS,mpsub.sub,playtree,TODO,wishlist} || die
+	dodoc DOCS/tech/{*.txt,mpsub.sub,playtree,TODO,wishlist} || die
 	docinto TOOLS/
 	dodoc TOOLS/* || die
 	if use real; then
@@ -691,55 +815,63 @@ src_install() {
 	fi
 
 	if ! use ass && ! use truetype; then
-		dodir /usr/share/mplayer/fonts
+		dodir /usr/share/mplayer${namesuf}/fonts
 		# Do this generic, as the mplayer people like to change the structure
 		# of their zips ...
 		for i in $(find "${WORKDIR}/" -type d -name 'font-arial-*'); do
-			cp -pPR "${i}" "${ED}/usr/share/mplayer/fonts"
+			cp -pPR "${i}" "${ED}/usr/share/mplayer${namesuf}/fonts"
 		done
 		# Fix the font symlink ...
-		rm -rf "${ED}/usr/share/mplayer/font"
-		dosym fonts/font-arial-14-iso-8859-1 /usr/share/mplayer/font
+		rm -rf "${ED}/usr/share/mplayer${namesuf}/font"
+		dosym fonts/font-arial-14-iso-8859-1 /usr/share/mplayer${namesuf}/font
 	fi
 
-	insinto /etc/mplayer
-	newins "${S}/etc/example.conf" mplayer.conf || die
-	doins "${S}/etc/input.conf" || die
-	if use osdmenu; then
-		doins "${S}/etc/menu.conf" || die
-	fi
+	if use symlink; then
+		insinto /etc/mplayer
+		newins "${S}/etc/example.conf" mplayer.conf || die
+		doins "${S}/etc/input.conf" || die
+		if use osdmenu; then
+			doins "${S}/etc/menu.conf" || die
+		fi
 
-	if use ass || use truetype; then
-		cat >> "${ED}/etc/mplayer/mplayer.conf" << _EOF_
+		if use ass || use truetype; then
+			cat >> "${ED}/etc/mplayer/mplayer.conf" << _EOF_
 fontconfig=1
 subfont-osd-scale=4
 subfont-text-scale=3
 _EOF_
-	fi
+		fi
 
-	# bug 256203
-	if use rar; then
-		cat >> "${ED}/etc/mplayer/mplayer.conf" << _EOF_
+		# bug 256203
+		if use rar; then
+			cat >> "${ED}/etc/mplayer/mplayer.conf" << _EOF_
 unrarexec=${EPREFIX}/usr/bin/unrar
 _EOF_
+		fi
+
+		dosym ../../../etc/mplayer/mplayer.conf /usr/share/mplayer${namesuf}/mplayer.conf
 	fi
 
-	dosym ../../../etc/mplayer/mplayer.conf /usr/share/mplayer/mplayer.conf
-	newbin "${S}/TOOLS/midentify.sh" midentify || die
+	newbin "${S}/TOOLS/midentify.sh" midentify${namesuf} || die
+
+	if [[ "${namesuf}" != "" ]] && use symlink; then
+		dosym "mplayer${namesuf}" /usr/bin/mplayer
+		dosym "midentify${namesuf}" /usr/bin/midentify
+	fi
 }
 
 pkg_preinst() {
-	[[ -d ${EROOT}/usr/share/mplayer/Skin/default ]] && \
-		rm -rf "${EROOT}/usr/share/mplayer/Skin/default"
+	[[ -d ${EROOT}/usr/share/mplayer${namesuf}/Skin/default ]] && \
+		rm -rf "${EROOT}/usr/share/mplayer${namesuf}/Skin/default"
 }
 
 pkg_postrm() {
 	# Cleanup stale symlinks
-	[ -L "${EROOT}/usr/share/mplayer/font" -a \
-			! -e "${EROOT}/usr/share/mplayer/font" ] && \
-		rm -f "${EROOT}/usr/share/mplayer/font"
+	[ -L "${EROOT}/usr/share/mplayer${namesuf}/font" -a \
+			! -e "${EROOT}/usr/share/mplayer${namesuf}/font" ] && \
+		rm -f "${EROOT}/usr/share/mplayer${namesuf}/font"
 
-	[ -L "${EROOT}/usr/share/mplayer/subfont.ttf" -a \
-			! -e "${EROOT}/usr/share/mplayer/subfont.ttf" ] && \
-		rm -f "${EROOT}/usr/share/mplayer/subfont.ttf"
+	[ -L "${EROOT}/usr/share/mplayer${namesuf}/subfont.ttf" -a \
+			! -e "${EROOT}/usr/share/mplayer${namesuf}/subfont.ttf" ] && \
+		rm -f "${EROOT}/usr/share/mplayer${namesuf}/subfont.ttf"
 }

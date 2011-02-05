@@ -27,7 +27,8 @@ MY_PV="${PV%_p*}"
 MY_P="${PN}-${MY_PV}"
 S="${WORKDIR}/${MY_P}"
 
-EXT_P=vdr-1.7.12_ExtP-NG-v1.2-r1
+EXT_P=vdr-1.7.12_ExtP-NG-v1.3-r1
+#EXT_P=vdr-1.7.12_ExtP-NG-v1.2-r1
 #externer reel patch
 #EXT_REELPATCH=vdr-1.7.11_ehd_svn13986
 

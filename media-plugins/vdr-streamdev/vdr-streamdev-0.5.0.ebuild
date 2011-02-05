@@ -16,7 +16,7 @@ SRC_URI="http://streamdev.vdr-developer.org/releases/vdr-streamdev-${PV}.tgz"
 LICENSE="GPL-2"
 SLOT="0"
 KEYWORDS="~x86 ~amd64"
-IUSE="+client +server"
+IUSE="+client +server debug"
 
 DEPEND=">=media-video/vdr-1.6.0"
 RDEPEND="${DEPEND}"
@@ -57,6 +57,10 @@ src_prepare() {
 #	epatch "${FILESDIR}/streamdev-cvs221109-AddCallbackMsg.diff"
 #	epatch "${FILESDIR}/streamdev-cvs221109-AddFemonV1_1.diff"
 	fix_vdr_libsi_include server/livestreamer.c
+	if use debug; then
+		sed -e "s:DEFINES += -D_GNU_SOURCE:DEFINES += -D_GNU_SOURCE -DDEBUG:g" -i Makefile
+	fi
+
 }
 
 src_install() {

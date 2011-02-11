@@ -228,8 +228,8 @@ diff -Naur src/video/plugins/mplayer.py src-new/video/plugins/mplayer.py
 +
 +        if vg.tuner_type == 'streamdev' :
 +           rec_prog.tunerid = "%s:%s/%s" % (self.current_vg.vdev, self.current_vg.adev, rec_prog.tunerid) 
-+           if __type.find('_XN') != -1 :
-+               rec_prog.tunerid =  rec_prog.tunerid.replace('Extern', 'PES')
++           #if __type.find('_XN') != -1 :
++           rec_prog.tunerid =  rec_prog.tunerid.replace('EXT/', 'TS/')
 +           print "Recording http stream: %s" % (rec_prog.tunerid)
 +
 +        suffix = self.fc.getFileSuffix(__type)
@@ -433,13 +433,13 @@ diff -Naur src/video/plugins/mplayer.py src-new/video/plugins/mplayer.py
 +
 +        print 'cmd: %s' % (command)
 +        if self.stream_cmd != None :
-+            #self.stream_pid = subprocess.Popen([self.stream_cmd, '-O', self.stream_file, self.stream_url], stdout=PIPE)
++            self.stream_pid = subprocess.Popen([self.stream_cmd, '-O', self.stream_file, self.stream_url], stdout=PIPE)
 +
 +            #self.stream_pid = subprocess.Popen([self.stream_cmd, '-O', "-", self.stream_url], stdout=PIPE)
 +            #self.stream_pid2 = subprocess.Popen(['/usr/bin/ts_filter', self.stream_file], stdin=self.stream_pid.stdout)
 +
-+            self.stream_pid = subprocess.Popen([self.stream_cmd, '-O', '-', self.stream_url], stdout=PIPE)
-+            self.stream_pid2 = subprocess.Popen(['/usr/bin/ffmpeg', '-y','-i', '-', '-acodec', 'copy', '-vcodec', 'copy', '-f', 'matroska', self.stream_file], stdin=self.stream_pid.stdout)
++            #self.stream_pid = subprocess.Popen([self.stream_cmd, '-O', '-', self.stream_url], stdout=PIPE)
++            #self.stream_pid2 = subprocess.Popen(['/usr/bin/ffmpeg', '-y','-i', '-', '-acodec', 'copy', '-vcodec', 'copy', '-f', 'matroska', self.stream_file], stdin=self.stream_pid.stdout)
 +            #self.stream_pid2 = subprocess.Popen(['/usr/bin/ffmpeg', '-y','-i', '-', '-acodec', 'copy', '-vcodec', 'copy', '-f', 'matroska', self.stream_file, '-newaudio'], stdin=self.stream_pid.stdout)
 +
 +

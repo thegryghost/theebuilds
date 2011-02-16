@@ -18,6 +18,7 @@ IUSE="seca irdeto conax viaccess cryptoworks nagra constcw shl \
       cardclient smartcard vg2 nds optimize"
 
 DEPEND=">=media-video/vdr-1.5.0
+	<=media-video/vdr-1.7.7
 	dev-libs/openssl"
 
 OPT_MODE=${VDRSC_OPT_MODE:-PARALLEL_128_SSE2}

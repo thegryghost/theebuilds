@@ -19,8 +19,8 @@ KEYWORDS="~x86 ~amd64"
 IUSE="seca irdeto conax viaccess cryptoworks nagra constcw
       shl vg2 cardclient nocache optimize nds debug"
 
-DEPEND=">=media-video/vdr-1.4.6
-		dev-libs/openssl"
+DEPEND=">=media-video/vdr-1.7.12
+	>=dev-libs/openssl-0.9.7"
 
 S="${WORKDIR}/sc"
 

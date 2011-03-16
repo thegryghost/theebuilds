@@ -1,0 +1,265 @@
+--- cfg-mplayer.h.org	2011-03-16 11:44:34.156215628 -0400
++++ cfg-mplayer.h	2011-03-16 11:47:50.367565139 -0400
+@@ -38,6 +38,8 @@
+ #include "sub/unrar_exec.h"
+ 
+ 
++extern int live_pause_enable;
++
+ const m_option_t vd_conf[]={
+     {"help", "Use MPlayer with an appropriate video file instead of live partners to avoid vd.\n", CONF_TYPE_PRINT, CONF_NOCFG|CONF_GLOBAL, 0, 0, NULL},
+     {NULL, NULL, 0, 0, 0, 0, NULL}
+@@ -347,6 +349,8 @@
+     {"tvscan", "MPlayer was compiled without TV interface support.\n", CONF_TYPE_PRINT, 0, 0, 0, NULL},
+ #endif /* CONFIG_TV */
+ 
++    {"livepause", &live_pause_enable, CONF_TYPE_INT, CONF_RANGE, 0, 60, NULL},
++
+     {"list-properties", &list_properties, CONF_TYPE_FLAG, CONF_GLOBAL, 0, 1, NULL},
+     {"identify", &mp_msg_levels[MSGT_IDENTIFY], CONF_TYPE_FLAG, CONF_GLOBAL, 0, MSGL_V, NULL},
+     {"-help", help_text, CONF_TYPE_PRINT, CONF_NOCFG|CONF_GLOBAL, 0, 0, NULL},
+--- libmpdemux/demux_lavf.c.org	2011-03-16 11:44:55.645692022 -0400
++++ libmpdemux/demux_lavf.c	2011-03-16 11:47:50.374565296 -0400
+@@ -22,6 +22,7 @@
+ #include <stdlib.h>
+ // #include <unistd.h>
+ #include <limits.h>
++#include <sys/stat.h>
+ 
+ #include "config.h"
+ #include "mp_msg.h"
+@@ -80,6 +81,23 @@
+     int nb_streams_last;
+ }lavf_priv_t;
+ 
++static void _mp_update_end(stream_t *stream)
++{
++    if (stream && stream->url)
++    {
++        struct stat st1;
++        memset(&st1, 0, sizeof(struct stat));
++        stat(stream->url, &st1);
++
++//        printf("--- updating filesize: %s\n", stream->url);
++        if (st1.st_size > stream->end_pos)
++        {
++//            printf("------------ ***** Updating end_pos: %" PRId64 " with %" PRId64 "\n", stream->end_pos, st1.st_size);
++            stream->end_pos = st1.st_size;
++        }
++    }
++}
++
+ static int mp_read(void *opaque, uint8_t *buf, int size) {
+     demuxer_t *demuxer = opaque;
+     stream_t *stream = demuxer->stream;
+@@ -97,6 +115,7 @@
+     stream_t *stream = demuxer->stream;
+     int64_t current_pos;
+     mp_msg(MSGT_HEADER,MSGL_DBG2,"mp_seek(%p, %"PRId64", %d)\n", stream, pos, whence);
++    _mp_update_end(stream);
+     if(whence == SEEK_CUR)
+         pos +=stream_tell(stream);
+     else if(whence == SEEK_END && stream->end_pos > 0)
+--- libmpdemux/demux_mkv.c.org	2011-03-16 11:45:00.077790274 -0400
++++ libmpdemux/demux_mkv.c	2011-03-16 11:47:50.377565362 -0400
+@@ -57,6 +57,8 @@
+ #include "libavutil/intreadwrite.h"
+ #include "libavutil/avstring.h"
+ 
++extern int live_pause_enable;
++
+ static const unsigned char sipr_swaps[38][2] = {
+     {0,63},{1,22},{2,44},{3,90},{5,81},{7,31},{8,86},{9,58},{10,36},{12,68},
+     {13,39},{14,73},{15,53},{16,69},{17,57},{19,88},{20,34},{21,71},{24,46},
+@@ -2162,8 +2164,12 @@
+         }
+     }
+ 
+-    if (s->end_pos == 0 || (mkv_d->indexes == NULL && index_mode < 0))
+-        demuxer->seekable = 0;
++    if (s->end_pos == 0 || (mkv_d->indexes == NULL && index_mode < 0)) {
++        if (live_pause_enable)
++            demuxer->seekable = 1;
++        else
++            demuxer->seekable = 0;
++    }
+     else {
+         demuxer->movi_start = s->start_pos;
+         demuxer->movi_end = s->end_pos;
+--- libmpdemux/demuxer.c.org	2011-03-16 11:44:39.885342640 -0400
++++ libmpdemux/demuxer.c	2011-03-16 11:47:50.369565185 -0400
+@@ -190,6 +190,10 @@
+     NULL
+ };
+ 
++
++double first_pts_hack = 0;
++int live_pause_enable=0;
++
+ void free_demuxer_stream(demux_stream_t *ds)
+ {
+     ds_free_packs(ds);
+@@ -904,6 +908,23 @@
+         if (!demux_fill_buffer(demux, ds))
+             return MP_NOPTS_VALUE;
+     }
++    if (live_pause_enable && !first_pts_hack)
++    {
++      if (ds && ds->first)
++      {
++           if (first_pts_hack == 0)
++               first_pts_hack = ds->first->pts;
++           else if (ds->first->pts <  first_pts_hack)
++               first_pts_hack = ds->first->pts;
++      }
++      if (ds && ds->current)
++      {
++           if (first_pts_hack == 0)
++               first_pts_hack = ds->current->pts;
++           else if (ds->first->pts <  first_pts_hack)
++               first_pts_hack = ds->current->pts;
++      }
++    }
+     // take pts from "current" if we never read from it.
+     if (ds->current && !ds->buffer_pos)
+         return ds->current->pts;
+@@ -1471,6 +1492,11 @@
+         get_time_ans = demuxer->stream_pts;
+     else if (sh_video)
+         get_time_ans = sh_video->pts;
++    if (0 && live_pause_enable)
++    {
++      if (get_time_ans - first_pts_hack > 0)
++          return (int)get_time_ans - first_pts_hack;
++    }
+     return (int) get_time_ans;
+ }
+ 
+--- mplayer.c.org	2011-03-16 11:44:51.149592350 -0400
++++ mplayer.c	2011-03-16 11:52:26.625688229 -0400
+@@ -154,6 +154,9 @@
+ double start_pts = MP_NOPTS_VALUE;
+ char *heartbeat_cmd;
+ 
++extern double first_pts_hack;
++extern int live_pause_enable;
++
+ m_config_t* mconfig;
+ 
+ //**************************************************************************//
+@@ -2651,6 +2651,65 @@
+ static int seek(MPContext *mpctx, double amount, int style)
+ {
+     current_module = "seek";
++    //printf("------- SEEK STYLE: %d, amount: %0.2f, len : %0.2f --------------\n", style, amount, demuxer_get_time_length(mpctx->demuxer));
++    if (live_pause_enable && style == 0)
++    {
++        sh_video_t *sh_video = mpctx->demuxer->video->sh;
++        stream_t *st = mpctx->stream;
++        double amount_org = amount, seek_1_second, size_now_to_end;
++        double new_pts = sh_video->pts - first_pts_hack;
++        off_t sz = 0;
++
++        seek_1_second = ((double)mpctx->demuxer->filepos / new_pts);
++
++        if (st)
++        {
++            (*st->control)(st,STREAM_CTRL_GET_SIZE, &sz);
++            if (sz > mpctx->demuxer->movi_end)
++               mpctx->demuxer->movi_end = sz;
++        }
++
++        if (st && amount > 0 && mpctx->demuxer->movi_end > mpctx->demuxer->filepos)
++        {
++            if (sh_video)
++            {
++                double adjust = 0, diff=0;
++                double time_now = (double)mpctx->demuxer->filepos / seek_1_second ;
++                double time_end = (double)mpctx->demuxer->movi_end / seek_1_second;
++
++                diff = time_end - time_now;
++                printf("..... filepos: %d, moviend: %d ------------ \n", mpctx->demuxer->filepos, mpctx->demuxer->movi_end);
++                printf("..... time_now: %0.2f, time_end: %0.2f, diff: %0.2f, amount: %0.2f ------------ \n", time_now, time_end, diff, amount);
++
++                if (amount >= diff+live_pause_enable || diff < amount+live_pause_enable)
++                {
++                    if (diff > live_pause_enable + 1)
++                    {
++                        amount = diff - (live_pause_enable+1);
++                        if (amount < 2)
++                        {
++                            set_osd_msg(OSD_MSG_TEXT, 1, osd_duration, "LIVE: %0.2f", diff);
++                            sleep(1);
++                            return -1;
++                        }
++                    }
++                    else
++                    {
++                        if (diff <= live_pause_enable)
++                        {
++                            int s_t = (live_pause_enable)-(diff/1) + 1;
++                            sleep(s_t);
++                        }
++
++                        set_osd_msg(OSD_MSG_TEXT, 1, osd_duration, "LIVE: %0.2f", diff);
++                        return -1;
++                    }
++                }
++            }
++        }
++    }
++    if (live_pause_enable) printf("Seeking amount: %0.2f, style: %d\n", amount, style);
++
+     if (demux_seek(mpctx->demuxer, amount, audio_delay, style) == 0)
+ 	return -1;
+ 
+@@ -3644,6 +3703,26 @@
+   mpctx->eof=PT_NEXT_ENTRY; goto goto_next_file;
+ }
+ 
++if (live_pause_enable && mpctx->stream && mpctx->demuxer)
++{
++    off_t sz = 0;
++    int count = 0;
++    double size_1_second = (((double)mpctx->demuxer->filepos / first_pts_hack) * 90000);
++
++    do
++    {
++        (*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
++        //printf("SZ: %d\n", sz);
++        sleep(1);
++        count++;
++        //if (count > live_pause_enable)
++        {
++            //printf("HMMMM: %d, %d, %0.2f, %0.2f\n", count, sz, size_1_second, (double)sz/size_1_second);
++            break;
++        }
++    } while( (int)(sz/size_1_second) < live_pause_enable );
++}
++
+ if (seek_to_sec) {
+     seek(mpctx, seek_to_sec, SEEK_ABSOLUTE);
+     end_at.pos += seek_to_sec;
+--- stream/stream_file.c.org	2011-03-16 11:44:44.652448318 -0400
++++ stream/stream_file.c	2011-03-16 11:47:50.372565252 -0400
+@@ -98,8 +98,18 @@
+     case STREAM_CTRL_GET_SIZE: {
+       off_t size;
+ 
+-      size = lseek(s->fd, 0, SEEK_END);
+-      lseek(s->fd, s->pos, SEEK_SET);
++      if (s->url)
++      {
++          struct stat st1;
++          stat(s->url, &st1);
++          size = st1.st_size;
++      }
++      else
++      {
++          size = lseek(s->fd, 0, SEEK_END);
++          lseek(s->fd, s->pos, SEEK_SET);
++      }
++
+       if(size != (off_t)-1) {
+         *((off_t*)arg) = size;
+         return 1;

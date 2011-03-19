@@ -5,9 +5,7 @@ inherit linux-mod
 
 DESCRIPTION="r8168 driver for Realtek 8111/8168 PCI-E NICs"
 HOMEPAGE="http://www.realtek.com.tw"
-SRC_URI="ftp://WebUser:nQJ4P7b@202.134.71.21/cn/nic/${P}.tar.bz2
-         ftp://WebUser:nQJ4P7b@66.104.77.132/cn/nic/${P}.tar.bz2
-         ftp://WebUser:nQJ4P7b@218.210.127.133/cn/nic/${P}.tar.bz2"
+SRC_URI="http://r8168.googlecode.com/files/${P}.tar.bz2"
 LICENSE="GPL-2"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"

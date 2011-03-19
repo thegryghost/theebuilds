@@ -221,6 +221,7 @@ src_prepare() {
 	EOT
 	eend 0
 
+	epatch "${FILESDIR}/buffer_increase.patch"
 	epatch "${FILESDIR}/${P}-makefile-install-header.diff"
 
 	if use dxr3; then

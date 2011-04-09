@@ -172,6 +172,7 @@ src_prepare() {
 	#applying maintainace-patches
 
 	epatch "${FILESDIR}"/vdr-1.7.9-dvb-api-test.diff
+	epatch "${FILESDIR}"/max_devs.patch
 
 	ebegin "Changing pathes for gentoo"
 

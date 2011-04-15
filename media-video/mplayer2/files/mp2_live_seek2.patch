@@ -171,7 +171,7 @@
 +
 +        set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "Buffering.. %0.2f", new_pts);
 +
-+        printf("HI0: %ld -- %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
++       //printf("HI0: %ld -- %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
 +		if(new_pts > live_pause_enable)
 +               	unpause_player(mpctx);
 +    }
@@ -258,7 +258,7 @@
 +	            double new_pts = 0;
 +        	    (*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
 +				new_pts = (double) (sz - mpctx->demuxer->filepos) / sh_video->pts;
-+        	    printf("HI: %ld %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
++        	    //printf("HI: %ld %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
 +				if(new_pts < live_pause_enable)
 +                	pause_player(mpctx);
 +			}

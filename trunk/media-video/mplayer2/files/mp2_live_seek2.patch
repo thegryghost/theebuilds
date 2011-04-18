@@ -145,21 +145,22 @@
          return 1;
 --- mplayer/mplayer.c.org	2011-03-24 22:08:03.324999998 -0400
 +++ mplayer/mplayer.c	2011-03-24 22:44:59.145999997 -0400
-@@ -112,6 +112,9 @@
+@@ -112,6 +112,10 @@
  
  char *heartbeat_cmd;
  
 +extern double first_pts_hack;
 +extern int live_pause_enable;
++int auto_pause = 0;
 +
  #ifdef HAVE_RTC
  #ifdef __linux__
  #include <linux/rtc.h>
-@@ -2886,6 +2889,23 @@
+@@ -2886,6 +2890,26 @@
  
      while ( (cmd = mp_input_get_cmd(mpctx->input, 20, 1)) == NULL
              || cmd->id == MP_CMD_SET_MOUSE_POS || cmd->pausing == 4) {
-+    if (live_pause_enable)
++    if (live_pause_enable && auto_pause)
 +    {
 +        off_t sz = 0;
 +		struct MPOpts *opts = &mpctx->opts;
@@ -173,13 +174,16 @@
 +
 +       //printf("HI0: %ld -- %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
 +		if(new_pts > live_pause_enable)
-+               	unpause_player(mpctx);
++		{
++			auto_pause = 0;
++			unpause_player(mpctx);
++		}
 +    }
 +
  	if (cmd) {
              cmd = mp_input_get_cmd(mpctx->input, 0, 0);
              run_command(mpctx, cmd);
-@@ -3129,6 +3149,64 @@
+@@ -3129,6 +3153,64 @@
      else if (seek.direction > 0)
          demuxer_style |= SEEK_FORWARD;
  
@@ -244,7 +248,7 @@
      int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
                                  demuxer_style);
      if (need_reset)
-@@ -3413,6 +3491,23 @@
+@@ -3413,6 +3495,26 @@
              }
          }
  
@@ -260,7 +264,10 @@
 +				new_pts = (double) (sz - mpctx->demuxer->filepos) / sh_video->pts;
 +        	    //printf("HI: %ld %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
 +				if(new_pts < live_pause_enable)
++				{
++					auto_pause = 1;
 +                	pause_player(mpctx);
++				}
 +			}
 +        }
 +
@@ -268,7 +275,7 @@
          bool frame_time_remaining = sleep_until_near_frame(mpctx,
                                                             &mpctx->time_frame,
                                                             &aq_sleep_time);
-@@ -4852,6 +4947,26 @@
+@@ -4852,6 +4954,26 @@
   mpctx->total_avsync_change = 0;
   mpctx->last_chapter_seek = -1;
  

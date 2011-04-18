@@ -2,6 +2,10 @@
 # Distributed under the terms of the GNU General Public License v2
 # $Header: /var/cvsroot/gentoo-x86/media-tv/freevo/freevo-1.8.2.ebuild,v 1.3 2009/01/09 06:39:13 patrick Exp $
 
+EAPI="3"
+PYTHON_DEPEND="2:2.5"
+PYTHON_USE_WITH="xml"
+
 inherit distutils eutils
 
 DESCRIPTION="Digital video jukebox (PVR, DVR)."
@@ -89,11 +93,10 @@ pkg_setup() {
 	fi
 }
 
-src_unpack() {
-	distutils_src_unpack
+src_prepare() {
 	#epatch "${FILESDIR}"/${P}-mplayerargs.patch
 	#epatch "${FILESDIR}"/freevo-1.8.2-mplayerargs.patch
-	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.3_new6.patch
+	epatch "${FILESDIR}"/ed/vdr_streamdev_1.8.3_new7.patch
 	epatch "${FILESDIR}"/ed/python2.6.patch
 	epatch "${FILESDIR}"/ed/record_fix.patch
 	epatch "${FILESDIR}"/ed/fix_thumbs_vdpau.patch

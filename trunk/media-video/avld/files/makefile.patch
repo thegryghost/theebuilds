@@ -1,0 +1,11 @@
+--- Makefile.org	2011-05-31 11:52:52.000000000 -0400
++++ Makefile	2011-05-31 11:53:04.000000000 -0400
+@@ -15,7 +15,7 @@
+ ifneq ($(KERNELRELEASE),)
+ obj-m	:= $(MODULE_NAME).o
+ 
+-EXTRA_CFLAGS += -I$(PWD)/../include
++EXTRA_CFLAGS += -I$(PWD)/../include -I/usr/include
+ 
+ # Second pass, the actual build.
+ else

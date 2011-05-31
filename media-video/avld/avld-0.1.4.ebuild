@@ -19,10 +19,13 @@ CONFIG_CHECK="VIDEO_DEV"
 MODULE_NAMES="avld(video:)"
 BUILD_TARGETS="all"
 
+DEPEND=">=sys-kernel/linux-headers-2.6.36.1"
+RDEPEND=$DEPEND
+
 src_unpack() {
 	unpack ${A}
 	cd ${S}
-	pwd
+	epatch ${FILESDIR}/makefile.patch
 	epatch ${FILESDIR}/avld_0.1.4.patch
 	epatch ${FILESDIR}/bad.patch
 }
@@ -49,7 +52,7 @@ pkg_preinst() {
 pkg_postinst() {
 	linux-mod_pkg_postinst
 
-	echo	
+	echo
 	einfo "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-="
 	einfo "Using:"
 	einfo "# modprobe avld width=640 height=480 fps=25"

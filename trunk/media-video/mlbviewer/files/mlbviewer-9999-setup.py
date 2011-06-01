@@ -53,10 +53,8 @@ else:
 		      'README',
 		      'REQUIREMENTS-2011.txt'])],
 		      
-		      packages = {
-			    'MLBviewer', 
-			    'test' 
-			    },
+		      packages = [ 'MLBviewer', 'test' ],
+		      
 	      package_dir = { '': '.' }
 	)
 

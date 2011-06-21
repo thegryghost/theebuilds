@@ -272,6 +272,7 @@ src_prepare() {
 	epatch ${FILESDIR}/vdpau/vdpau_crop_02152010.patch
 	epatch ${FILESDIR}/vdpau/fix_deint_02202010.patch
 	epatch ${FILESDIR}/live_seek7.patch
+	epatch ${FILESDIR}/mplayer_608cc.patch
 
 	base_src_prepare
 }

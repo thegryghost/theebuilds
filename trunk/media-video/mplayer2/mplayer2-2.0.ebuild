@@ -244,6 +244,7 @@ src_prepare() {
 	epatch "${FILESDIR}"/demux_ts_h264.patch
 	epatch "${FILESDIR}"/mp2_live_seek2.patch
 	epatch "${FILESDIR}"/mp2_vdpau_crop.patch
+	epatch "${FILESDIR}"/mplayer2_608cc.patch
 
 	base_src_prepare
 }

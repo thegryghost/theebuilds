@@ -13,7 +13,7 @@ SRC_URI="http://laugeo.free.fr/ameter-${PV}.tar.gz"
 LICENSE="GPL-2"
 
 SLOT="0"
-KEYWORDS="~x86"
+KEYWORDS="~x86 ~amd64"
 IUSE=""
 RDEPEND=">=media-libs/alsa-lib-1.0.11_rc2
 	media-libs/libsdl

@@ -1,0 +1,13 @@
+--- inputlircd.c.org	2011-07-04 17:39:26.000000000 -0400
++++ inputlircd.c	2011-07-04 17:37:43.000000000 -0400
+@@ -247,8 +247,8 @@
+ 		}
+ 	}
+ 
+-	if(!event.value) 
+-		return;
++//	if(!event.value) 
++//		return;
+ 
+ 	struct timeval current;
+ 	gettimeofday(&current, NULL);

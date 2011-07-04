@@ -43,7 +43,7 @@ KEYWORDS="~amd64 ~ppc ~x86"
 SLOT="0"
 LICENSE="GPL-2"
 
-COMMON_DEPEND="media-libs/jpeg
+COMMON_DEPEND="virtual/jpeg
 	sys-libs/libcap
 	>=media-libs/fontconfig-2.4.2
 	>=media-libs/freetype-2

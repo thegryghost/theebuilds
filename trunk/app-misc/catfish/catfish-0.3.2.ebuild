@@ -2,6 +2,8 @@
 # Distributed under the terms of the GNU General Public License v2
 # $Header: $
 
+inherit eutils
+
 EAPI="4"
 
 DESCRIPTION="GTK+2 frontend for different search engines (daemons)"
@@ -26,14 +28,17 @@ RDEPEND="${DEPEND}
 	strigi? ( app-misc/strigi )
 	tracker? ( app-misc/tracker )"
 
-export PREFIX="/usr"
+#export PREFIX="/usr"
 
-src_compile() {
-	sed -e "s:PREFIX=.*$::g" Makefile.in > Makefile
-	emake || die "Make failed"
+src_prepare() {
+	epatch ${FILESDIR}/configure.patch
 }
+#src_compile() {
+#	sed -e "s:PREFIX=.*$::g" Makefile.in > Makefile
+#	emake || die "Make failed"
+#}
 
-src_install() {
-	emake install DESTDIR="${D}" || die "Install failed"
-	dodoc AUTHORS ChangeLog README TODO
-}
+#src_install() {
+#	emake install DESTDIR="${D}" || die "Install failed"
+#	dodoc AUTHORS ChangeLog README TODO
+#}

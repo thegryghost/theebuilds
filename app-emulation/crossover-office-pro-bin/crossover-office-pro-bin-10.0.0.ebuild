@@ -24,9 +24,9 @@ RDEPEND="sys-libs/glibc
 	x11-libs/libXxf86vm
 	dev-util/desktop-file-utils
 	nas? ( media-libs/nas )
-	amd64? ( app-emulation/emul-linux-x86-xlibs )
-	media-libs/jpeg:62
-	media-libs/libpng:1.2"
+	amd64? ( app-emulation/emul-linux-x86-xlibs )"
+#	media-libs/jpeg:62
+#	media-libs/libpng:1.2"
 
 S=${WORKDIR}
 

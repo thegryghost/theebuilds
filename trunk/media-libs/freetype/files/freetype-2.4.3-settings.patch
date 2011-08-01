@@ -1,0 +1,144 @@
+diff -Naur freetype-2.4.3.orig/src/autofit/aflatin.c freetype-2.4.3/src/autofit/aflatin.c
+--- freetype-2.4.3.orig/src/autofit/aflatin.c	2010-11-17 09:43:52.648919790 +0100
++++ freetype-2.4.3/src/autofit/aflatin.c	2010-11-17 09:52:37.762050170 +0100
+@@ -497,7 +497,7 @@
+     FT_UInt       nn;
+ 
+     int checked_adjust_heights_env = 0;
+-    FT_Bool adjust_heights = FALSE;
++    FT_Bool adjust_heights = TRUE;
+ 
+     if ( checked_adjust_heights_env == 0 )
+     {
+@@ -514,6 +514,8 @@
+             adjust_heights = TRUE;
+           else if ( strcasecmp(adjust_heights_env, "yes") == 0)
+             adjust_heights = TRUE;
++          else
++            adjust_heights = FALSE;
+         }
+       }
+       checked_adjust_heights_env = 1;
+@@ -1551,7 +1553,7 @@
+ 
+ 
+     int checked_stem_snap_env = 0;
+-    FT_Bool stem_snap_light = FALSE;
++    FT_Bool stem_snap_light = TRUE;
+ 
+     if ( checked_stem_snap_env == 0 )
+     {
+@@ -1568,6 +1570,8 @@
+             stem_snap_light = TRUE;
+           else if ( strcasecmp(stem_snap_env, "yes") == 0)
+             stem_snap_light = TRUE;
++          else
++            stem_snap_light = FALSE;
+         }
+       }
+       checked_stem_snap_env = 1;
+@@ -2238,7 +2242,7 @@
+     int       e_strength = 0;
+ 
+     int checked_embolden_light_env = 0;
+-    FT_Bool embolden_light = FALSE;
++    FT_Bool embolden_light = TRUE;
+ 
+     if ( checked_embolden_light_env == 0 )
+     {
+@@ -2255,6 +2259,8 @@
+             embolden_light = TRUE;
+           else if ( strcasecmp(embolden_light_env, "yes") == 0)
+             embolden_light = TRUE;
++          else
++            embolden_light = FALSE;
+         }
+       }
+       checked_embolden_light_env = 1;
+diff -Naur freetype-2.4.3.orig/src/base/ftlcdfil.c freetype-2.4.3/src/base/ftlcdfil.c
+--- freetype-2.4.3.orig/src/base/ftlcdfil.c	2010-11-17 09:43:52.636925790 +0100
++++ freetype-2.4.3/src/base/ftlcdfil.c	2010-11-17 10:06:14.865079253 +0100
+@@ -157,10 +157,10 @@
+ 
+     FT_UInt   h;
+ 
+-    FT_UInt alignment_type = 0;
++    FT_UInt alignment_type = 2;
+     FT_UInt checked_alignment_type = 0;
+-    float pseudo_gamma_value = 1;
+-    float pseudo_gamma_lt = 0;
++    float pseudo_gamma_value = .7;
++    float pseudo_gamma_lt = 9;
+     FT_UInt checked_pseudo_gamma_value = 0;
+ 
+     if ( checked_alignment_type == 0)
+@@ -938,7 +938,7 @@
+     /* the values here sum up to a value larger than 256, */
+     /* providing a cheap gamma correction                 */
+     static FT_Byte  default_filter[5] =
+-                            { 0x10, 0x40, 0x70, 0x40, 0x10 };
++                            { 0x1c, 0x3a, 0x61, 0x3a, 0x1c };
+ 
+     int checked_filter_params_env = 0;
+ 
+diff -Naur freetype-2.4.3.orig/src/base/ftobjs.c freetype-2.4.3/src/base/ftobjs.c
+--- freetype-2.4.3.orig/src/base/ftobjs.c	2010-11-17 09:43:52.636925790 +0100
++++ freetype-2.4.3/src/base/ftobjs.c	2010-11-17 10:07:01.677661228 +0100
+@@ -564,7 +564,7 @@
+ 
+     TT_Face face2=(TT_Face)face;
+     int checked_auto_autohint_env;
+-    FT_Bool auto_autohint = FALSE;
++    FT_Bool auto_autohint = TRUE;
+ 
+     if ( !checked_auto_autohint_env )
+     {
+@@ -577,6 +577,7 @@
+           else if ( strcasecmp(auto_autohint_env, "1") == 0) auto_autohint = TRUE;
+           else if ( strcasecmp(auto_autohint_env, "on") == 0) auto_autohint = TRUE;
+           else if ( strcasecmp(auto_autohint_env, "yes") == 0) auto_autohint = TRUE;
++          else auto_autohint = FALSE;
+         }
+       }
+       checked_auto_autohint_env = 1;
+diff -Naur freetype-2.4.3.orig/src/base/ftoutln.c freetype-2.4.3/src/base/ftoutln.c
+--- freetype-2.4.3.orig/src/base/ftoutln.c	2010-11-17 09:43:52.640923790 +0100
++++ freetype-2.4.3/src/base/ftoutln.c	2010-11-17 10:10:00.983963229 +0100
+@@ -889,7 +889,7 @@
+     FT_Int      orientation;
+ 
+     int checked_enhanced_embolden_env = 0;
+-    FT_Bool enhanced_embolden = FALSE;
++    FT_Bool enhanced_embolden = TRUE;
+ 
+     if ( checked_enhanced_embolden_env == 0 )
+     {
+@@ -906,6 +906,8 @@
+             enhanced_embolden = TRUE;
+           else if ( strcasecmp(enhanced_embolden_env, "yes") == 0)
+             enhanced_embolden = TRUE;
++          else
++            enhanced_embolden = FALSE;
+         }
+       }
+       checked_enhanced_embolden_env = 1;
+diff -Naur freetype-2.4.3.orig/src/base/ftsynth.c freetype-2.4.3/src/base/ftsynth.c
+--- freetype-2.4.3.orig/src/base/ftsynth.c	2010-11-17 09:43:52.640923790 +0100
++++ freetype-2.4.3/src/base/ftsynth.c	2010-11-17 10:10:45.597645130 +0100
+@@ -89,7 +89,7 @@
+     FT_Pos      xstr, ystr;
+ 
+     int checked_enhanced_embolden_env = 0;
+-    FT_Bool enhanced_embolden = FALSE;
++    FT_Bool enhanced_embolden = TRUE;
+ 
+     if ( checked_enhanced_embolden_env == 0 )
+     {
+@@ -102,6 +102,7 @@
+           else if ( strcasecmp(enhanced_embolden_env, "1") == 0) enhanced_embolden = TRUE;
+           else if ( strcasecmp(enhanced_embolden_env, "on") == 0) enhanced_embolden = TRUE;
+           else if ( strcasecmp(enhanced_embolden_env, "yes") == 0) enhanced_embolden = TRUE;
++          else enhanced_embolden = FALSE;
+         }
+       }
+       checked_enhanced_embolden_env = 1;

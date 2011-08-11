@@ -1,6 +1,8 @@
 # Copyright 1999-2008 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
 # $Header: $
+inherit eutils versionator
+
 
 DESCRIPTION=""
 HOMEPAGE="http://monkey.org/~marius/pages/?page=trickle"
@@ -17,7 +19,8 @@ RDEPEND="dev-libs/libevent"
 src_unpack() {
 	unpack ${A}
 	cd "${S}"
-	sed -i '/#include <netinet\/in.h>/d' *.c || die
+	epatch ${FILESDIR}/trickle_1.07-9.diff
+#	sed -i '/#include <netinet\/in.h>/d' *.c || die
 }
 
 src_install() {

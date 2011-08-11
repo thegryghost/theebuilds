@@ -14,7 +14,8 @@ KEYWORDS="~amd64"
 IUSE=""
 
 DEPEND=""
-RDEPEND="dev-libs/libevent"
+RDEPEND="dev-libs/libevent
+		dev-libs/libbsd"
 
 src_unpack() {
 	unpack ${A}

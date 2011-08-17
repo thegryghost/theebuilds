@@ -224,7 +224,7 @@ src_prepare() {
 
 	base_src_prepare
 	epatch "${FILESDIR}"/20110705/demux_ts_h264.patch
-	epatch "${FILESDIR}"/20110705/mp2_live_seek2.patch
+	epatch "${FILESDIR}"/20110705/mp2_live_seek3.patch
 	epatch "${FILESDIR}"/20110705/mp2_vdpau_crop.patch
 #	epatch "${FILESDIR}"/mplayer2_608cc.patch
 }

@@ -60,6 +60,7 @@ X_RDEPS="
 # Rar: althrought -gpl version is nice, it cant do most functions normal rars can
 #	nemesi? ( net-libs/libnemesi )
 RDEPEND+="
+	x11-libs/libva
 	sys-libs/ncurses
 	app-arch/bzip2
 	sys-libs/zlib
@@ -743,6 +744,7 @@ _EOF_
 	echo "HI: ${ED}"
 	cd "${ED}/usr/bin"
 	for i in *;do mv "$i" "$i-vaapi";done
+	rm -rf "${ED}/usr/share"
 }
 
 pkg_preinst() {

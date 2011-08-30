@@ -275,6 +275,7 @@ src_prepare() {
 	epatch ../patches/mplayer-vdpau.patch
 
 	epatch ${FILESDIR}/demux_ts_h264.patch
+	epatch ${FILESDIR}/fix_ts.patch
 	epatch ${FILESDIR}/live_seek7.patch
 
 	base_src_prepare

@@ -1,0 +1,14 @@
+--- libmpdemux/mpeg_hdr.c.org	2011-08-29 17:23:56.000000000 -0400
++++ libmpdemux/mpeg_hdr.c	2011-08-29 17:27:41.000000000 -0400
+@@ -409,6 +409,11 @@
+ {
+   unsigned int n = 0, v, i, k, mbh;
+   int frame_mbs_only;
++  unsigned char * _tmp_buf = NULL;
++
++  _tmp_buf = malloc(len);
++  memcpy(_tmp_buf, buf, len);
++  buf = _tmp_buf;
+ 
+   len = mp_unescape03(buf, len);
+ 

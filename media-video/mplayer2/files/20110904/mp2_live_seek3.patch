@@ -239,11 +239,11 @@
 +            sh_video_t *sh_video = mpctx->demuxer->video->sh;
 +			if (sh_video->pts > 0 && first_pts_hack > 0 && sh_video->pts > first_pts_hack)
 +			{
-+	            double new_pts = 0;
++	            //double new_pts = 0;
 +        	    (*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
-+				new_pts = (double) (sz - mpctx->demuxer->filepos) / sh_video->pts;
++				//new_pts = (double) (sz - mpctx->demuxer->filepos) / sh_video->pts;
 +        	    //printf("HI: %ld %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
-+				if(new_pts < live_pause_enable)
++				if ((sz - mpctx->demuxer->filepos) < 700000)
 +				{
 +					auto_pause = 1;
 +                	pause_player(mpctx);

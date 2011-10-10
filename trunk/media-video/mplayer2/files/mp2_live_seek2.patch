@@ -252,7 +252,7 @@
              }
          }
  
-+        if (live_pause_enable && mpctx->stream && mpctx->demuxer)
++        if (0 && live_pause_enable && mpctx->stream && mpctx->demuxer)
 +        {
 +
 +            off_t sz = 0;
@@ -279,7 +279,7 @@
   mpctx->total_avsync_change = 0;
   mpctx->last_chapter_seek = -1;
  
-+if (live_pause_enable && mpctx->stream && mpctx->demuxer)
++if (0 && live_pause_enable && mpctx->stream && mpctx->demuxer)
 +{
 +    off_t sz = 0;
 +    int count = 0;

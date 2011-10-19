@@ -143,8 +143,8 @@
        if(size != (off_t)-1) {
          *((off_t*)arg) = size;
          return 1;
---- mplayer/mplayer.c.org	2011-03-24 22:08:03.324999998 -0400
-+++ mplayer/mplayer.c	2011-03-24 22:44:59.145999997 -0400
+--- mplayer/mplayer.c.org   2011-03-24 22:08:03.324999998 -0400
++++ mplayer/mplayer.c   2011-03-24 22:44:59.145999997 -0400
 @@ -112,6 +112,10 @@
  
  char *heartbeat_cmd;
@@ -183,7 +183,7 @@
  	if (cmd) {
              cmd = mp_input_get_cmd(mpctx->input, 0, 0);
              run_command(mpctx, cmd);
-@@ -3129,6 +3153,64 @@
+@@ -3129,6 +3153,70 @@
      else if (seek.direction > 0)
          demuxer_style |= SEEK_FORWARD;
  
@@ -195,6 +195,12 @@
 +        double amount_org = demuxer_amount, seek_1_second, size_now_to_end;
 +        double new_pts = sh_video->pts - first_pts_hack;
 +        off_t sz = 0;
++
++		if (sh_video->pts < first_pts_hack)
++		{
++			first_pts_hack = 0;
++			new_pts = sh_video->pts - first_pts_hack;
++		}
 +
 +        seek_1_second = ((double)mpctx->demuxer->filepos / new_pts);
 +
@@ -248,7 +254,7 @@
      int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
                                  demuxer_style);
      if (need_reset)
-@@ -3413,6 +3495,26 @@
+@@ -3413,6 +3501,26 @@
              }
          }
  
@@ -275,7 +281,7 @@
          bool frame_time_remaining = sleep_until_near_frame(mpctx,
                                                             &mpctx->time_frame,
                                                             &aq_sleep_time);
-@@ -4852,6 +4954,26 @@
+@@ -4852,6 +4960,26 @@
   mpctx->total_avsync_change = 0;
   mpctx->last_chapter_seek = -1;
  

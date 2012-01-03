@@ -123,18 +123,6 @@
      // take pts from "current" if we never read from it.
      if (ds->current && !ds->buffer_pos)
          return ds->current->pts;
-@@ -1471,6 +1492,11 @@
-         get_time_ans = demuxer->stream_pts;
-     else if (sh_video)
-         get_time_ans = sh_video->pts;
-+    if (0 && live_pause_enable)
-+    {
-+      if (get_time_ans - first_pts_hack > 0)
-+          return (int)get_time_ans - first_pts_hack;
-+    }
-     return (int) get_time_ans;
- }
- 
 --- stream/stream_file.c.org	2011-03-16 11:44:44.652448318 -0400
 +++ stream/stream_file.c	2011-03-16 11:47:50.372565252 -0400
 @@ -98,8 +98,18 @@

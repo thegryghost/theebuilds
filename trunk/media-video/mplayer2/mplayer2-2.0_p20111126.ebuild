@@ -240,6 +240,7 @@ src_prepare() {
 	epatch "${FILESDIR}"/20111126/mp2_live_seek3.patch
 	epatch "${FILESDIR}"/20110705/mp2_vdpau_crop.patch
 	epatch "${FILESDIR}"/20111126/stupid_assert.patch
+	epatch "${FILESDIR}"/mplayer2_608cc2.patch
 	epatch "${FILESDIR}"/fix_ts.patch
 
 	base_src_prepare

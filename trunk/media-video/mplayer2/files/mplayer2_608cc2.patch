@@ -155,7 +155,7 @@
                                  demuxer_style);
      if (need_reset)
 --- sub/sub_cc.c.org	2012-02-03 00:49:16.454013001 -0500
-+++ sub/sub_cc.c	2012-02-03 00:43:42.424013002 -0500
++++ sub/sub_cc.c	2012-02-03 22:52:46.121013001 -0500
 @@ -40,23 +40,91 @@
  #include "libvo/video_out.h"
  #include "sub.h"
@@ -267,7 +267,7 @@
  
  		buf->text[buf->lines-1] = NULL;
  		buf->lines--;
-@@ -114,12 +183,16 @@
+@@ -114,15 +183,23 @@
  	int i;
  	//printf("subcc_init(): initing...\n");
  	build_char_table();
@@ -288,7 +288,14 @@
  	initialized=1;
  }
  
-@@ -133,44 +206,54 @@
++void subcc_process_data(const uint8_t *inputdata, unsigned int len)
++{
++}
++
+ 
+ static void display_buffer(subtitle *buf)
+ {
+@@ -133,44 +210,54 @@
  
  static void append_char(char c)
  {
@@ -359,7 +366,7 @@
  }
  
  static int selected_channel(void)
-@@ -178,170 +261,624 @@
+@@ -178,170 +265,633 @@
      return subcc_enabled - 1;
  }
  
@@ -397,13 +404,16 @@
 +}
 +
 +uint8_t cc_handle_608_double(uint8_t c1, uint8_t c2)
- {
++{
 +    uint8_t c = 0;
 +    if (c2 >= 0x30 && c2 <= 0x3f)
 +        c = c2 + 0x50;
 +    return c;
 +}
 +
++
++static void cc_handle_608_command(uint8_t c1, uint8_t c2, DTVCC_DATA *dtv)
+ {
  
 -  static unsigned short int lastcode=0x0000;
 -  uint8_t c1 = data & 0x7f;
@@ -420,19 +430,16 @@
 -  {
 -	  channel = (c1 & 0x08) >> 3;
 -	  if (channel != (selected_channel() & 1))
-+static void cc_handle_608_command(uint8_t c1, uint8_t c2, DTVCC_DATA *dtv)
-+{
-+
 +	if (c1 == 0 && c2 == 0) // Not valid CC data
++		return;
++
++	if (c1 >= 0x01 && c1 <= 0x0E) // XDS, we don't care
  		return;
 -	  c1&=~0x08;
 -	  if(data!=lastcode)
 -	  {
 -	  	if(c2 & 0x40) {	/*PAC, Preamble Address Code */
 -			append_char('\n'); /*FIXME properly interpret PACs*/
-+
-+	if (c1 >= 0x01 && c1 <= 0x0E) // XDS, we don't care
-+		return;
 +
 +	if (c1 == 0x0F) // End of XDS block
 +		return;
@@ -505,8 +512,14 @@
 +		}
 +    	else if ((c1==0x14 || c1==0x1C) && (c2==0x25 || c2 == 0x26 || c2 == 0x27))
 +		{
++			// 0x25 = Rollup 2
++			// 0x26 = Rollup 3
++			// 0x27 = Rollup 4
++
 +			// Rollup mode
++			cc_lines = c2 - 0x23 + 1;
 +	        command = c2 - 0x23 + 5;
++//			printf("CC LINES: %d (0x%02X)\n", c2 - 0x23, c2);
 +		}
 +    	else if ((c1==0x14 || c1==0x1C) && c2==0x2D)
 +		{
@@ -528,9 +541,8 @@
 +					printf("608 CMD: %s\n", CAPTION_608_COMMAND_STR[command]);
 +				}
 +			}
- 		}
- 		else
--			switch(c1)
++		}
++		else
 +		{
 +			printf("-------------- UNKNOWN and INVALID [0x%02X 0x%02X\n", c1, c2);
 +		}
@@ -550,8 +562,9 @@
 +//			printf("empty list, processing cmd: 0x%02X\n", cc2);
 +			cc_handle_608_command(cc1, cc2, NULL);
 +			return NULL;
-+		}
-+		else
+ 		}
+ 		else
+-			switch(c1)
 +		{
 +			dtv_cc_field0 = data;
 +		}
@@ -955,7 +968,8 @@
 +
 +	uint8_t cc1, cc2;
 +	DTVCC_DATA * tmp = dtv_cc_field0, *tmp2 = NULL, *stop = NULL;
-+
+ 
+-void subcc_process_data(const uint8_t *inputdata, unsigned int len)
 +	dtv_cc_start = dtv_cc_end = NULL;
 +
 +	if (end && end->next)
@@ -971,8 +985,7 @@
 +			break;
 +	}
 +	dtv_cc_field0 = stop;
- 
--void subcc_process_data(const uint8_t *inputdata, unsigned int len)
++
 +	if (!end)
 +	{
 +		clear_buffer(non_display_mem);
@@ -981,8 +994,7 @@
 +}
 +
 +void subcc_cc_display(float pts)
- {
--	if(!subcc_enabled) return;
++{
 +/*
 +	DTVCC_DATA * tmp = NULL;
 +		printf("1\n");
@@ -1003,7 +1015,8 @@
 +}
 +
 +void subcc_process_userdata(const uint8_t *inputdata, unsigned int len, uint8_t type, uint64_t frameno, uint8_t frame_type)
-+{
+ {
+-	if(!subcc_enabled) return;
 +	if(!subcc_enabled)
 +	{
 +//		printf("subcc not enabled\n");
@@ -1086,6 +1099,7 @@
 +//										printf("[%" PRId64"] Add to 608(cc), CC1: 0x%02X, CC2: 0x%02X\n", frameno, cc1, cc2);
 +										if (cc1 == 0x14 && cc2 == 0x20)
 +										{
++											cc_mode = CC_POPON;
 +											if (dtv_cc_start && frameno > dtv_cc_start->frameno)
 +												dtv_cc_start = cc608;
 +											else if (!dtv_cc_start)
@@ -1093,8 +1107,10 @@
 +
 +//											printf("START OF POPUP: %" PRId64"\n", frameno);
 +										}
-+										else if (cc1 == 0x14 && cc2 == 0x2F)
++										else if (cc1 == 0x14 && (cc2 == 0x2F || cc2==0x25 || cc2 == 0x26 || cc2 == 0x27))
 +										{
++											if (cc2 != 0x2F)
++												cc_mode = CC_ROLLUP;
 +											added_count = 0;
 +											dtv_cc_end = cc608;
 +										}
@@ -1135,8 +1151,8 @@
 +	}
  }
 --- sub/sub_cc.h.org	2012-02-03 00:49:20.421013001 -0500
-+++ sub/sub_cc.h	2012-02-02 22:59:37.920013002 -0500
-@@ -21,9 +21,192 @@
++++ sub/sub_cc.h	2012-02-03 22:52:46.150013001 -0500
+@@ -21,9 +21,193 @@
  
  #include <stdint.h>
  
@@ -1322,11 +1338,11 @@
  extern int subcc_enabled;
  
  void subcc_init(void);
--void subcc_process_data(const uint8_t *inputdata, unsigned int len);
-+
+ void subcc_process_data(const uint8_t *inputdata, unsigned int len);
+ 
 +void subcc_cc_clr_buffer(DTVCC_DATA *);
 +void subcc_process_userdata(const uint8_t *, unsigned int, uint8_t, uint64_t, uint8_t);
 +void subcc_cc_haz_frame(uint64_t, uint8_t);
 +
- 
++
  #endif /* MPLAYER_SUB_CC_H */

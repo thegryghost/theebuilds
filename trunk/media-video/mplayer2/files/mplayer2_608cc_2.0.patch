@@ -139,7 +139,7 @@
                                  demuxer_style);
      if (need_reset)
 --- sub/sub_cc.c.org	2012-02-03 00:49:16.454013001 -0500
-+++ sub/sub_cc.c	2012-02-03 01:09:47.444013001 -0500
++++ sub/sub_cc.c	2012-02-03 22:52:46.121013001 -0500
 @@ -40,23 +40,91 @@
  #include "libvo/video_out.h"
  #include "sub.h"
@@ -350,7 +350,7 @@
  }
  
  static int selected_channel(void)
-@@ -178,170 +265,624 @@
+@@ -178,170 +265,633 @@
      return subcc_enabled - 1;
  }
  
@@ -496,8 +496,14 @@
 +		}
 +    	else if ((c1==0x14 || c1==0x1C) && (c2==0x25 || c2 == 0x26 || c2 == 0x27))
 +		{
++			// 0x25 = Rollup 2
++			// 0x26 = Rollup 3
++			// 0x27 = Rollup 4
++
 +			// Rollup mode
++			cc_lines = c2 - 0x23 + 1;
 +	        command = c2 - 0x23 + 5;
++//			printf("CC LINES: %d (0x%02X)\n", c2 - 0x23, c2);
 +		}
 +    	else if ((c1==0x14 || c1==0x1C) && c2==0x2D)
 +		{
@@ -1077,6 +1083,7 @@
 +//										printf("[%" PRId64"] Add to 608(cc), CC1: 0x%02X, CC2: 0x%02X\n", frameno, cc1, cc2);
 +										if (cc1 == 0x14 && cc2 == 0x20)
 +										{
++											cc_mode = CC_POPON;
 +											if (dtv_cc_start && frameno > dtv_cc_start->frameno)
 +												dtv_cc_start = cc608;
 +											else if (!dtv_cc_start)
@@ -1084,8 +1091,10 @@
 +
 +//											printf("START OF POPUP: %" PRId64"\n", frameno);
 +										}
-+										else if (cc1 == 0x14 && cc2 == 0x2F)
++										else if (cc1 == 0x14 && (cc2 == 0x2F || cc2==0x25 || cc2 == 0x26 || cc2 == 0x27))
 +										{
++											if (cc2 != 0x2F)
++												cc_mode = CC_ROLLUP;
 +											added_count = 0;
 +											dtv_cc_end = cc608;
 +										}
@@ -1126,7 +1135,7 @@
 +	}
  }
 --- sub/sub_cc.h.org	2012-02-03 00:49:20.421013001 -0500
-+++ sub/sub_cc.h	2012-02-03 01:09:25.884013001 -0500
++++ sub/sub_cc.h	2012-02-03 22:52:46.150013001 -0500
 @@ -21,9 +21,193 @@
  
  #include <stdint.h>

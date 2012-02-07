@@ -1,0 +1,38 @@
+--- mplayer.c.org	2011-12-14 01:12:07.000000000 -0500
++++ mplayer.c	2011-12-14 01:11:59.000000000 -0500
+@@ -2273,6 +2273,10 @@
+  * one second but only a packet with enough samples for half a second
+  * of playback between them.
+  */
++
++double last_apts_for_sync = 0;
++float previous_pts_correction = 0;
++
+ static void adjust_sync(struct MPContext *mpctx, double frame_time)
+ {
+     current_module = "av_sync";
+@@ -2288,6 +2292,24 @@
+     av_delay -= audio_delay;   // This much pts difference is desired
+ 
+     double change = av_delay * 0.1;
++
++//    printf("ED-- %0.2f -- %0.2f\n", default_max_pts_correction, previous_pts_correction);
++    if (default_max_pts_correction >= 0 || previous_pts_correction >= 0)
++    {
++        if (last_apts_for_sync > 0 && a_pts <= 0)
++        {
++           previous_pts_correction = default_max_pts_correction;
++           default_max_pts_correction = 0;
++  //  printf("ED1-- %0.2f -- %0.2f -- %0.2f\n", last_apts_for_sync, a_pts, default_max_pts_correction);
++        }
++        else if (default_max_pts_correction == 0 && a_pts > 0)
++        {
++            default_max_pts_correction = previous_pts_correction;
++            previous_pts_correction = 0;
++//    printf("ED1-- %0.2f -- %0.2f -- %0.2f\n", last_apts_for_sync, a_pts, default_max_pts_correction);
++        }
++        last_apts_for_sync = a_pts;
++    }
+     double max_change = default_max_pts_correction >= 0 ?
+         default_max_pts_correction : frame_time * 0.1;
+     if (change < -max_change)

@@ -1,0 +1,67 @@
+--- libvo/vo_vdpau.c.org	2011-12-02 00:42:37.000000000 -0500
++++ libvo/vo_vdpau.c	2011-12-02 00:40:08.000000000 -0500
+@@ -168,6 +168,13 @@
+     int                                index_data_size;
+     uint32_t                           palette[PALETTE_SIZE];
+ 
++ 
++    int                                crop_top;
++    int                                crop_bottom;
++    int                                crop_left;
++    int                                crop_right;
++    int                                prev_deint;;
++
+     // EOSD
+     // Pool of surfaces
+     struct eosd_bitmap_surface {
+@@ -380,10 +387,14 @@
+     vc->out_rect_vid.x1 = dst_rect.right;
+     vc->out_rect_vid.y0 = dst_rect.top;
+     vc->out_rect_vid.y1 = dst_rect.bottom;
+-    vc->src_rect_vid.x0 = src_rect.left;
+-    vc->src_rect_vid.x1 = src_rect.right;
++//    vc->src_rect_vid.x0 = src_rect.left;
++//    vc->src_rect_vid.x1 = src_rect.right;
++    vc->src_rect_vid.x0 = src_rect.left + vc->crop_left;
++    vc->src_rect_vid.x1 = src_rect.right + vc->crop_right;
+     vc->src_rect_vid.y0 = vc->flip ? src_rect.bottom : src_rect.top;
++    vc->src_rect_vid.y0 += vc->crop_top;
+     vc->src_rect_vid.y1 = vc->flip ? src_rect.top    : src_rect.bottom;
++    vc->src_rect_vid.y1 += vc->crop_bottom;
+     vc->border_x        = borders.left;
+     vc->border_y        = borders.top;
+ #ifdef CONFIG_FREETYPE
+@@ -1466,6 +1477,21 @@
+         return;
+     }
+ 
++    if (mpi->fields & MP_IMGFIELD_INTERLACED) {
++        if (vc->prev_deint)
++            vc->deint = vc->prev_deint;
++        else
++            vc->deint = 2;
++//        printf("MP_IMGFIELD_INTERLACED ON, type: %d\n", vc->deint);
++    }
++    else {
++//        printf("MP_IMGFIELD_INTERLACED OFF, prev_type: %d\n", vc->prev_deint);
++        if (vc->deint > 0)
++            vc->prev_deint = vc->deint;
++        vc->deint = 0;
++    }
++
++
+     if (IMGFMT_IS_VDPAU(vc->image_format)) {
+         rndr = mpi->priv;
+         reserved_mpi = mpi;
+@@ -1635,6 +1661,11 @@
+         {"queuetime_windowed", OPT_ARG_INT, &vc->flip_offset_window, NULL},
+         {"queuetime_fs", OPT_ARG_INT, &vc->flip_offset_fs, NULL},
+         {"output_surfaces", OPT_ARG_INT, &vc->num_output_surfaces, NULL},
++        {"crop_top",    OPT_ARG_INT,  &vc->crop_top,    NULL},
++        {"crop_bottom", OPT_ARG_INT,  &vc->crop_bottom, NULL},
++        {"crop_left",   OPT_ARG_INT,  &vc->crop_left,   NULL},
++        {"crop_right",  OPT_ARG_INT,  &vc->crop_right,  NULL},
++
+         {NULL}
+     };
+     if (subopt_parse(arg, subopts) != 0) {

@@ -1,0 +1,62 @@
+--- libmpdemux/mpeg_hdr.c.org	2011-08-29 23:21:54.751742715 -0400
++++ libmpdemux/mpeg_hdr.c	2011-08-29 23:21:33.257742707 -0400
+@@ -409,6 +409,10 @@
+ {
+   unsigned int n = 0, v, i, k, mbh;
+   int frame_mbs_only;
++  unsigned char * _tmp_buf = malloc(len);
++
++  memcpy(_tmp_buf, buf, len);
++  buf = _tmp_buf;
+ 
+   len = mp_unescape03(buf, len);
+ 
+@@ -465,6 +469,9 @@
+   if(getbits(buf, n++, 1))
+     n = h264_parse_vui(picture, buf, n);
+ 
++  if (_tmp_buf)
++    free(_tmp_buf);
++
+   return n;
+ }
+ 
+--- libmpdemux/demux_ts.c.org	2011-09-30 00:18:08.000000000 -0400
++++ libmpdemux/demux_ts.c	2011-09-30 00:17:22.000000000 -0400
+@@ -62,6 +62,8 @@
+ int ts_keep_broken=0;
+ off_t ts_probe = 0;
+ int audio_substream_id = -1;
++int first_apid = 0;
++int last_fscod = -1;
+ 
+ typedef enum
+ {
+@@ -835,11 +837,25 @@
+ 
+ 			if(is_audio)
+ 			{
+-				if((req_apid == -1) || (req_apid == es.pid))
++				int fscod = -1;
++				if (es.start[0] == 0x0b && es.start[1] == 0x77 && es.start[2] && es.start[3])
++				{
++					fscod = es.start[4] & 0x3F;
++				}
++
++				if(((req_apid == -1) || (req_apid == es.pid)) && !first_apid)
+ 				{
+ 					param->atype = IS_AUDIO(es.type) ? es.type : es.subtype;
+-					param->apid = es.pid;
++					first_apid = param->apid = es.pid;
+ 					audio_found = 1;
++					last_fscod = fscod;
++				}
++
++				if (last_fscod > 0 && fscod > 0 && fscod > last_fscod)
++				{
++					param->atype = IS_AUDIO(es.type) ? es.type : es.subtype;
++					req_apid = first_apid = param->apid = es.pid;
++					last_fscod = fscod;
+ 				}
+ 			}
+ 

@@ -1,0 +1,62 @@
+--- sub/sub.c.org	2012-02-07 15:15:35.145790386 -0500
++++ sub/sub.c	2012-02-07 15:20:02.174790926 -0500
+@@ -43,6 +43,7 @@
+ 
+ #define NEW_SPLITTING
+ 
++int sub_vdpau_osd_hack = 0;
+ 
+ // Structures needed for the new splitting algorithm.
+ // osd_text_t contains the single subtitle word.
+@@ -1106,6 +1107,7 @@
+ #endif
+ 
+ #ifdef CONFIG_FREETYPE
++	sub_vdpau_osd_hack = 0;
+     // here is the right place to get screen dimensions
+     if (((dxs != vo_image_width)
+ 	   && (subtitle_autoscale == 2 || subtitle_autoscale == 3))
+@@ -1150,6 +1152,7 @@
+       if(dxs!=obj->dxs || dys!=obj->dys || obj->flags&OSDFLAG_FORCE_UPDATE){
+         int vis=obj->flags&OSDFLAG_VISIBLE;
+ 	obj->flags&=~OSDFLAG_BBOX;
++	sub_vdpau_osd_hack = 1;
+ 	switch(obj->type){
+ #ifdef CONFIG_DVDNAV
+         case OSDTYPE_DVDNAV:
+--- libvo/vo_vdpau.c.org	2012-02-07 15:15:52.361792035 -0500
++++ libvo/vo_vdpau.c	2012-02-07 15:22:37.090790236 -0500
+@@ -56,6 +56,8 @@
+ 
+ #include "sub/ass_mp.h"
+ 
++extern int sub_vdpau_osd_hack;
++
+ #define WRAP_ADD(x, a, m) ((a) < 0 \
+                            ? ((x)+(a)+(m) < (m) ? (x)+(a)+(m) : (x)+(a)) \
+                            : ((x)+(a) < (m) ? (x)+(a) : (x)+(a)-(m)))
+@@ -1015,13 +1017,17 @@
+ 
+     // write source_data to osd_surface.
+     VdpOutputSurface osd_surface = vc->output_surfaces[vc->num_output_surfaces];
+-    vdp_st = vdp->
+-        output_surface_put_bits_indexed(osd_surface, VDP_INDEXED_FORMAT_I8A8,
+-                                        (const void *const*)&vc->index_data,
+-                                        &pitch, &output_indexed_rect_vid,
+-                                        VDP_COLOR_TABLE_FORMAT_B8G8R8X8,
+-                                        (void *)vc->palette);
+-    CHECK_ST_WARNING("Error when calling vdp_output_surface_put_bits_indexed");
++
++	if (sub_vdpau_osd_hack)
++	{
++	    vdp_st = vdp->
++    	    output_surface_put_bits_indexed(osd_surface, VDP_INDEXED_FORMAT_I8A8,
++        	                                (const void *const*)&vc->index_data,
++            	                            &pitch, &output_indexed_rect_vid,
++                	                        VDP_COLOR_TABLE_FORMAT_B8G8R8X8,
++                    	                    (void *)vc->palette);
++	    CHECK_ST_WARNING("Error when calling vdp_output_surface_put_bits_indexed");
++	}
+ 
+     VdpOutputSurfaceRenderBlendState blend_state = {
+         .struct_version = VDP_OUTPUT_SURFACE_RENDER_BLEND_STATE_VERSION,

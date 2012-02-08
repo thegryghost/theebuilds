@@ -18,15 +18,15 @@
 +	{
 +		if (subcc_enabled)
 +		{
-+//			display_buffer(NULL);
 +			subcc_cc_clr_buffer(NULL);
 +			subcc_enabled = 0;
++			sub_visibility = 0;
 +		}
 +		else
 +		{
 +			subcc_enabled = subcc_hack - 4;
++			sub_visibility = 1;
 +		}
-+		//printf("HERE: %d\n", subcc_enabled);
 +	    return M_PROPERTY_OK;
 +	}
 +
@@ -863,7 +863,7 @@
 +		DTVCC_DATA * tmp = dtv_cc_field0;
 +		while(tmp->next)
 +		{
-+			if (data->frameno > tmp->frameno && data->frameno < tmp->next->frameno)
++			if (data->frameno >= tmp->frameno && data->frameno < tmp->next->frameno)
  			{
 -				case 0x10:	break; // ext attribute
 -				case 0x11:

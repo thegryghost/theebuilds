@@ -1,5 +1,40 @@
---- sub/sub_cc.c.org	2012-02-03 00:49:16.454013001 -0500
-+++ sub/sub_cc.c	2012-02-03 22:52:46.121013001 -0500
+--- command.c.org	2012-02-07 19:47:43.000000000 -0500
++++ command.c	2012-02-07 19:49:41.000000000 -0500
+@@ -72,6 +72,9 @@
+ #include "mp_fifo.h"
+ #include "libavutil/avstring.h"
+ 
++extern int subcc_enabled;
++extern int subcc_hack;
++
+ static void rescale_input_coordinates(struct MPContext *mpctx, int ix, int iy,
+                                       double *dx, double *dy)
+ {
+@@ -1582,6 +1585,22 @@
+     int source = -1, reset_spu = 0;
+     int source_pos = -1;
+ 
++	if (subcc_hack)
++	{
++		if (subcc_enabled)
++		{
++//			display_buffer(NULL);
++			subcc_cc_clr_buffer(NULL);
++			subcc_enabled = 0;
++		}
++		else
++		{
++			subcc_enabled = subcc_hack - 4;
++		}
++		//printf("HERE: %d\n", subcc_enabled);
++	    return M_PROPERTY_OK;
++	}
++
+     update_global_sub_size(mpctx);
+     const int global_sub_size = mpctx->global_sub_size;
+ 
+--- sub/sub_cc.c.org	2012-02-07 19:47:59.000000000 -0500
++++ sub/sub_cc.c	2012-02-07 19:49:41.000000000 -0500
 @@ -40,23 +40,91 @@
  #include "libvo/video_out.h"
  #include "sub.h"
@@ -210,7 +245,7 @@
  }
  
  static int selected_channel(void)
-@@ -178,170 +265,633 @@
+@@ -178,170 +265,634 @@
      return subcc_enabled - 1;
  }
  
@@ -313,9 +348,9 @@
 +			clear_buffer(non_display_mem);
 +    	    command = EIA608_COMMAND_ENDM;
 +		}
-+    	else if ((c1==0x14 || c1==0x1C) && c2==0x29)
++    	else if ((c1==0x14 || c1==0x1C) && (c2==0x29 || c2 == 0x2B))
 +		{
-+			// Resume Direct Captioing (paint-on)
++			cc_mode = CC_POPON;
 +//			clear_buffer(non_display_mem);
 +    	    command = EIA608_COMMAND_PAINTON;
 +		}
@@ -834,6 +869,7 @@
 +	{
 +		clear_buffer(non_display_mem);
 +		clear_buffer(display_mem);
++		//display_buffer(display_mem);
 +	}
 +}
 +
@@ -994,8 +1030,8 @@
 +		break;
 +	}
  }
---- sub/sub_cc.h.org	2012-02-03 00:49:20.421013001 -0500
-+++ sub/sub_cc.h	2012-02-03 22:52:46.150013001 -0500
+--- sub/sub_cc.h.org	2012-02-07 19:49:16.000000000 -0500
++++ sub/sub_cc.h	2012-02-07 19:49:34.000000000 -0500
 @@ -21,9 +21,193 @@
  
  #include <stdint.h>
@@ -1190,20 +1226,21 @@
 +
 +
  #endif /* MPLAYER_SUB_CC_H */
---- mplayer.c.org	2012-02-07 01:48:16.000000000 -0500
-+++ mplayer.c	2012-02-07 01:49:21.000000000 -0500
-@@ -112,6 +112,10 @@
+--- mplayer.c.org	2012-02-07 19:47:35.000000000 -0500
++++ mplayer.c	2012-02-07 19:49:41.000000000 -0500
+@@ -112,6 +112,11 @@
  extern int live_pause_enable;
  int auto_pause = 0;
  
 +uint64_t temporal_frame_offset = 0, frame_count = 0, tmp_last_frameno=0;
 +int first_i_frame = -1;
 +int b_distance = -1, b_count = -1;
++int subcc_hack = 0;
 +
  #ifdef HAVE_RTC
  #ifdef __linux__
  #include <linux/rtc.h>
-@@ -2920,6 +2924,7 @@
+@@ -2920,6 +2925,7 @@
  
  static double update_video(struct MPContext *mpctx)
  {
@@ -1211,7 +1248,7 @@
      struct sh_video *sh_video = mpctx->sh_video;
      struct vo *video_out = mpctx->video_out;
      sh_video->vfilter->control(sh_video->vfilter, VFCTRL_SET_OSD_OBJ,
-@@ -2944,13 +2949,122 @@
+@@ -2944,13 +2950,127 @@
          struct demux_packet *pkt = ds_get_packet2(mpctx->d_video);
          if (pkt) {
              in_size = pkt->len;
@@ -1225,8 +1262,13 @@
              max_framesize = in_size;
 +
 +
++		if (subcc_enabled > 4)
++		{
++			subcc_hack = subcc_enabled;
++			subcc_enabled = 0;
++		}
 +//		printf("HMM: %d 0x%x\n", sh_video->format, sh_video->format);
-+		if (in_size > 8 && (sh_video->format == 0x3247504d || sh_video->format == 0x10000002) &&
++		if (subcc_enabled && in_size > 8 && (sh_video->format == 0x3247504d || sh_video->format == 0x10000002) &&
 +			packet[0] == 0x00 && packet[1] == 0x00 && packet[2] == 0x01)
 +		{
 +			uint64_t tmp_frameno = 0;
@@ -1335,7 +1377,7 @@
          current_module = "decode video";
          if (pts >= mpctx->hrseek_pts - .005)
              mpctx->hrseek_framedrop = false;
-@@ -3394,6 +3508,7 @@
+@@ -3394,6 +3514,7 @@
  		}
  	}
  	if (live_pause_enable) printf("Seeking amount: %0.2f, style: %d\n", demuxer_amount, demuxer_style);
@@ -1343,13 +1385,14 @@
  
      int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
                                  demuxer_style);
-@@ -3774,7 +3889,8 @@
-             update_teletext(sh_video, mpctx->demuxer, 0);
-             update_osd_msg(mpctx);
-             struct vf_instance *vf = sh_video->vfilter;
--            vf->control(vf, VFCTRL_DRAW_EOSD, mpctx->osd);
-+			if (!subcc_enabled)
-+	            vf->control(vf, VFCTRL_DRAW_EOSD, mpctx->osd);
-             vf->control(vf, VFCTRL_DRAW_OSD, mpctx->osd);
-             vo_osd_changed(0);
- 
+--- cfg-mplayer.h.org	2012-02-07 19:56:09.000000000 -0500
++++ cfg-mplayer.h	2012-02-07 19:56:18.000000000 -0500
+@@ -658,7 +658,7 @@
+     // specify IFO file for VOBSUB subtitle
+     {"ifo", &spudec_ifo, CONF_TYPE_STRING, 0, 0, 0, NULL},
+     // enable Closed Captioning display
+-    {"subcc", &subcc_enabled, CONF_TYPE_INT, CONF_RANGE, 0, 4, NULL},
++    {"subcc", &subcc_enabled, CONF_TYPE_INT, CONF_RANGE, 0, 255, NULL},
+     {"nosubcc", &subcc_enabled, CONF_TYPE_FLAG, 0, 1, 0, NULL},
+     {"overlapsub", &suboverlap_enabled, CONF_TYPE_FLAG, 0, 0, 2, NULL},
+     {"nooverlapsub", &suboverlap_enabled, CONF_TYPE_FLAG, 0, 0, 0, NULL},

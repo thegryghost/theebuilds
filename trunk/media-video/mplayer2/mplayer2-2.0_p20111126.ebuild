@@ -240,7 +240,7 @@ src_prepare() {
 	epatch "${FILESDIR}"/2.0_p20111126/mp2_new_live_seek.patch
 	epatch "${FILESDIR}"/2.0_p20111126/mp2_vdpau_crop.patch
 	epatch "${FILESDIR}"/2.0_p20111126/stupid_assert.patch
-#	epatch "${FILESDIR}"/2.0_p20111126/cc2.patch
+	epatch "${FILESDIR}"/2.0_p20111126/cc2.patch
 	epatch "${FILESDIR}"/vdpau_osd.patch
 	epatch "${FILESDIR}"/fix_ts.patch
 

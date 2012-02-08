@@ -1131,11 +1131,11 @@
 +						{
 +							int q;
 +							//printf("TABOFFSET: %d (%x)\n", cc2-0x20, cc2);
-+							for(q=0; q < cc2-0x20; q++)
-+							{
-+								append_char(' ');
-+								append_char(' ');
-+							}
++							//for(q=0; q < cc2-0x20; q++)
++							//{
++							//	append_char(' ');
++							//	append_char(' ');
++							//}
 +						}
 +						else
 +							printf("** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);

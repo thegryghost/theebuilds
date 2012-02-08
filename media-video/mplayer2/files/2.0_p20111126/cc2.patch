@@ -1,0 +1,1445 @@
+--- command.c.org	2012-02-07 19:47:43.000000000 -0500
++++ command.c	2012-02-07 19:49:41.000000000 -0500
+@@ -72,6 +72,9 @@
+ #include "mp_fifo.h"
+ #include "libavutil/avstring.h"
+ 
++extern int subcc_enabled;
++extern int subcc_hack;
++
+ static void rescale_input_coordinates(struct MPContext *mpctx, int ix, int iy,
+                                       double *dx, double *dy)
+ {
+@@ -1582,6 +1585,22 @@
+     int source = -1, reset_spu = 0;
+     int source_pos = -1;
+ 
++	if (subcc_hack)
++	{
++		if (subcc_enabled)
++		{
++//			display_buffer(NULL);
++			subcc_cc_clr_buffer(NULL);
++			subcc_enabled = 0;
++		}
++		else
++		{
++			subcc_enabled = subcc_hack - 4;
++		}
++		//printf("HERE: %d\n", subcc_enabled);
++	    return M_PROPERTY_OK;
++	}
++
+     update_global_sub_size(mpctx);
+     const int global_sub_size = mpctx->global_sub_size;
+ 
+@@ -2019,6 +2019,7 @@
+ static int mp_property_sub_visibility(m_option_t *prop, int action,
+                                       void *arg, MPContext *mpctx)
+ {
++	int tmp;
+     if (!mpctx->sh_video)
+         return M_PROPERTY_UNAVAILABLE;
+ 
+@@ -2032,7 +2033,23 @@
+         if (vo_spudec)
+             vo_osd_changed(OSDTYPE_SPU);
+     default:
+-        return m_property_flag(prop, action, arg, &sub_visibility);
++		tmp = m_property_flag(prop, action, arg, &sub_visibility);
++        if (subcc_hack && action == 1)
++        {
++            if (subcc_enabled)
++            {
++                subcc_cc_clr_buffer(NULL);
++                subcc_enabled = 0;
++
++            }
++            else
++            {
++
++                subcc_enabled = subcc_hack - 4;
++            }
++        }
++
++		return tmp;
+     }
+ }
+
+--- sub/sub_cc.h.org	2012-02-07 19:49:16.000000000 -0500
++++ sub/sub_cc.h	2012-02-07 19:49:34.000000000 -0500
+@@ -21,9 +21,193 @@
+ 
+ #include <stdint.h>
+ 
++
++static int EIA608_ROWDATA[] = {11,-1,1,2,3,4,12,13,14,15,5,6,7,8,9,10};
++
++#define EIA608_COMMAND_UNKNOWN				0x00
++#define EIA608_COMMAND_EDM					0x01 // Erase Display Memory
++#define EIA608_COMMAND_RCL					0x02 // Resume Caption Loading
++#define EIA608_COMMAND_EOC					0x03 // End of Caption
++#define EIA608_COMMAND_TAB1					0x04 // Taboffset 1
++#define EIA608_COMMAND_TAB2					0x05 // Taboffset 2
++#define EIA608_COMMAND_TAB3					0x06 // Taboffset 3
++#define EIA608_COMMAND_ROLLUP2				0x07 // CC Rollup, 2 Lines
++#define EIA608_COMMAND_ROLLUP3				0x08 // CC Rollup, 3 Lines
++#define EIA608_COMMAND_ROLLUP4				0x09 // CC Rollup, 4 Lines
++#define EIA608_COMMAND_CR					0x0A // Carriage Return
++#define EIA608_COMMAND_ENDM					0x0B // Erase Non-Display Memory
++#define EIA608_COMMAND_BS					0x0C // Backspace
++#define EIA608_COMMAND_RTD					0x0D // Resume Text Display
++#define EIA608_COMMAND_ALARMOFF				0x0E // Alarm Off
++#define EIA608_COMMAND_ALARMON				0x0F // Alarm On
++#define EIA608_COMMAND_PAINTON				0x10 // Alarm On
++
++
++#define EIA608_CC_CHANNEL1					0x14
++#define EIA608_CC_CHANNEL2					0x1C
++#define EIA608_CC_CHANNEL3					0x15
++#define EIA608_CC_CHANNEL4					0x1D
++
++static const char *CAPTION_608_CHANNEL_STR[] =
++{
++	"Channel 1",
++	"Channel 2",
++	"Channel 3",
++	"Channel 4",
++};
++
++#define EIA608_CC_MODE_POPUP				0x00
++#define EIA608_CC_MODE_ROLL2				0x01
++#define EIA608_CC_MODE_ROLL3				0x02
++#define EIA608_CC_MODE_ROLL4				0x03
++#define EIA608_CC_MODE_TEXT					0x04
++
++static const char *CAPTION_608_ROLLUP_STR[] =
++{
++	"Popup",
++	"Rollup - 2 Lines",
++	"Rollup - 3 Lines",
++	"Rollup - 4 Lines",
++	"Text",
++};
++
++#define EIA608_CC_COLOR_WHITE				0x00
++#define EIA608_CC_COLOR_GREEN				0x01
++#define EIA608_CC_COLOR_BLUE				0x02
++#define EIA608_CC_COLOR_CYAN				0x03
++#define EIA608_CC_COLOR_RED					0x04
++#define EIA608_CC_COLOR_YELLOW				0x05
++#define EIA608_CC_COLOR_MAGENTA				0x06
++#define EIA608_CC_COLOR_USERDEF				0x07
++
++
++
++static const char *CAPTION_608_COLOR_STR[] =
++{
++	"White",
++	"Green",
++	"Blue",
++	"Cyan",
++	"Red",
++	"Yellow",
++	"Magenta",
++	"User Defined",
++};
++
++#define EIA608_FONT_REGULAR					0x00
++#define EIA608_FONT_ITALICS					0x01
++#define EIA608_FONT_UNDERLINED				0x02
++#define EIA608_FONT_UNDERLINED_ITALICS		0x03
++
++
++static const uint8_t EIA608_PAC_ATTR[][3]= // Color, font, ident
++{
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               0},  // 0x40 || 0x60 
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            0},  // 0x41 || 0x61
++    {EIA608_CC_COLOR_GREEN,     EIA608_FONT_REGULAR,               0},  // 0x42 || 0x62
++    {EIA608_CC_COLOR_GREEN,     EIA608_FONT_UNDERLINED,            0},  // 0x43 || 0x63
++    {EIA608_CC_COLOR_BLUE,      EIA608_FONT_REGULAR,               0},  // 0x44 || 0x64
++    {EIA608_CC_COLOR_BLUE,      EIA608_FONT_UNDERLINED,            0},  // 0x45 || 0x65
++    {EIA608_CC_COLOR_CYAN,      EIA608_FONT_REGULAR,               0},  // 0x46 || 0x66
++    {EIA608_CC_COLOR_CYAN,      EIA608_FONT_UNDERLINED,            0},  // 0x47 || 0x67
++    {EIA608_CC_COLOR_RED,       EIA608_FONT_REGULAR,               0},  // 0x48 || 0x68
++    {EIA608_CC_COLOR_RED,       EIA608_FONT_UNDERLINED,            0},  // 0x49 || 0x69
++    {EIA608_CC_COLOR_YELLOW,    EIA608_FONT_REGULAR,               0},  // 0x4a || 0x6a
++    {EIA608_CC_COLOR_YELLOW,    EIA608_FONT_UNDERLINED,            0},  // 0x4b || 0x6b
++    {EIA608_CC_COLOR_MAGENTA,   EIA608_FONT_REGULAR,               0},  // 0x4c || 0x6c
++    {EIA608_CC_COLOR_MAGENTA,   EIA608_FONT_UNDERLINED,            0},  // 0x4d || 0x6d
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_ITALICS,               0},  // 0x4e || 0x6e
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED_ITALICS,    0},  // 0x4f || 0x6f
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               0},  // 0x50 || 0x70
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            0},  // 0x51 || 0x71
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               4},  // 0x52 || 0x72
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            4},  // 0x53 || 0x73
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               8},  // 0x54 || 0x74
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            8},  // 0x55 || 0x75
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               12}, // 0x56 || 0x76
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            12}, // 0x57 || 0x77
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               16}, // 0x58 || 0x78
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            16}, // 0x59 || 0x79
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               20}, // 0x5a || 0x7a
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            20}, // 0x5b || 0x7b
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               24}, // 0x5c || 0x7c
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            24}, // 0x5d || 0x7d
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_REGULAR,               28}, // 0x5e || 0x7e
++    {EIA608_CC_COLOR_WHITE,     EIA608_FONT_UNDERLINED,            28}  // 0x5f || 0x7f
++
++};
++
++
++
++static const char *CAPTION_608_FONT_STR[] =
++{
++	"Regular",
++	"Italics",
++	"Underline",
++	"Underline + Italics"
++};
++
++
++
++//static const char *CAPTION_608_COMMAND_STR[16] =
++static const char *CAPTION_608_COMMAND_STR[] =
++{
++    "Unknown",
++    "Erase Display Memory",
++    "Resume Caption Loading",
++    "End of Caption",
++    "Tab Offset 1",
++    "Tab Offset 2",
++    "Tab Offset 3",
++    "Rollup (2 Lines)",
++    "Rollup (3 Lines)",
++    "Rollup (4 Lines)",
++    "Carriage Return",
++    "Erase Non-Display Memory",
++    "Backspace",
++    "Resume Display Text",
++    "Alarm Off",
++    "Alarm On",
++    "--- ** Paint On",
++};
++
++
++
++#define SUBCC_TYPE_DTVCC			0x01
++#define SUBCC_TYPE_SCTE20			0x02
++
++#define SUBCC_DATA_TYPE_PAIRS		0x01
++#define SUBCC_DATA_TYPE_STREAM		0x02
++
++struct bitstream_Struct
++{
++    uint32_t len;
++    uint8_t * stream;
++    uint32_t bit_offset;
++};
++typedef struct bitstream_Struct BITSTREAM;
++
++struct dtvcc_data
++{
++	uint8_t channel;
++	uint8_t cc1;
++	uint8_t cc2;
++	uint64_t frameno;
++	uint8_t type;
++//	uint8_t valid;
++	uint8_t processed;
++	struct dtvcc_data *next;
++};
++typedef struct dtvcc_data DTVCC_DATA;
++
+ extern int subcc_enabled;
+ 
+ void subcc_init(void);
+ void subcc_process_data(const uint8_t *inputdata, unsigned int len);
+ 
++void subcc_cc_clr_buffer(DTVCC_DATA *);
++void subcc_process_userdata(const uint8_t *, unsigned int, uint8_t, uint64_t, uint8_t);
++void subcc_cc_haz_frame(uint64_t, uint8_t);
++
++
+ #endif /* MPLAYER_SUB_CC_H */
+--- mplayer.c.org	2012-02-07 19:47:35.000000000 -0500
++++ mplayer.c	2012-02-07 19:49:41.000000000 -0500
+@@ -112,6 +112,11 @@
+ extern int live_pause_enable;
+ int auto_pause = 0;
+ 
++uint64_t temporal_frame_offset = 0, frame_count = 0, tmp_last_frameno=0;
++int first_i_frame = -1;
++int b_distance = -1, b_count = -1;
++int subcc_hack = 0;
++
+ #ifdef HAVE_RTC
+ #ifdef __linux__
+ #include <linux/rtc.h>
+@@ -2920,6 +2925,7 @@
+ 
+ static double update_video(struct MPContext *mpctx)
+ {
++	uint8_t *packet = NULL;
+     struct sh_video *sh_video = mpctx->sh_video;
+     struct vo *video_out = mpctx->video_out;
+     sh_video->vfilter->control(sh_video->vfilter, VFCTRL_SET_OSD_OBJ,
+@@ -2944,13 +2950,127 @@
+         struct demux_packet *pkt = ds_get_packet2(mpctx->d_video);
+         if (pkt) {
+             in_size = pkt->len;
+-            buf = pkt->buffer;
++            packet = buf = pkt->buffer;
+             pts = pkt->pts;
+         }
+         if (pts != MP_NOPTS_VALUE)
+             pts += mpctx->video_offset;
+         if (in_size > max_framesize)
+             max_framesize = in_size;
++
++		if (subcc_enabled > 4)
++		{
++			sub_visibility = 0;
++			subcc_hack = subcc_enabled;
++			subcc_enabled = 0;
++		}
++//		printf("HMM: %d 0x%x\n", sh_video->format, sh_video->format);
++		if (subcc_enabled && in_size > 8 && (sh_video->format == 0x3247504d || sh_video->format == 0x10000002) &&
++			packet[0] == 0x00 && packet[1] == 0x00 && packet[2] == 0x01)
++		{
++			uint64_t tmp_frameno = 0;
++			uint16_t t_ref = 0;
++			uint8_t pc_type = 0;
++			int _i;
++//			printf("in_size: %d, format: %d (0x%x) --  [0x%02X 0x%02X 0x%02X 0x%02X 0x%02X]\n", in_size, sh_video->format, sh_video->format, packet[0], packet[1], packet[2], packet[3], packet[4]);
++			for (_i=0; _i < in_size - 4; _i++)
++			{
++				if (packet[_i] == 0x00 && packet[_i+1] == 0x00 && packet[_i+2] == 0x01)
++				{
++					uint8_t code = packet[_i+3];
++
++//					printf("MPEG2 CODE: 0x%02X\n", code);
++					if (code == 0x01) // no more mpeg2 info (0xB? codes)
++						break;
++
++					switch (code)
++					{
++						case 0x00: // PIC
++						{
++							t_ref = ((uint16_t) packet[_i+4] << 2) | ((uint16_t)packet[_i+5] >> 6);
++							pc_type = (uint8_t) (packet[_i+5] & 0x38) >> 3;
++
++//							printf("FrameNo: %d\n", t_ref);
++							switch (pc_type)
++							{
++								case 0x01: //i-frame
++								case 0x02: //p-frame
++									if (first_i_frame != -1 && b_distance == -1)
++									{
++										b_distance = b_count;
++										frame_count = t_ref;
++//										printf("I/P-Frame: %d, b_count: %d\n", t_ref, b_count);
++									}
++									else if (b_distance > -1)
++									{
++										tmp_frameno = frame_count;
++									}
++								break;
++
++								case 0x03: //b-frame
++//									printf("B-Frame: %d\n", t_ref);
++
++									if (b_distance == -1)
++									{
++										b_count++;
++									}
++									else if (b_count > -1)
++									{
++//										printf("HI: %d -- %" PRId64"\n", b_count, frame_count);
++//										printf("2\n");
++										tmp_frameno = frame_count - b_count - 1;
++									}
++								break;
++							}
++
++							frame_count++;
++
++							if ((pc_type == 0x01  || pc_type == 0x02) && first_i_frame == -1)
++							{
++//								printf("Setting First I/P-Frame: %d\n", t_ref);
++								first_i_frame = t_ref;
++								b_count = 0;
++								frame_count = 0;
++							}
++
++							if (tmp_frameno)
++							{
++								subcc_cc_haz_frame(tmp_frameno, b_distance + 1);
++							}
++//							printf("mpeg2_pic, tref: %d, pc: %d -- %" PRId64"\n", t_ref, pc_type, tmp_frameno);
++						}
++						break;
++
++						case 0xB2: // Userdata
++						{
++							if (packet[_i+4] == 0x47 && packet[_i+5] == 0x41 &&
++								packet[_i+6] == 0x39 && packet[_i+7] == 0x34 && packet[_i+8] == 0x03)
++							{
++								int z;
++								uint16_t start=_i+4, end=0;
++								for(z = _i+9; z < in_size - (_i+4); z++)
++								{
++									if (packet[z] == 0x00 && packet[z+1] == 0x00 && packet[z+2] == 0x01)
++									{
++										end = z;
++										break;
++									}
++								}
++
++								if (tmp_frameno)
++									subcc_process_userdata(packet+ _i + 4, end-start, 0x01, tmp_frameno, pc_type);
++							}
++						}
++						break;
++/*
++						case 0xB8: // GOP
++						break;
++*/
++					}
++				}
++			}
++		}
++
+         current_module = "decode video";
+         if (pts >= mpctx->hrseek_pts - .005)
+             mpctx->hrseek_framedrop = false;
+@@ -3394,6 +3514,7 @@
+ 		}
+ 	}
+ 	if (live_pause_enable) printf("Seeking amount: %0.2f, style: %d\n", demuxer_amount, demuxer_style);
++	subcc_cc_clr_buffer(NULL);
+ 
+     int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
+                                 demuxer_style);
+--- cfg-mplayer.h.org	2012-02-07 19:56:09.000000000 -0500
++++ cfg-mplayer.h	2012-02-07 19:56:18.000000000 -0500
+@@ -658,7 +658,7 @@
+     // specify IFO file for VOBSUB subtitle
+     {"ifo", &spudec_ifo, CONF_TYPE_STRING, 0, 0, 0, NULL},
+     // enable Closed Captioning display
+-    {"subcc", &subcc_enabled, CONF_TYPE_INT, CONF_RANGE, 0, 4, NULL},
++    {"subcc", &subcc_enabled, CONF_TYPE_INT, CONF_RANGE, 0, 255, NULL},
+     {"nosubcc", &subcc_enabled, CONF_TYPE_FLAG, 0, 1, 0, NULL},
+     {"overlapsub", &suboverlap_enabled, CONF_TYPE_FLAG, 0, 0, 2, NULL},
+     {"nooverlapsub", &suboverlap_enabled, CONF_TYPE_FLAG, 0, 0, 0, NULL},
+--- sub/sub_cc.c.org	2012-02-07 22:01:22.000000000 -0500
++++ sub/sub_cc.c	2012-02-07 22:03:48.000000000 -0500
+@@ -40,23 +40,93 @@
+ #include "libvo/video_out.h"
+ #include "sub.h"
+ 
++#define CC_POPON 				1
++#define CC_ROLLUP 				2
++#define CC_MAX_LINE_LENGTH 		64
+ 
+-#define CC_MAX_LINE_LENGTH 64
++uint64_t added_count = 0;
+ 
+-static char chartbl[128];
++static DTVCC_DATA *dtv_cc_field0 = NULL;
++static DTVCC_DATA *dtv_cc_start = NULL, *dtv_cc_end = NULL;
+ 
+-static subtitle buf1,buf2;
+-static subtitle *fb,*bb;
++static char chartbl[128] = {0};
+ 
+-static unsigned int cursor_pos=0;
++static subtitle buf1 = {0}, buf2 = {0};
++static subtitle *display_mem = NULL, *non_display_mem = NULL;
+ 
++static unsigned int cursor_pos=0;
+ static int initialized=0;
+ 
+-#define CC_ROLLON 1
+-#define CC_ROLLUP 2
++static int cc_mode = CC_POPON;
++static int cc_lines = 4; ///< number of visible rows in CC roll-up mode, not used in CC roll-on mode
++
++uint8_t last_cc_pair[2] = {0};
++
++DTVCC_DATA * subcc_add_to_608_cc(DTVCC_DATA *);
++void subcc_cc_display(float);
++void subcc_cc_print_out(void);
++void subcc_cc_process_data(DTVCC_DATA *);
++uint8_t cc_handle_608_double(uint8_t, uint8_t);
++
++
++uint8_t _bits_swap_byte(uint8_t b);
++BITSTREAM * bits_create(uint8_t * stream, uint32_t len);
++int8_t bits_get_next_bit(BITSTREAM * b);
++uint64_t bits_get_bit_count(BITSTREAM * b, uint32_t num_of_bits, int8_t *rc);
++
++
++uint64_t bits_get_bit_count(BITSTREAM * b, uint32_t num_of_bits, int8_t *rc)
++{
++    int8_t i;
++    uint64_t ret = 0;
++
++    for (i = (num_of_bits - 1); i >= 0; i--)
++    {
++        if ((*rc = bits_get_next_bit(b)) < 0)
++            break;
++        ret |= (*rc << i);
++    }
++    return ret;
++}
++
++int8_t bits_get_next_bit(BITSTREAM * b)
++{
++    int8_t ret = -1;
++
++    if (b && b->stream && (b->bit_offset < (b->len*8)))
++    {
++        uint32_t _off = b->bit_offset - ((b->bit_offset / 8) * 8);
++        ret = ((b->stream[b->bit_offset++/8] & (0x80 >> _off) ) >> (7 - _off));
++    }
++    return ret;
++}
++
++BITSTREAM * bits_create(uint8_t * stream, uint32_t len)
++{
++    BITSTREAM * b = malloc(sizeof(BITSTREAM));
++
++    b->stream = stream;
++    b->len = len;
++    b->bit_offset = 0;
++
++    return b;
++}
++
++uint8_t _bits_swap_byte(uint8_t b)
++{
++	uint8_t c = 0;
++	c |= (0x80 & b) >> 7;
++	c |= (0x40 & b) >> 5;
++	c |= (0x20 & b) >> 3;
++	c |= (0x10 & b) >> 1;
++
++	c |= (0x8 & b) << 1;
++	c |= (0x4 & b) << 3;
++	c |= (0x2 & b) << 5;
++	c |= (0x1 & b) << 7;
++    return c;
++}
+ 
+-static int cc_mode=CC_ROLLON;
+-static int cc_lines=4; ///< number of visible rows in CC roll-up mode, not used in CC roll-on mode
+ 
+ static void build_char_table(void)
+ {
+@@ -100,7 +170,8 @@
+ 	{
+ 		free(buf->text[0]);
+ 
+-		for(i = 0; i < buf->lines - 1; i++) buf->text[i] = buf->text[i+1];
++		for(i = 0; i < buf->lines - 1; i++)
++			buf->text[i] = buf->text[i+1];
+ 
+ 		buf->text[buf->lines-1] = NULL;
+ 		buf->lines--;
+@@ -114,15 +185,23 @@
+ 	int i;
+ 	//printf("subcc_init(): initing...\n");
+ 	build_char_table();
+-	for(i=0;i<SUB_MAX_TEXT;i++) {buf1.text[i]=buf2.text[i]=NULL;}
++	for (i=0; i < SUB_MAX_TEXT; i++)
++	{
++		buf1.text[i] = buf2.text[i] = NULL;
++	}
++
+ 	buf1.lines=buf2.lines=0;
+-	fb=&buf1;
+-	bb=&buf2;
+-	channel = -1;
+ 
++	display_mem = &buf1;
++	non_display_mem = &buf2;
++	channel = -1;
+ 	initialized=1;
+ }
+ 
++void subcc_process_data(const uint8_t *inputdata, unsigned int len)
++{
++}
++
+ 
+ static void display_buffer(subtitle *buf)
+ {
+@@ -133,44 +212,54 @@
+ 
+ static void append_char(char c)
+ {
+-	if(!bb->lines) {bb->lines++; cursor_pos=0;}
+-	if(bb->text[bb->lines - 1]==NULL)
++
++//	printf("Appending Char: %c [0x%02X]\n", c, c);
++	if (!non_display_mem->lines)
++	{
++		non_display_mem->lines++;
++		cursor_pos=0;
++	}
++
++	if (non_display_mem->text[non_display_mem->lines - 1] == NULL)
+ 	{
+-		bb->text[bb->lines - 1] = calloc(1, CC_MAX_LINE_LENGTH);
++		non_display_mem->text[non_display_mem->lines - 1] = calloc(1, CC_MAX_LINE_LENGTH);
+ 		cursor_pos=0;
+ 	}
+ 
+-	if(c=='\n')
++	if (c == '\n')
+ 	{
+-		if(cursor_pos>0 && bb->lines < SUB_MAX_TEXT)
++		if (cursor_pos>0 && non_display_mem->lines < SUB_MAX_TEXT)
+ 		{
+-			bb->lines++;cursor_pos=0;
+-			if(cc_mode==CC_ROLLUP){ //Carriage return - scroll buffer one line up
+-				bb->text[bb->lines - 1]=calloc(1, CC_MAX_LINE_LENGTH);
+-				scroll_buffer(bb);
++			non_display_mem->lines++;
++			cursor_pos=0;
++
++			if(cc_mode==CC_ROLLUP) //Carriage return - scroll buffer one line up
++			{
++				non_display_mem->text[non_display_mem->lines - 1] = calloc(1, CC_MAX_LINE_LENGTH);
++				scroll_buffer(non_display_mem);
+ 			}
+ 		}
+ 	}
+ 	else
+ 	{
+-		if(cursor_pos==CC_MAX_LINE_LENGTH-1)
++		if (cursor_pos == CC_MAX_LINE_LENGTH-1)
+ 		{
+ 			fprintf(stderr,"CC: append_char() reached CC_MAX_LINE_LENGTH!\n");
+ 			return;
+ 		}
+-		bb->text[bb->lines - 1][cursor_pos++]=c;
++		non_display_mem->text[non_display_mem->lines - 1][cursor_pos++] = c;
+ 	}
+ 	//In CC roll-up mode data should be shown immediately
+-	if(cc_mode==CC_ROLLUP) display_buffer(bb);
++	if (cc_mode == CC_ROLLUP)
++		display_buffer(non_display_mem);
+ }
+ 
+ 
+ static void swap_buffers(void)
+ {
+-	subtitle *foo;
+-	foo=fb;
+-	fb=bb;
+-	bb=foo;
++	subtitle *foo = display_mem;
++	display_mem = non_display_mem;
++	non_display_mem = foo;
+ }
+ 
+ static int selected_channel(void)
+@@ -178,170 +267,646 @@
+     return subcc_enabled - 1;
+ }
+ 
+-static void cc_decode_EIA608(unsigned short int data)
++
++static void cc_handle_608_pac(uint8_t c1, uint8_t c2, DTVCC_DATA *dtv)
+ {
++	int color = 0, font = 0, indent = 0;
++	int row = EIA608_ROWDATA[((c1<<1)&14)|((c2>>5)&1)];
+ 
+-  static unsigned short int lastcode=0x0000;
+-  uint8_t c1 = data & 0x7f;
+-  uint8_t c2 = (data >> 8) & 0x7f;
+-
+-  if (c1 & 0x60) {		/* normal character, 0x20 <= c1 <= 0x7f */
+-	   if (channel != (selected_channel() & 1))
+-		   return;
+-	   append_char(chartbl[c1]);
+-	   if(c2 & 0x60)	/*c2 might not be a normal char even if c1 is*/
+-		   append_char(chartbl[c2]);
+-  }
+-  else if (c1 & 0x10)		// control code / special char
+-  {
+-	  channel = (c1 & 0x08) >> 3;
+-	  if (channel != (selected_channel() & 1))
++	if (c2 >= 0x40 && c2 <= 0x5f)
++	{
++		c2 = c2 - 0x40;
++	}
++	else
++	{
++		if (c2>=0x60 && c2<=0x7f)
++		{
++			c2 = c2 - 0x60;
++		}
++		else
++		{
++			printf("NOT A PAC!!!!!!!\n");
++			return;
++		}
++	}
++
++	indent = EIA608_PAC_ATTR[c2][2];
++	color = EIA608_PAC_ATTR[c2][0];
++	font = EIA608_PAC_ATTR[c2][1];
++//	if (indent)
++	append_char('\n');
++//	printf("--- [%" PRId64"] 608 PAC [row: %d, color: %s, font: %s, indent: %d]\n", dtv->frameno, row, CAPTION_608_COLOR_STR[color], CAPTION_608_FONT_STR[font], indent);
++
++}
++
++uint8_t cc_handle_608_double(uint8_t c1, uint8_t c2)
++{
++    uint8_t c = 0;
++    if (c2 >= 0x30 && c2 <= 0x3f)
++        c = c2 + 0x50;
++    return c;
++}
++
++
++static void cc_handle_608_command(uint8_t c1, uint8_t c2, DTVCC_DATA *dtv)
++{
++
++	if (c1 == 0 && c2 == 0) // Not valid CC data
++		return;
++
++	if (c1 >= 0x01 && c1 <= 0x0E) // XDS, we don't care
++		return;
++
++	if (c1 == 0x0F) // End of XDS block
++		return;
++
++	if (c1 == last_cc_pair[0] && c2 == last_cc_pair[1])
++	{
++//		printf("DUPE CMD!\n");
+ 		return;
+-	  c1&=~0x08;
+-	  if(data!=lastcode)
+-	  {
+-	  	if(c2 & 0x40) {	/*PAC, Preamble Address Code */
+-			append_char('\n'); /*FIXME properly interpret PACs*/
++	}
++
++	last_cc_pair[0] = c1;
++	last_cc_pair[1] = c2;
++
++	if (c1 >= 0x10 && c1 < 0x1F)
++	{
++		uint8_t command = 0xFF;
++		uint8_t show_cmd = 0;
++
++		if (c1 == 0x15)
++			c1 = 0x14;
++
++		if ((c1==0x14 || c1==0x1C) && c2==0x2C)
++		{
++			clear_buffer(display_mem);
++			display_buffer(display_mem);
++			command = EIA608_COMMAND_EDM;
++		}
++    	else if ((c1==0x14 || c1==0x1C) && c2==0x20)
++		{
++			cc_mode = CC_POPON;
++//			printf("-- Pop-on Captions [%" PRId64"]...\n", dtv->frameno);
++    	    command = EIA608_COMMAND_RCL;
++		}
++    	else if ((c1==0x14 || c1==0x1C) && c2==0x2E)
++		{
++			clear_buffer(non_display_mem);
++    	    command = EIA608_COMMAND_ENDM;
++		}
++    	else if ((c1==0x14 || c1==0x1C) && (c2==0x29 || c2 == 0x2B))
++		{
++			cc_mode = CC_POPON;
++//			clear_buffer(non_display_mem);
++    	    command = EIA608_COMMAND_PAINTON;
++		}
++    	else if ((c1==0x14 || c1==0x1C) && c2==0x2F)
++		{
++			swap_buffers();
++			display_buffer(display_mem);
++			clear_buffer(non_display_mem);
++
++//			printf("-- End of Captions [%" PRId64"]...\n", dtv->frameno);
++    	    command = EIA608_COMMAND_EOC;
++		}
++    	else if ((c1==0x14 || c1==0x1C) && c2==0x22)
++		{
++    	    command = EIA608_COMMAND_ALARMOFF;
++		}
++    	else if ((c1==0x14 || c1==0x1C) && c2==0x23)
++		{
++    	    command = EIA608_COMMAND_ALARMON;
++		}
++    	else if ((c1==0x17 || c1==0x1F) && c2==0x21)
++		{
++			append_char(' ');
++    	    command = EIA608_COMMAND_TAB1;
++		}
++    	else if ((c1==0x17 || c1==0x1F) && c2==0x22)
++		{
++			append_char(' ');
++			append_char(' ');
++    	    command = EIA608_COMMAND_TAB2;
++		}
++    	else if ((c1==0x17 || c1==0x1F) && c2==0x23)
++		{
++			append_char(' ');
++			append_char(' ');
++			append_char(' ');
++    	    command = EIA608_COMMAND_TAB3;
++		}
++    	else if ((c1==0x14 || c1==0x1C) && (c2==0x25 || c2 == 0x26 || c2 == 0x27))
++		{
++			// 0x25 = Rollup 2
++			// 0x26 = Rollup 3
++			// 0x27 = Rollup 4
++
++			// Rollup mode
++			cc_lines = c2 - 0x23 + 1;
++	        command = c2 - 0x23 + 5;
++//			printf("CC LINES: %d (0x%02X)\n", c2 - 0x23, c2);
++		}
++    	else if ((c1==0x14 || c1==0x1C) && c2==0x2D)
++		{
++			if (cc_mode == CC_ROLLUP)
++				append_char('\n');
++	        command = EIA608_COMMAND_CR;
++		}
++
++		if (command >= 0 && command <= 17)
++		{
++			if (show_cmd)
++			{
++				if (dtv)
++				{
++					printf("608 CMD (0x%02X): %s [%" PRId64"] [0x%02X 0x%02X]\n", command, CAPTION_608_COMMAND_STR[command], dtv->frameno, c1, c2);
++				}
++				else
++				{
++					printf("608 CMD: %s\n", CAPTION_608_COMMAND_STR[command]);
++				}
++			}
+ 		}
+ 		else
+-			switch(c1)
++		{
++			printf("-------------- UNKNOWN and INVALID [0x%02X 0x%02X\n", c1, c2);
++		}
++	}
++}
++
++
++DTVCC_DATA * subcc_add_to_608_cc(DTVCC_DATA * data)
++{
++	if (!dtv_cc_field0)
++	{
++		uint8_t cc1, cc2;
++		cc1 = data->cc1 & 0x7F;
++		cc2 = data->cc2 & 0x7F;
++		if (cc1 == 0x14 && (cc2 == 0x2C || cc2 == 0x2E))
++		{
++//			printf("empty list, processing cmd: 0x%02X\n", cc2);
++			cc_handle_608_command(cc1, cc2, NULL);
++			return NULL;
++		}
++		else
++		{
++			dtv_cc_field0 = data;
++		}
++	}
++	else
++	{
++		DTVCC_DATA * tmp = dtv_cc_field0;
++		while(tmp->next)
++		{
++			if (data->frameno > tmp->frameno && data->frameno < tmp->next->frameno)
+ 			{
+-				case 0x10:	break; // ext attribute
+-				case 0x11:
+-					if((c2 & 0x30)==0x30)
+-					{
+-						//printf("[debug]:Special char (ignored)\n");
+-						/*cc_decode_special_char()*/;
+-					}
+-					else if (c2 & 0x20)
+-					{
+-						//printf("[debug]: midrow_attr (ignored)\n");
+-						/*cc_decode_midrow_attr()*/;
+-					}
++				data->next = tmp->next;
++				break;
++			}
++			tmp = tmp->next;
++		}
++
++//		printf("cc1: 0x%02X, cc2: 0x%02X\n", data->cc1, data->cc2);
++
++		if (tmp->cc1 == 0x94 && data->cc1 == 0x94 && tmp->cc2 == data->cc2)
++		{
++			if (tmp->cc2 >= 0x20 && tmp->cc2 <= 0x2F || (data->cc2 == 0xAE) || (data->cc2 == 0xD0))
++			{
++				free(data);
++				return NULL;
++			}
++		}
++		else if (tmp->next && tmp->next->cc1 == 0x94 && data->cc1 == 0x94 && tmp->next->cc2 == data->cc2)
++		{
++			if (data->cc2 >= 0x20 && data->cc2 <= 0x2F || (data->cc2 == 0xAE) || (data->cc2 == 0xD0))
++			{
++				free(data);
++				return NULL;
++			}
++		}
++		else if (tmp->cc1 == 0x91 && data->cc1 == 0x91 && tmp->cc2 == data->cc2)
++		{
++			free(data);
++			return NULL;
++		}
++		else if (tmp->next && tmp->next->cc1 == 0x91 && data->cc1 == 0x91 && tmp->next->cc2 == data->cc2)
++		{
++			free(data);
++			return NULL;
++		}
++
++		if (tmp == dtv_cc_field0 && data->frameno < tmp->frameno)
++		{
++			data->next = tmp;
++			dtv_cc_field0 = data;
++		}
++		else
++		{
++			tmp->next = data;
++		}
++	}
++	return data;
++}
++
++
++void subcc_cc_haz_frame(uint64_t frameno, uint8_t b_distance)
++{
++	if (dtv_cc_end)
++	{
++		added_count++;
++
++		if (added_count > b_distance + 1)
++		{
++			subcc_cc_process_data(dtv_cc_end);
++			subcc_cc_clr_buffer(dtv_cc_end);
++			dtv_cc_start = dtv_cc_end = NULL;
++			added_count = 0;
++		}
++	}
++}
++
++
++void subcc_cc_print_out(void)
++{
++	DTVCC_DATA * dtv_cc_tmp = dtv_cc_field0;
++//	printf("[P] START -- end: %" PRId64"\n", dtv_cc_end->frameno);
++	while (dtv_cc_tmp)
++	{
++//		printf("[P] frameno: %" PRId64" \n", dtv_cc_tmp->frameno);
++		if (dtv_cc_tmp->next && dtv_cc_tmp->frameno > dtv_cc_tmp->next->frameno)
++			printf("\t\t!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! BAD\n");
++		dtv_cc_tmp = dtv_cc_tmp->next;
++	}
++//	printf("[P] END -- \n");
++}
++
++void subcc_cc_process_data(DTVCC_DATA *dtv_end)
++{
++	uint8_t cc1 = 0, cc2 = 0, skip = 0;
++	DTVCC_DATA * dtv_cc_tmp = dtv_cc_field0;
++
++//	subcc_cc_print_out();
++
++	while (dtv_cc_tmp)
++	{
++		skip = 0;
++
++		cc1 = dtv_cc_tmp->cc1 & 0x7F;
++		cc2 = dtv_cc_tmp->cc2 & 0x7F;
++
++ 		if (cc1 == 0 && cc2 == 0) // Not valid CC data
++			skip = 1;
++
++		if ((cc1 >= 0x01 && cc1 <= 0x0E) || (cc1 == 0x0F)) // XDS, we don't care
++			skip = 1;
++
++//		printf("--------- subcc_cc_process_data: %" PRId64" [0x%02X 0x%02X]\n", dtv_cc_tmp->frameno, cc1, cc2);
++
++		if (!skip)
++		{
++			if (cc1 >= 0x10 && cc1 < 0x1F) // COMMAND
++			{
++				if (cc1 >= 0x18 && cc1 <= 0x1f)
++					cc1 -= 8;
++
++				switch (cc1)
++				{
++					case 0x10 :
++						if (cc2 >= 0x40 && cc2 <=0x5f)
++						{
++//							printf("** PAC: 0x%02X\n", cc1);
++							cc_handle_608_pac(cc1, cc2, dtv_cc_tmp);
++						}
++						else
++							printf("** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);
+ 					break;
+-				case 0x14:
+-					switch(c2)
+-					{
+-						case 0x00: //CC roll-on mode
+-							   cc_mode=CC_ROLLON;
+-							   break;
+-						case 0x25: //CC roll-up, 2 rows
+-						case 0x26: //CC roll-up, 3 rows
+-						case 0x27: //CC roll-up, 4 rows
+-							   cc_lines=c2-0x23;
+-							   cc_mode=CC_ROLLUP;
+-							   break;
+-						case 0x2C: display_buffer(NULL); //EDM
+-							   clear_buffer(fb); break;
+-						case 0x2d: append_char('\n');	//carriage return
+-							   break;
+-						case 0x2e: clear_buffer(bb);	//ENM
+-							   break;
+-						case 0x2f: swap_buffers();	//Swap buffers
+-							   display_buffer(fb);
+-							   clear_buffer(bb);
+-							   break;
+-					}
++
++					case 0x11 :
++						if (cc2>=0x20 && cc2<=0x2f)
++						{
++//							printf("** TEXT ATTR: 0x%02X 0x%02X\n", cc1, cc2);
++//							_caption_handle_608_text_attr(cc1, cc2);
++						}
++						else if (cc2>=0x30 && cc2<=0x3f)
++						{
++							uint8_t c = 0;
++//							printf("** HANDLE DOUBLE (to screen): [0x%02X 0x%02X]\n", cc1, cc2);
++							c = cc_handle_608_double(cc1, cc2);
++							if (c == 0x87)
++							{
++								printf("[%" PRId64"] Extended Char (double): Music Note\n", dtv_cc_tmp->frameno);
++//								append_char('Q');
++//								display_buffer(non_display_mem);
++//								append_char(0x26);
++//								append_char();
++							}
++							else
++							{
++								printf("Double Char [%c] [0x%02X] org: [%c] [0x%02X]\n", c, c, cc2, cc2);
++							}
++
++						}
++						else if (cc2>=0x40 && cc2<=0x7f)
++						{
++//							printf("** PAC: 0x%02X\n", cc1);
++							cc_handle_608_pac(cc1, cc2, dtv_cc_tmp);
++						}
++						else
++							printf("** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);
+ 					break;
+-				case 0x17:
+-					if( c2>=0x21 && c2<=0x23) //TAB
+-					{
+-						break;
+-					}
++					case 0x12 :
++					case 0x13 :
++						if (cc2>=0x20 && cc2<=0x3f)
++						{
++/*
++							uint8_t c = _caption_handle_608_extended(cc1, cc2);
++							if (c == 0x99)
++							{
++							}
++							else
++							{
++								printf("Extended Char [%c] [0x%02X]\n", cc2, cc2);
++							}
++*/
++							printf("** HANDLE EXTENDED (to screen): 0x%02X 0x%02X\n", cc1, cc2);
++						}
++						else if (cc2>=0x40 && cc2<=0x7f)
++						{
++//							printf("** PAC: 0x%02X\n", cc1);
++							cc_handle_608_pac(cc1, cc2, dtv_cc_tmp);
++						}
++						else
++							printf("** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);
++					break;
++
++					case 0x14:
++					case 0x15:
++						if (cc2>=0x20 && cc2<=0x2f)
++						{
++//							printf("COMMAND: 0x%02X\n", cc1);;
++//							_caption_handle_608_command(cc1, cc2);
++							cc_handle_608_command(cc1, cc2, dtv_cc_tmp);
++						}
++						else if (cc2>=0x40 && cc2<=0x7f)
++						{
++//							printf("** PAC: 0x%02X\n", cc1);
++							cc_handle_608_pac(cc1, cc2, dtv_cc_tmp);
++						}
++						else
++							printf("** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);
++					break;
++
++					case 0x16 :
++						if (cc2>=0x40 && cc2<=0x7f)
++						{
++//							printf("** PAC: 0x%02X\n", cc1);
++							cc_handle_608_pac(cc1, cc2, dtv_cc_tmp);
++						}
++						else
++							printf("** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);
++					break;
++
++					case 0x17 :
++						if (cc2>=0x21 && cc2<=0x22)
++						{
++//							printf("COMMAND: 0x%02X\n", cc1);
++//							_caption_handle_608_command(cc1, cc2);
++							cc_handle_608_command(cc1, cc2, dtv_cc_tmp);
++						}
++						else if (cc2>=0x2e && cc2<=0x2f)
++						{
++							printf("** TEXT ATTR: 0x%02X\n", cc2);
++						}
++						else if (cc2>=0x40 && cc2<=0x7f)
++						{
++//							printf("** PAC: 0x%02X\n", cc1);
++							cc_handle_608_pac(cc1, cc2, dtv_cc_tmp);
++						}
++						else if (cc2 == 0x21 || cc2 == 0x22 || cc2 == 0x23)
++						{
++							int q;
++							//printf("TABOFFSET: %d (%x)\n", cc2-0x20, cc2);
++							for(q=0; q < cc2-0x20; q++)
++							{
++								append_char(' ');
++								append_char(' ');
++							}
++						}
++						else
++							printf("** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);
++					break;
++
++					default:
++						printf("******* UNHANDLED CC1 command, NOT GOOD ******\n");
++					break;
++				}
+ 			}
+-	  }
+-  }
+-  lastcode=data;
+-}
+-
+-static void subcc_decode(const uint8_t *inputbuffer, unsigned int inputlength)
+-{
+-  /* The first number may denote a channel number. I don't have the
+-   * EIA-708 standard, so it is hard to say.
+-   * From what I could figure out so far, the general format seems to be:
+-   *
+-   * repeat
+-   *
+-   *   0xfe starts 2 byte sequence of unknown purpose. It might denote
+-   *        field #2 in line 21 of the VBI.
+-   *        Treating it identical of 0xff fixes
+-   *        http://samples.mplayerhq.hu/MPEG-VOB/ClosedCaptions/Starship_Troopers.vob
+-   *
+-   *   0xff starts 2 byte EIA-608 sequence, field #1 in line 21 of the VBI.
+-   *        Followed by a 3-code triplet that starts either with 0xff or
+-   *        0xfe. In either case, the following triplet needs to be ignored
+-   *        for line 21, field 1.
+-   *
+-   *   0x00 is padding, followed by 2 more 0x00.
+-   *
+-   *   0x01 always seems to appear at the beginning, always seems to
+-   *        be followed by 0xf8, 8-bit number.
+-   *        The lower 7 bits of this 8-bit number seem to denote the
+-   *        number of code triplets that follow.
+-   *        The most significant bit denotes whether the Line 21 field 1
+-   *        captioning information is at odd or even triplet offsets from this
+-   *        beginning triplet. 1 denotes odd offsets, 0 denotes even offsets.
+-   *
+-   *        Most captions are encoded with odd offsets, so this is what we
+-   *        will assume.
+-   *
+-   * until end of packet
+-   */
+-  const uint8_t *current = inputbuffer;
+-  unsigned int curbytes = 0;
+-  uint8_t data1, data2;
+-  uint8_t cc_code;
+-  int odd_offset = 1;
+-
+-  while (curbytes < inputlength) {
+-    cc_code = current[0];
+-
+-    if (inputlength - curbytes < 2) {
+-#ifdef LOG_DEBUG
+-      fprintf(stderr, "Not enough data for 2-byte CC encoding\n");
+-#endif
+-      break;
+-    }
++			else if (cc1 >= 0x20) // Text
++			{
++//				printf("Regular Char [%" PRId64"] [%c %c] [0x%02X 0x%02X]\n", dtv_cc_tmp->frameno, cc1, cc2, cc1, cc2);
++				append_char(cc1);
++				if (cc2 >= 0x20)
++					append_char(cc2);
++			}
++			else
++			{
++				printf("-------- HERE, but shouldn't be\n");
++			}
++		}
+ 
+-    data1 = current[1];
+-    data2 = current[2];
+-    current += 3; curbytes += 3;
+-
+-    switch (cc_code) {
+-    case 0xfe:
+-    case 0xff:
+-      odd_offset ^= 1;
+-      if (odd_offset != selected_channel() >> 1)
+-          break;
+-      /* expect EIA-608 CC1/CC2 encoding */
+-      // FIXME check parity!
+-      // Parity check omitted assuming we are reading from a DVD and therefore
+-      // we should encounter no "transmission errors".
+-      cc_decode_EIA608(data1 | (data2 << 8));
+-      break;
+-
+-    case 0x00:
+-      /* This seems to be just padding */
+-      break;
+-
+-    case 0x01:
+-      odd_offset = data2 >> 7;
+-      break;
+-
+-    default:
+-//#ifdef LOG_DEBUG
+-      fprintf(stderr, "Unknown CC encoding: %x\n", cc_code);
+-//#endif
+-      break;
+-    }
+-  }
++		if (dtv_cc_tmp == dtv_end)
++			break;
++		dtv_cc_tmp = dtv_cc_tmp->next;
++	}
+ }
+ 
++void subcc_cc_clr_buffer(DTVCC_DATA *end)
++{
++	if(!subcc_enabled)
++		return;
+ 
+-void subcc_process_data(const uint8_t *inputdata, unsigned int len)
++	uint8_t cc1, cc2;
++	DTVCC_DATA * tmp = dtv_cc_field0, *tmp2 = NULL, *stop = NULL;
++
++	dtv_cc_start = dtv_cc_end = NULL;
++
++	if (end && end->next)
++		stop = end->next;
++
++	while (tmp)
++	{
++		tmp2 = tmp;
++		tmp = tmp->next;
++		free(tmp2);
++
++		if (stop && tmp == stop)
++			break;
++	}
++	dtv_cc_field0 = stop;
++
++
++	if (!end)
++	{
++		last_cc_pair[0] = 0;
++		last_cc_pair[1] = 0;
++		clear_buffer(non_display_mem);
++		clear_buffer(display_mem);
++		display_buffer(display_mem);
++	}
++}
++
++void subcc_cc_display(float pts)
++{
++/*
++	DTVCC_DATA * tmp = NULL;
++		printf("1\n");
++	while (dtv_cc_field0)
++	{
++		tmp = dtv_cc_field0;
++		cc_decode_EIA608( (tmp->cc1 | tmp->cc2 << 8) );
++		dtv_cc_field0 = dtv_cc_field0->next;
++		free(tmp);
++	}
++
++	if (tmp_frame_count)
++	{
++		t_ref_offset += tmp_frame_count;
++		tmp_frame_count = 0;
++	}
++*/
++}
++
++void subcc_process_userdata(const uint8_t *inputdata, unsigned int len, uint8_t type, uint64_t frameno, uint8_t frame_type)
+ {
+-	if(!subcc_enabled) return;
++	if(!subcc_enabled)
++	{
++//		printf("subcc not enabled\n");
++		return;
++	}
+ 	if(!initialized) subcc_init();
+ 
+-	subcc_decode(inputdata, len);
++//	tmp_frame_count++;
++	switch(type)
++	{
++		case SUBCC_TYPE_DTVCC:
++		{
++			int i;
++			uint8_t cc_count = 0;
++
++/*
++			for(i = 0; i < len; i++)
++				printf("0x%02X ", inputdata[i]);
++			printf("\n");
++*/
++
++			if (inputdata[0] == 0x47 && inputdata[1] == 0x41 &&
++				inputdata[2] == 0x39 && inputdata[3] == 0x34)
++			{
++				if (inputdata[4] != 0x03)	// not CC data
++					return;
++			}
++			cc_count = inputdata[5] & 0x1f;
++			//em_data = inputdata[6];
++
++			if (cc_count)
++			{
++				int i, start = 0;
++				uint8_t marker = 0;
++				uint8_t valid = 0;
++				uint8_t type = 0;
++
++				start = i+7;
++//				cc_count = 1;
++				for (i=0; i < cc_count; i++)
++				{
++			
++					marker = (inputdata[start] & 0xf8) >> 3;
++					valid = (inputdata[start] & 0x4) >> 2;
++					type = inputdata[start] & 0x3;
++
++//					printf("(%d) marker: 0x%02X, valid: 0x%02X, type: 0x%02X, CC1: 0x%02X, CC2: 0x%02X\n", i, marker, valid, type, inputdata[start+1], inputdata[start+2]);
++
++/*
++					if (added_count && inputdata[start+1] == 0x80 && added_count > 2)
++					{
++						printf ("DISPLAY: %" PRId64" -- %d\n", frameno, added_count);
++//						subcc_cc_display(0);
++						added_count = 0;
++					}
++*/
++					if (valid)
++					{
++						switch (type)
++						{
++							case 0: // CC
++							{
++								if (inputdata[start+1] != 0x80)
++								{
++									int moo;
++									DTVCC_DATA * cc608 = NULL, *tmp = NULL;
++									uint8_t cc1 = inputdata[start+1] & 0x7F;
++									uint8_t cc2 = inputdata[start+2] & 0x7F;
++
++//									printf("(%d) marker: 0x%02X, valid: 0x%02X, type: 0x%02X, CC1: 0x%02X, CC2: 0x%02X\n", i, marker, valid, type, inputdata[start+1], inputdata[start+2]);
++									cc608 = calloc(1, sizeof(DTVCC_DATA));
++									cc608->cc1 = inputdata[start+1];
++									cc608->cc2 = inputdata[start+2];
++									cc608->frameno = frameno;
++//									printf("Adding, frameno: %" PRId64", type: %d\n", frameno, frame_type);
++									tmp = subcc_add_to_608_cc(cc608);
++									if (tmp)
++									{
++//										printf("[%" PRId64"] Add to 608(cc), CC1: 0x%02X, CC2: 0x%02X\n", frameno, cc1, cc2);
++										if (cc1 == 0x14 && cc2 == 0x20)
++										{
++											cc_mode = CC_POPON;
++											if (dtv_cc_start && frameno > dtv_cc_start->frameno)
++												dtv_cc_start = cc608;
++											else if (!dtv_cc_start)
++												dtv_cc_start = cc608;
++
++//											printf("START OF POPUP: %" PRId64"\n", frameno);
++										}
++										else if (cc1 == 0x14 && (cc2 == 0x2F || cc2==0x25 || cc2 == 0x26 || cc2 == 0x27))
++										{
++											if (cc2 != 0x2F)
++												cc_mode = CC_ROLLUP;
++											added_count = 0;
++											dtv_cc_end = cc608;
++										}
++									}
++									else
++									{
++//										printf("NOT ADDED\n");
++									}
++								}
++							}
++							break;
++
++							case 1: // XDS
++							break;
++
++							case 2:
++//								printf("\t(cc) 708 start: 0x%x\n", type);
++							break;
++
++							case 3:
++//								printf("\t(cc) 708 data: 0x%x\n", type);
++							break;
++
++							default:
++								printf("Unknown CC type: 0x%x\n", type);
++							break;
++						}
++
++					}
++					start += 3;
++				}
++			}
++		}
++		break;
++
++		case SUBCC_TYPE_SCTE20:
++		break;
++	}
+ }

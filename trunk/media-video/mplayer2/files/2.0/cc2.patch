@@ -546,20 +546,20 @@
 +		}
 +    	else if ((c1==0x17 || c1==0x1F) && c2==0x21)
 +		{
-+			append_char(' ');
++			//append_char(' ');
 +    	    command = EIA608_COMMAND_TAB1;
 +		}
 +    	else if ((c1==0x17 || c1==0x1F) && c2==0x22)
 +		{
-+			append_char(' ');
-+			append_char(' ');
++			//append_char(' ');
++			//append_char(' ');
 +    	    command = EIA608_COMMAND_TAB2;
 +		}
 +    	else if ((c1==0x17 || c1==0x1F) && c2==0x23)
 +		{
-+			append_char(' ');
-+			append_char(' ');
-+			append_char(' ');
++			//append_char(' ');
++			//append_char(' ');
++			//append_char(' ');
 +    	    command = EIA608_COMMAND_TAB3;
 +		}
 +    	else if ((c1==0x14 || c1==0x1C) && (c2==0x25 || c2 == 0x26 || c2 == 0x27))
@@ -891,7 +891,7 @@
 +						}
 +						else if (cc2 == 0x21 || cc2 == 0x22 || cc2 == 0x23)
 +						{
-+							int q;
++							//int q;
 +							//printf("TABOFFSET: %d (%x)\n", cc2-0x20, cc2);
 +							//for(q=0; q < cc2-0x20; q++)
 +							//{

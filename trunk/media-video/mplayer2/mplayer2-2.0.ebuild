@@ -242,13 +242,11 @@ src_prepare() {
 			-i TOOLS/midentify.sh || die
 	fi
 	epatch "${FILESDIR}"/2.0/demux_ts_h264.patch
-	epatch "${FILESDIR}"/2.0/mp2_live_seek3.patch
+	epatch "${FILESDIR}"/2.0/mp2_new_live_seek.patch
 	epatch "${FILESDIR}"/2.0/mp2_vdpau_crop.patch
-	epatch "${FILESDIR}"/2.0/cc.patch
+	epatch "${FILESDIR}"/2.0/cc2.patch
 	epatch "${FILESDIR}"/vdpau_osd.patch
 	epatch "${FILESDIR}"/fix_ts.patch
-#	epatch "${FILESDIR}"/mplayer2_608cc_2.0.patch
-#	epatch "${FILESDIR}"/pts_wrap_sync.patch
 
 	base_src_prepare
 }

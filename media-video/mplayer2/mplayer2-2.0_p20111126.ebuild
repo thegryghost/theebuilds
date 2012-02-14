@@ -243,6 +243,7 @@ src_prepare() {
 	epatch "${FILESDIR}"/2.0_p20111126/cc2.patch
 	epatch "${FILESDIR}"/vdpau_osd.patch
 	epatch "${FILESDIR}"/fix_ts.patch
+	epatch "${FILESDIR}"/pts_wrap_sync.patch
 
 	base_src_prepare
 }

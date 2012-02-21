@@ -1,4 +1,4 @@
-# Copyright 1999-2011 Gentoo Foundation
+# Copyright 1999-2012 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
 # $Header: /var/cvsroot/gentoo-x86/media-video/mplayer2/mplayer2-2.0_p20111126.ebuild,v 1.2 2011/12/01 20:13:49 lu_zero Exp $
 
@@ -111,7 +111,7 @@ RDEPEND+="
 	directfb? ( dev-libs/DirectFB )
 	dts? ( media-libs/libdca )
 	dv? ( media-libs/libdv )
-	dvb? ( media-tv/linuxtv-dvb-headers )
+	dvb? ( virtual/linuxtv-dvb-headers )
 	dvd? (
 		>=media-libs/libdvdread-4.1.3
 		dvdnav? ( >=media-libs/libdvdnav-4.1.3 )
@@ -235,7 +235,6 @@ src_prepare() {
 		sed -e "s/mplayer/${PN}/" \
 			-i TOOLS/midentify.sh || die
 	fi
-
 	epatch "${FILESDIR}"/2.0_p20111126/demux_ts_h264.patch
 	epatch "${FILESDIR}"/2.0_p20111126/mp2_new_live_seek.patch
 	epatch "${FILESDIR}"/2.0_p20111126/mp2_vdpau_crop.patch

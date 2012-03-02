@@ -1,0 +1,22 @@
+--- AX88772B_772A_760_772_178_LINUX_Driver_v4.2.0_Source/asix.c.org	2012-03-01 23:27:59.000000000 -0500
++++ AX88772B_772A_760_772_178_LINUX_Driver_v4.2.0_Source/asix.c	2012-03-01 23:29:44.000000000 -0500
+@@ -837,7 +837,8 @@
+ 	.ndo_do_ioctl		= ax8817x_ioctl,
+ 	.ndo_set_mac_address		= ax8817x_set_mac_addr,
+ 	.ndo_validate_addr		= eth_validate_addr,
+-	.ndo_set_multicast_list	= ax8817x_set_multicast,
++//	.ndo_set_multicast_list	= ax8817x_set_multicast,
++	.ndo_set_rx_mode = ax8817x_set_multicast,
+ };
+ #endif
+ 
+@@ -1530,7 +1531,8 @@
+ 	.ndo_get_stats		= axusbnet_get_stats,
+ 	.ndo_set_mac_address 	= ax8817x_set_mac_addr,
+ 	.ndo_validate_addr		= eth_validate_addr,
+-	.ndo_set_multicast_list = ax88772b_set_multicast,
++	//.ndo_set_multicast_list = ax88772b_set_multicast,
++	.ndo_set_rx_mode = ax88772b_set_multicast,
+ };
+ #endif
+ 

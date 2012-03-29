@@ -36,3 +36,14 @@
      double max_change = default_max_pts_correction >= 0 ?
          default_max_pts_correction : frame_time * 0.1;
      if (change < -max_change)
+@@ -3104,7 +3104,10 @@
+          * Treat bigger differences as timestamp resets and start counting
+          * timing of later frames from the position of this one. */
+         if (sh_video->last_pts - sh_video->pts > 0.5)
++		{
++			if (live_pause_enable) sh_video->pts = MP_NOPTS_VALUE;
+             sh_video->last_pts = sh_video->pts;
++		}
+         else
+             sh_video->pts = sh_video->last_pts;
+     }

@@ -32,7 +32,8 @@ FONT_URI="
 	mirror://mplayer/releases/fonts/font-arial-cp1250.tar.bz2
 "
 [[ ${PV} == *9999* ]] || \
-	RELEASE_URI="http://ftp.${PN}.org/pub/release/${P}.tar.xz"
+#	RELEASE_URI="http://ftp.${PN}.org/pub/release/${P}.tar.xz"
+	RELEASE_URI="http://ftp.${PN}.org/pub/release/${PN}-build-${PV}.tar.xz"
 SRC_URI="${RELEASE_URI}
 	!truetype? ( ${FONT_URI} )
 "
@@ -167,6 +168,8 @@ REQUIRED_USE="bindist? ( !win32codecs )"
 PATCHES=(
 )
 
+S=${WORKDIR}/${PN}-build-${PV}
+
 pkg_setup() {
 	if [[ ${PV} == *9999* ]]; then
 		elog
@@ -225,6 +228,7 @@ src_unpack() {
 
 src_prepare() {
 	# fix path to bash executable in configure scripts
+	cd mplayer
 	local bash_scripts="configure version.sh"
 	sed -i \
 		-e "1c\#!${EPREFIX}/bin/bash" \
@@ -248,7 +252,10 @@ src_prepare() {
 	epatch "${FILESDIR}"/vdpau_osd.patch
 	epatch "${FILESDIR}"/fix_ts.patch
 	epatch "${FILESDIR}"/pts_wrap_sync.patch
+	cd ..
 
+#	emake ffmpeg libass
+#	emake ffmpeg-config libass-config
 	base_src_prepare
 }
 
@@ -555,18 +562,29 @@ src_configure() {
 		"
 	fi
 
-	./configure \
-		--cc=$(tc-getCC) \
-		--host-cc=$(tc-getBUILD_CC) \
-		--prefix="${EPREFIX}"/usr \
-		--bindir="${EPREFIX}"/usr/bin \
-		--libdir="${EPREFIX}"/usr/$(get_libdir) \
-		--confdir="${EPREFIX}"/etc/${PN} \
-		--datadir="${EPREFIX}"/usr/share/${PN} \
-		--mandir="${EPREFIX}"/usr/share/man \
-		--localedir="${EPREFIX}"/usr/share/locale \
-		--enable-translation \
-		${myconf} || die
+echo "--cc=$(tc-getCC) --host-cc=$(tc-getBUILD_CC) \
+--prefix="${EPREFIX}"/usr \
+--bindir="${EPREFIX}"/usr/bin \
+--libdir="${EPREFIX}"/usr/$(get_libdir) \
+--confdir="${EPREFIX}"/etc/${PN} \
+--datadir="${EPREFIX}"/usr/share/${PN} \
+--mandir="${EPREFIX}"/usr/share/man \
+--localedir="${EPREFIX}"/usr/share/locale \
+--enable-translation \
+${myconf}" | xargs -n1 >> mplayer_options
+
+#	./configure \
+#		--cc=$(tc-getCC) \
+#		--host-cc=$(tc-getBUILD_CC) \
+#		--prefix="${EPREFIX}"/usr \
+#		--bindir="${EPREFIX}"/usr/bin \
+#		--libdir="${EPREFIX}"/usr/$(get_libdir) \
+#		--confdir="${EPREFIX}"/etc/${PN} \
+#		--datadir="${EPREFIX}"/usr/share/${PN} \
+#		--mandir="${EPREFIX}"/usr/share/man \
+#		--localedir="${EPREFIX}"/usr/share/locale \
+#		--enable-translation \
+#		${myconf} || die
 }
 
 src_compile() {
@@ -598,6 +616,7 @@ src_install() {
 		INSTALLSTRIP="" \
 		install
 
+	cd mplayer
 	dodoc AUTHORS Copyright README etc/codecs.conf
 
 	docinto tech/
@@ -627,14 +646,14 @@ src_install() {
 	fi
 
 	insinto /etc/${PN}
-	newins "${S}/etc/example.conf" mplayer.conf
+	newins "${S}/mplayer/etc/example.conf" mplayer.conf
 	cat >> "${ED}/etc/${PN}/mplayer.conf" << _EOF_
 # Config options can be section specific, global
 # options should go in the default section
 [default]
 _EOF_
-	doins "${S}/etc/input.conf"
-	use osdmenu && doins "${S}/etc/menu.conf"
+	doins "${S}/mplayer/etc/input.conf"
+	use osdmenu && doins "${S}/mplayer/etc/menu.conf"
 
 	# set unrar path when required
 	if use rar; then
@@ -644,5 +663,5 @@ _EOF_
 	fi
 	dosym ../../../etc/${PN}/mplayer.conf /usr/share/${PN}/mplayer.conf
 
-	newbin "${S}/TOOLS/midentify.sh" midentify${namesuf}
+	newbin "${S}/mplayer/TOOLS/midentify.sh" midentify${namesuf}
 }

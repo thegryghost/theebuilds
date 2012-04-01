@@ -60,14 +60,17 @@
  				}
  			}
  
---- libmpdemux/demux_ts.c.org	2012-03-22 23:00:47.000000000 -0400
-+++ libmpdemux/demux_ts.c	2012-03-22 23:01:51.000000000 -0400
-@@ -1633,7 +1633,7 @@
+--- libmpdemux/demux_ts.c.org	2012-04-01 00:45:37.000000000 -0400
++++ libmpdemux/demux_ts.c	2012-04-01 00:44:34.000000000 -0400
+@@ -1604,7 +1633,10 @@
  		if(type_from_pmt != UNKNOWN)
  			es->type = type_from_pmt;
  		else
 -			es->type    = AUDIO_MP2;
-+			es->type    = UNKNOWN;
++            if (p[0] == 0xFF  && (p[1] == 0xF0 || p[1] == 0xF1))
++                es->type = AUDIO_AAC;
++			else
++				es->type    = UNKNOWN;
  
  		es->payload_size -= packet_len;
  

@@ -254,8 +254,6 @@ src_prepare() {
 	epatch "${FILESDIR}"/pts_wrap_sync.patch
 	cd ..
 
-#	emake ffmpeg libass
-#	emake ffmpeg-config libass-config
 	base_src_prepare
 }
 

@@ -15,7 +15,7 @@ SLOT="0"
 KEYWORDS="~amd64 ~x86"
 IUSE="avahi xmltv"
 
-DEPEND="media-tv/linuxtv-dvb-headers"
+DEPEND="virtual/linuxtv-dvb-headers"
 
 RDEPEND="${DEPEND}
 	xmltv? ( media-tv/xmltv )
@@ -37,6 +37,7 @@ src_prepare() {
 	sed -i \
 		-e 's:install -s:install:' \
 		support/posix.mk || die "sed failed!"
+	epatch "${FILESDIR}"/http.patch
 }
 
 src_configure() {

@@ -1,0 +1,12 @@
+diff -ru vdr-1.7.9.orig/dvbdevice.h vdr-1.7.9/dvbdevice.h
+--- vdr-1.7.9.orig/dvbdevice.h  2009-11-22 11:45:17.985430967 +0100
++++ vdr-1.7.9/dvbdevice.h   2009-11-22 11:45:56.262511145 +0100
+@@ -21,7 +21,7 @@
+ #error VDR requires at least Linux DVB driver API version 5.0!
+ #endif
+ 
+-#define MAXDVBDEVICES  8
++#define MAXDVBDEVICES  16
+ 
+ class cDvbTuner;
+ 

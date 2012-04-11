@@ -115,6 +115,16 @@
  
      OPT_FLAG_ON("list-properties", list_properties, CONF_GLOBAL),
      {"identify", &mp_msg_levels[MSGT_IDENTIFY], CONF_TYPE_FLAG, CONF_GLOBAL, 0, MSGL_V, NULL},
+--- libmpdemux/demuxer.c.org	2012-02-07 00:08:12.000000000 -0500
++++ libmpdemux/demuxer.c	2012-02-07 00:08:26.000000000 -0500
+@@ -51,6 +51,7 @@
+ #endif
+ 
+ static void clear_parser(sh_common_t *sh);
++int live_pause_enable=0;
+ 
+ // Demuxer list
+ extern const struct demuxer_desc demuxer_desc_edl;
 --- mplayer.c.org	2012-02-06 23:49:22.000000000 -0500
 +++ mplayer.c	2012-02-06 23:52:04.000000000 -0500
 @@ -109,6 +109,9 @@
@@ -127,7 +137,7 @@
  #ifdef HAVE_RTC
  #ifdef __linux__
  #include <linux/rtc.h>
-@@ -3063,6 +3066,26 @@
+@@ -3084,6 +3232,32 @@
  
      while ((cmd = mp_input_get_cmd(mpctx->input, 20, 1)) == NULL
             || cmd->id == MP_CMD_SET_MOUSE_POS || cmd->pausing == 4) {
@@ -137,17 +147,23 @@
 +			struct MPOpts *opts = &mpctx->opts;
 +			sh_video_t *sh_video = mpctx->demuxer->video->sh;
 +			double new_pts = 0;
++			int bps = 0;
++			demux_control(mpctx->demuxer, DEMUXER_CTRL_GET_BITRATE, &bps);
++
 +			(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
 +
-+			new_pts = (double) (sz - mpctx->demuxer->filepos) / sh_video->pts;
-+
-+			set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "Buffering.. %0.2f", new_pts);
++			new_pts = (double) (sz - mpctx->demuxer->filepos) / bps;
 +
 +			//printf("HI0: %ld -- %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
-+			if(new_pts > live_pause_enable)
++			if(new_pts > 1)
 +			{
 +				auto_pause = 0;
 +				unpause_player(mpctx);
++			}
++			else
++			{
++				set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "Buffering.. %0f", new_pts);
++				usec_sleep(2*1000*1000);
 +			}
 +		}
 +
@@ -222,18 +238,24 @@
      int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
                                  demuxer_style);
      if (need_reset)
-@@ -3663,6 +3747,18 @@
+@@ -3612,6 +3848,24 @@
              }
          }
  
 +		if (live_pause_enable && mpctx->stream && mpctx->demuxer)
 +		{
++			int bps = 0;
 +			off_t sz = 0;
 +			(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
-+			if ((sz - mpctx->demuxer->filepos) < 700000)
++			demux_control(mpctx->demuxer, DEMUXER_CTRL_GET_BITRATE, &bps);
++
++			double tmp = (double)(sz - mpctx->demuxer->filepos)/(bps*1.0); 
++
++//			if (((sz - mpctx->demuxer->filepos)/bps) < live_pause_enable)
++			if (tmp < .7)
 +			{
 +				auto_pause = 1;
-+               pause_player(mpctx);
++				pause_player(mpctx);
 +			}
 +		}
 +
@@ -241,13 +263,3 @@
          bool frame_time_remaining = sleep_until_near_frame(mpctx,
                                                             &mpctx->time_frame,
                                                             full_audio_buffers,
---- libmpdemux/demuxer.c.org	2012-02-07 00:08:12.000000000 -0500
-+++ libmpdemux/demuxer.c	2012-02-07 00:08:26.000000000 -0500
-@@ -51,6 +51,7 @@
- #endif
- 
- static void clear_parser(sh_common_t *sh);
-+int live_pause_enable=0;
- 
- // Demuxer list
- extern const struct demuxer_desc demuxer_desc_edl;

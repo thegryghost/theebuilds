@@ -137,7 +137,7 @@
  #ifdef HAVE_RTC
  #ifdef __linux__
  #include <linux/rtc.h>
-@@ -3084,6 +3232,32 @@
+@@ -3084,6 +3232,34 @@
  
      while ((cmd = mp_input_get_cmd(mpctx->input, 20, 1)) == NULL
             || cmd->id == MP_CMD_SET_MOUSE_POS || cmd->pausing == 4) {
@@ -149,21 +149,23 @@
 +			double new_pts = 0;
 +			int bps = 0;
 +			demux_control(mpctx->demuxer, DEMUXER_CTRL_GET_BITRATE, &bps);
-+
 +			(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
 +
-+			new_pts = (double) (sz - mpctx->demuxer->filepos) / bps;
++			if (sz > bps)
++			{
++				new_pts = (double) (sz - mpctx->demuxer->filepos) / bps;
 +
-+			//printf("HI0: %ld -- %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
-+			if(new_pts > 1)
-+			{
-+				auto_pause = 0;
-+				unpause_player(mpctx);
-+			}
-+			else
-+			{
-+				set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "Buffering.. %0f", new_pts);
-+				usec_sleep(2*1000*1000);
++				//printf("HI0: %ld -- %ld (%0.2f)\n", sz, mpctx->demuxer->filepos, new_pts);
++				if(new_pts > 1)
++				{
++					auto_pause = 0;
++					unpause_player(mpctx);
++				}
++				else
++				{
++					set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "Buffering.. %0f", new_pts);
++					usec_sleep(2*1000*1000);
++				}
 +			}
 +		}
 +
@@ -238,7 +240,7 @@
      int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
                                  demuxer_style);
      if (need_reset)
-@@ -3612,6 +3848,24 @@
+@@ -3612,6 +3850,26 @@
              }
          }
  
@@ -248,14 +250,16 @@
 +			off_t sz = 0;
 +			(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
 +			demux_control(mpctx->demuxer, DEMUXER_CTRL_GET_BITRATE, &bps);
-+
-+			double tmp = (double)(sz - mpctx->demuxer->filepos)/(bps*1.0); 
-+
-+//			if (((sz - mpctx->demuxer->filepos)/bps) < live_pause_enable)
-+			if (tmp < .7)
++			if (sz > bps)
 +			{
-+				auto_pause = 1;
-+				pause_player(mpctx);
++				double tmp = (double)(sz - mpctx->demuxer->filepos)/(bps*1.0); 
++
++//				if (((sz - mpctx->demuxer->filepos)/bps) < live_pause_enable)
++				if (tmp < .7)
++				{
++					auto_pause = 1;
++					pause_player(mpctx);
++				}
 +			}
 +		}
 +

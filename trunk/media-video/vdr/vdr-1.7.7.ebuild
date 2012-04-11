@@ -51,7 +51,7 @@ COMMON_DEPEND="virtual/jpeg
 	dvdarchive? ( dvdchapjump? ( media-libs/libdvdnav ) )"
 
 DEPEND="${COMMON_DEPEND}
-	~media-tv/linuxtv-dvb-headers-5
+	virtual/linuxtv-dvb-headers
 	dev-util/unifdef"
 
 RDEPEND="${COMMON_DEPEND}

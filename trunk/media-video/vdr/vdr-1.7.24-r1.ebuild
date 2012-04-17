@@ -9,7 +9,7 @@ inherit eutils flag-o-matic multilib
 # Switches supported by extensions-patch
 EXT_PATCH_FLAGS="alternatechannel cutterlimit
 	ddepgentry dvlvidprefer graphtft hardlinkcutter jumpplay
-	liemikuutio lircsettings mainmenuhooks menuorg nalustripper pinplugin
+	liemikuutio lircsettings mainmenuhooks menuorg nalustripper noepg pinplugin
 	rotor setup timerinfo ttxtsubs volctrl wareagleicon yaepg"
 
 # names of the use-flags
@@ -24,12 +24,12 @@ MY_PV="${PV%_p*}"
 MY_P="${PN}-${MY_PV}"
 S="${WORKDIR}/${MY_P}"
 
-EXT_P="extpng-${P}-gentoo-edition"
+EXT_P="extpng-${P}v2-gentoo-edition"
 
 DESCRIPTION="Video Disk Recorder - turns a pc into a powerful set top box for DVB"
 HOMEPAGE="http://www.tvdr.de/"
 SRC_URI="ftp://ftp.tvdr.de/vdr/Developer/${MY_P}.tar.bz2
-	http://dev.gentoo.org/~idl0r/vdr/${EXT_P}.patch.bz2"
+	http://dev.gentoo.org/~idl0r/${EXT_P}.patch"
 #		http://vdr.websitec.de/download/ext-patch/${EXT_P}.diff.tgz"
 
 KEYWORDS="~arm ~amd64 ~ppc ~x86"
@@ -155,6 +155,7 @@ src_prepare() {
 	eend 0
 
 	epatch "${FILESDIR}/${PN}-1.7.22-makefile-install-header.diff"
+	epatch "${FILESDIR}/${PV}-time_shift.patch"
 
 	sed -i i18n-to-gettext \
 		-e '/MSGIDBUGS/s/""/"automatically created from i18n.c by vdr-plugin.eclass <vdr\\@gentoo.org>"/'
@@ -166,8 +167,7 @@ src_prepare() {
 
 	if ! use vanilla; then
 		# Now apply extensions patch
-		epatch "${WORKDIR}/${EXT_P}.patch"
-		epatch "${FILESDIR}/vdr-1.7.23-disable_ca_updates2.patch"
+		epatch "${DISTDIR}/${EXT_P}.patch"
 
 		# This allows us to start even if some plugin does not exist
 		# or is not loadable.
@@ -216,8 +216,6 @@ src_prepare() {
 		ebegin "Make depend"
 		emake .dependencies >/dev/null
 		eend $? "make depend failed"
-	else
-		epatch "${FILESDIR}/vdr-1.7.23-disable_ca_updates.patch"
 	fi
 
 	epatch_user

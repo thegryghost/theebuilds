@@ -6,8 +6,8 @@
  
 -#define STREAMERBUFSIZE (20000 * TS_SIZE)
 -#define WRITERBUFSIZE (5000 * TS_SIZE)
-+#define STREAMERBUFSIZE (80000 * TS_SIZE)
-+#define WRITERBUFSIZE (100000 * TS_SIZE)
++#define STREAMERBUFSIZE (100000 * TS_SIZE)
++#define WRITERBUFSIZE (180000 * TS_SIZE)
  
  // --- cStreamdevBuffer -------------------------------------------------------
  
@@ -19,8 +19,8 @@
  #define REPACK      2048 
 -#define ABUF_SIZE   REPACK*1024
 -#define VBUF_SIZE   REPACK*10240
-+#define ABUF_SIZE   REPACK*4096
-+#define VBUF_SIZE   REPACK*15360
++#define ABUF_SIZE   REPACK*8096
++#define VBUF_SIZE   REPACK*20360
  
  void remux_main(uint8_t *buf, int count, void *pr)
  {

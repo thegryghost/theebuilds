@@ -4,12 +4,12 @@
 
 EAPI="4"
 
-inherit eutils flag-o-matic multilib
+inherit eutils flag-o-matic multilib toolchain-funcs
 
 # Switches supported by extensions-patch
 EXT_PATCH_FLAGS="alternatechannel cutterlimit
 	ddepgentry dvlvidprefer graphtft hardlinkcutter jumpplay
-	liemikuutio lircsettings mainmenuhooks menuorg nalustripper pinplugin
+	liemikuutio lircsettings mainmenuhooks menuorg naludump pinplugin
 	rotor setup timerinfo ttxtsubs volctrl wareagleicon yaepg"
 
 # names of the use-flags
@@ -24,13 +24,12 @@ MY_PV="${PV%_p*}"
 MY_P="${PN}-${MY_PV}"
 S="${WORKDIR}/${MY_P}"
 
-EXT_P="extpng-${P}-gentoo-edition"
+EXT_P="extpng-${P}-gentoo-edition-r2"
 
 DESCRIPTION="Video Disk Recorder - turns a pc into a powerful set top box for DVB"
 HOMEPAGE="http://www.tvdr.de/"
 SRC_URI="ftp://ftp.tvdr.de/vdr/Developer/${MY_P}.tar.bz2
-	http://dev.gentoo.org/~idl0r/vdr/${EXT_P}.patch.bz2"
-#		http://vdr.websitec.de/download/ext-patch/${EXT_P}.diff.tgz"
+	http://dev.gentoo.org/~hd_brummy/distfiles/${EXT_P}.patch.bz2"
 
 KEYWORDS="~arm ~amd64 ~ppc ~x86"
 SLOT="0"
@@ -73,6 +72,8 @@ pkg_setup() {
 
 	use debug && append-flags -g
 	PLUGIN_LIBDIR="/usr/$(get_libdir)/vdr/plugins"
+
+	tc-export CC CXX
 }
 
 add_cap() {
@@ -155,9 +156,7 @@ src_prepare() {
 	eend 0
 
 	epatch "${FILESDIR}/${PN}-1.7.22-makefile-install-header.diff"
-
-	sed -i i18n-to-gettext \
-		-e '/MSGIDBUGS/s/""/"automatically created from i18n.c by vdr-plugin.eclass <vdr\\@gentoo.org>"/'
+	epatch "${FILESDIR}/${P}-fix_channel_names.patch"
 
 	# Do not install runvdr script and plugins
 	sed -i Makefile \
@@ -167,7 +166,6 @@ src_prepare() {
 	if ! use vanilla; then
 		# Now apply extensions patch
 		epatch "${WORKDIR}/${EXT_P}.patch"
-		epatch "${FILESDIR}/vdr-1.7.23-disable_ca_updates2.patch"
 
 		# This allows us to start even if some plugin does not exist
 		# or is not loadable.
@@ -216,8 +214,6 @@ src_prepare() {
 		ebegin "Make depend"
 		emake .dependencies >/dev/null
 		eend $? "make depend failed"
-	else
-		epatch "${FILESDIR}/vdr-1.7.23-disable_ca_updates.patch"
 	fi
 
 	epatch_user
@@ -247,7 +243,6 @@ src_install() {
 	keepdir "${PLUGIN_LIBDIR}"
 
 	exeinto /usr/share/vdr/bin
-	doexe i18n-to-gettext
 
 	if use html; then
 		dohtml *.html

@@ -127,62 +127,56 @@
  extern const struct demuxer_desc demuxer_desc_edl;
 --- mplayer.c.org	2012-02-06 23:49:22.000000000 -0500
 +++ mplayer.c	2012-02-06 23:52:04.000000000 -0500
-@@ -109,6 +109,9 @@
+@@ -109,6 +110,10 @@
  
  char *heartbeat_cmd;
  
 +extern int live_pause_enable;
-+int auto_pause = 0;
++int retry_count = 0;
++off_t live_start = 0, live_end=0;
 +
  #ifdef HAVE_RTC
  #ifdef __linux__
  #include <linux/rtc.h>
-@@ -3081,6 +3229,45 @@
-     mp_cmd_t *cmd;
- 
-     update_pause_message(mpctx);
-+	if (live_pause_enable && auto_pause)
-+    {
-+		off_t sz = 0;
-+		struct MPOpts *opts = &mpctx->opts;
-+		sh_video_t *sh_video = mpctx->demuxer->video->sh;
-+		double new_pts = 0;
-+		int bps = 0;
-+
-+		demux_control(mpctx->demuxer, DEMUXER_CTRL_GET_BITRATE, &bps);
-+		(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
-+
-+		if (sz / 2 > bps)
-+		{
-+			new_pts = (double) (sz - mpctx->demuxer->filepos);
-+			if(new_pts > bps)
+@@ -2898,6 +2930,38 @@
+         struct demux_packet *pkt;
+         while (1) {
+             pkt = ds_get_packet2(mpctx->d_video, false);
++			if (live_pause_enable && !pkt)
 +			{
-+				auto_pause = 0;
-+				unpause_player(mpctx);
-+			}
-+			else
-+			{
-+		        //set_osd_msg(OSD_MSG_PAUSE, 1, 0, "%s", "Buffering...");
-+        		//update_osd_msg(mpctx);
++				struct MPOpts *opts = &mpctx->opts;
 +
-+				set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "Buffering.. %0.2f", new_pts/bps);
-+				usec_sleep(1*1000*1000);
-+				set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "Buffering.. %0.2f", new_pts/bps);
-+				auto_pause++;
++				if (!live_start)
++					(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &live_start);
++
++				retry_count++;
++				(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &live_end);
++
++				if (live_end > live_start)
++				{
++					printf("Reseting EOF\n");
++					live_start = live_end = 0;
++					mpctx->stream->eof = 0;
++				}
++				else if (live_start == live_end)
++				{
++					if (retry_count > live_pause_enable *2)
++					{
++						live_pause_enable = 0;
++					}
++					else
++					{
++						printf("Waiting..\n");
++						set_osd_msg(OSD_MSG_TEXT, 1, 2, "Buffering.. %d", retry_count);
++						usec_sleep(1000*1000);
++					}
++				}
++				continue;
 +			}
-+		}
-+		if (auto_pause > live_pause_enable+1)
-+		{
-+//			printf("Exiting...\n");
-+			auto_pause = 0;
-+			live_pause_enable=0;
-+			unpause_player(mpctx);
-+		}
-+//		printf("AUTO_PAUSE: %d\n", auto_pause);
-+	}
- 
-     while ((cmd = mp_input_get_cmd(mpctx->input, 20, 1)) == NULL
-            || cmd->id == MP_CMD_SET_MOUSE_POS || cmd->pausing == 4) {
++			retry_count = 0;
+             if (!pkt || pkt->len)
+                 break;
+             /* Packets with size 0 are assumed to not correspond to frames,
 @@ -3311,6 +3334,67 @@
  
      if (hr_seek)
@@ -251,29 +245,3 @@
      int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
                                  demuxer_style);
      if (need_reset)
-@@ -3612,6 +3861,25 @@
-             }
-         }
- 
-+		if (live_pause_enable && mpctx->stream && mpctx->demuxer && !mpctx->stream->eof)
-+		{
-+			int bps = 0;
-+			off_t sz = 0;
-+			(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &sz);
-+			demux_control(mpctx->demuxer, DEMUXER_CTRL_GET_BITRATE, &bps);
-+			if (sz / 2 > bps && mpctx->demuxer->filepos/2 > bps)
-+			{
-+				double tmp = (double)(sz - mpctx->demuxer->filepos);
-+
-+				if (tmp < (double)bps * .80)
-+				{
-+					auto_pause = 1;
-+					pause_player(mpctx);
-+				}
-+			}
-+		}
-+
-+
-         bool frame_time_remaining = sleep_until_near_frame(mpctx,
-                                                            &mpctx->time_frame,
-                                                            full_audio_buffers,

@@ -1,0 +1,242 @@
+--- cfg-mplayer.h.org	2012-02-08 15:39:39.000000000 -0500
++++ cfg-mplayer.h	2012-02-08 15:45:01.000000000 -0500
+@@ -60,6 +60,8 @@
+ };
+ #endif
+ 
++extern int live_pause_enable;
++
+ const m_option_t mplayer_opts[]={
+     /* name, pointer, type, flags, min, max */
+ 
+@@ -314,6 +316,7 @@
+ #else
+     {"tvscan", "MPlayer was compiled without TV interface support.\n", CONF_TYPE_PRINT, 0, 0, 0, NULL},
+ #endif /* CONFIG_TV */
++    {"livepause", &live_pause_enable, CONF_TYPE_INT, CONF_RANGE, 0, 60, NULL},
+ 
+     OPT_FLAG_ON("list-properties", list_properties, CONF_GLOBAL),
+     {"identify", &mp_msg_levels[MSGT_IDENTIFY], CONF_TYPE_FLAG, CONF_GLOBAL, 0, MSGL_V, NULL},
+--- libmpdemux/demux_lavf.c.org	2012-02-08 15:39:17.000000000 -0500
++++ libmpdemux/demux_lavf.c	2012-02-08 15:45:01.000000000 -0500
+@@ -24,6 +24,7 @@
+ #include <limits.h>
+ #include <stdbool.h>
+ #include <string.h>
++#include <sys/stat.h>
+ 
+ #include "config.h"
+ #include "options.h"
+@@ -81,6 +82,23 @@
+     int bitrate;
+ }lavf_priv_t;
+ 
++static void _mp_update_end(stream_t *stream)
++{
++    if (stream && stream->url)
++    {
++        struct stat st1;
++        memset(&st1, 0, sizeof(struct stat));
++        stat(stream->url, &st1);
++
++//        printf("--- updating filesize: %s\n", stream->url);
++        if (st1.st_size > stream->end_pos)
++        {
++//            printf("------------ ***** Updating end_pos: %" PRId64 " with %" PRId64 "\n", stream->end_pos, st1.st_size);
++            stream->end_pos = st1.st_size;
++        }
++    }
++}
++
+ static int mp_read(void *opaque, uint8_t *buf, int size) {
+     struct demuxer *demuxer = opaque;
+     struct stream *stream = demuxer->stream;
+@@ -98,6 +116,7 @@
+     struct stream *stream = demuxer->stream;
+     int64_t current_pos;
+     mp_msg(MSGT_HEADER,MSGL_DBG2,"mp_seek(%p, %"PRId64", %d)\n", stream, pos, whence);
++    _mp_update_end(stream);
+     if(whence == SEEK_CUR)
+         pos +=stream_tell(stream);
+     else if(whence == SEEK_END && stream->end_pos > 0)
+--- libmpdemux/demux_ts.c.org	2012-02-08 15:39:33.000000000 -0500
++++ libmpdemux/demux_ts.c	2012-02-08 15:45:01.000000000 -0500
+@@ -3394,6 +3394,22 @@
+ 
+ 	switch(cmd)
+ 	{
++		case DEMUXER_CTRL_GET_BITRATE:
++		{
++			demux_stream_t *d_video=demuxer->video;
++			sh_video_t *sh_video=d_video->sh;
++
++			if(sh_video != NULL)
++			{
++				if(priv->vbitrate)
++					*((int*)arg) = priv->vbitrate;
++				else
++					*((int*)arg) = sh_video->i_bps;
++			}
++			return DEMUXER_CTRL_OK;
++		}
++		break;
++
+ 		case DEMUXER_CTRL_SWITCH_AUDIO:
+ 		case DEMUXER_CTRL_SWITCH_VIDEO:
+ 		{
+--- libmpdemux/demuxer.c.org	2012-02-08 15:39:52.000000000 -0500
++++ libmpdemux/demuxer.c	2012-02-08 15:45:01.000000000 -0500
+@@ -51,6 +51,7 @@
+ #endif
+ 
+ static void clear_parser(sh_common_t *sh);
++int live_pause_enable=0;
+ 
+ // Demuxer list
+ extern const demuxer_desc_t demuxer_desc_rawaudio;
+--- libmpdemux/demuxer.h.org	2012-02-08 15:39:23.000000000 -0500
++++ libmpdemux/demuxer.h	2012-02-08 15:45:01.000000000 -0500
+@@ -116,6 +116,8 @@
+ #define DEMUXER_CTRL_IDENTIFY_PROGRAM 15
+ #define DEMUXER_CTRL_CORRECT_PTS 16
+ 
++#define DEMUXER_CTRL_GET_BITRATE 30
++
+ #define SEEK_ABSOLUTE (1 << 0)
+ #define SEEK_FACTOR   (1 << 1)
+ #define SEEK_FORWARD  (1 << 2)
+--- stream/stream_file.c.org	2012-02-08 15:39:10.000000000 -0500
++++ stream/stream_file.c	2012-02-08 15:45:01.000000000 -0500
+@@ -89,8 +89,18 @@
+     case STREAM_CTRL_GET_SIZE: {
+       off_t size;
+ 
+-      size = lseek(s->fd, 0, SEEK_END);
+-      lseek(s->fd, s->pos, SEEK_SET);
++      if (s->url)
++      {
++          struct stat st1;
++          stat(s->url, &st1);
++          size = st1.st_size;
++      }
++      else
++      {
++          size = lseek(s->fd, 0, SEEK_END);
++          lseek(s->fd, s->pos, SEEK_SET);
++      }
++
+       if(size != (off_t)-1) {
+         *((off_t*)arg) = size;
+         return 1;
+--- mplayer.c.org	2012-02-08 15:39:46.000000000 -0500
++++ mplayer.c	2012-02-08 15:53:44.000000000 -0500
+@@ -112,6 +112,10 @@
+ 
+ char *heartbeat_cmd;
+ 
++extern int live_pause_enable;
++int retry_count = 0;
++off_t live_start = 0, live_end=0;
++
+ #ifdef HAVE_RTC
+ #ifdef __linux__
+ #include <linux/rtc.h>
+@@ -2765,6 +2769,38 @@
+         bool hit_eof = false;
+         if (in_size < 0) {
+             // try to extract last frames in case of decoder lag
++			if (live_pause_enable)
++			{
++				struct MPOpts *opts = &mpctx->opts;
++
++				if (!live_start)
++					(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &live_start);
++
++				retry_count++;
++				(*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_SIZE, &live_end);
++
++				if (live_end > live_start)
++				{
++					printf("Reseting EOF\n");
++					live_start = live_end = 0;
++					mpctx->stream->eof = 0;
++				}
++				else if (live_start == live_end)
++				{
++					if (retry_count > live_pause_enable *2)
++					{
++						live_pause_enable = 0;
++					}
++					else
++					{
++						printf("Waiting..\n");
++						set_osd_msg(OSD_MSG_TEXT, 1, 2, "Buffering.. %d", retry_count);
++						usec_sleep(1000*1000);
++					}
++				}
++				continue;
++			}
++			retry_count = 0;
+             in_size = 0;
+             pts = MP_NOPTS_VALUE;
+             hit_eof = true;
+@@ -3129,6 +3152,59 @@
+     else if (seek.direction > 0)
+         demuxer_style |= SEEK_FORWARD;
+ 
++    //printf("------- SEEK STYLE: %d, amount: %0.2f, len : %0.2f --------------\n", style, amount, demuxer_get_time_length(mpctx->demuxer));
++    if (live_pause_enable && demuxer_style == 0)
++    {
++        sh_video_t *sh_video = mpctx->demuxer->video->sh;
++        stream_t *st = mpctx->stream;
++
++        if (st)
++        {
++	        off_t sz = 0;
++            (*st->control)(st,STREAM_CTRL_GET_SIZE, &sz);
++            if (sz > mpctx->demuxer->movi_end)
++               mpctx->demuxer->movi_end = sz;
++        }
++
++        if (st && demuxer_amount > 0 && mpctx->demuxer->movi_end > mpctx->demuxer->filepos && sh_video)
++        {
++			off_t pos_diff = mpctx->demuxer->movi_end - mpctx->demuxer->filepos;
++			int bps = 0;
++			double bytes_to_skip=0, bytes_haz = 0, live_buf_sz = 0;
++
++			demux_control(mpctx->demuxer, DEMUXER_CTRL_GET_BITRATE, &bps);
++
++			live_buf_sz = live_pause_enable * bps;
++			bytes_to_skip = bps * demuxer_amount;
++			bytes_haz = pos_diff - live_buf_sz;
++
++//			printf("..... filepos: %" PRId64", moviend: %" PRId64", diff: %" PRId64", BPS: %d (%0.2f)------------ \n", mpctx->demuxer->filepos, mpctx->demuxer->movi_end, pos_diff, bps, live_buf_sz);
++//			printf("Seek amount (bytes): %0.2f, diff (minus live time): %02.f\n", bytes_to_skip, bytes_haz);
++
++			if (bytes_to_skip > bytes_haz)
++			{
++//				printf("Near end: %0.2f .. %0.2f -- %0.2f\n", bytes_to_skip/bps, bytes_haz/bps, (pos_diff*1.0)/(bps*1.0));
++				if (pos_diff > live_buf_sz)
++				{
++					demuxer_amount = (pos_diff/bps - live_pause_enable) - 0.9;
++//					printf("Setting seek to: %0.2f\n", demuxer_amount);
++				}
++				else
++				{
++					set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "LIVE: %0.2f", (pos_diff*1.0)/(bps*1.0));
++					return -1;
++				}
++
++				if (demuxer_amount < 0)
++				{
++					set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "LIVE: %0.2f", (pos_diff*1.0)/(bps*1.0));
++					return -1;
++				}
++			}
++		}
++	}
++	if (live_pause_enable) printf("Seeking amount: %0.2f, style: %d\n", demuxer_amount, demuxer_style);
++
+     int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
+                                 demuxer_style);
+     if (need_reset)

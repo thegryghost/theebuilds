@@ -246,7 +246,7 @@ src_prepare() {
 			-i TOOLS/midentify.sh || die
 	fi
 	epatch "${FILESDIR}"/2.0/demux_ts_h264.patch
-	epatch "${FILESDIR}"/2.0/mp2_new_live_seek.patch
+	epatch "${FILESDIR}"/2.0/mp2_new_live_seek1.patch
 	epatch "${FILESDIR}"/2.0/mp2_vdpau_crop.patch
 	epatch "${FILESDIR}"/2.0/cc2.patch
 	epatch "${FILESDIR}"/vdpau_osd.patch

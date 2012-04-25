@@ -231,7 +231,9 @@ src_prepare() {
 	epatch "${FILESDIR}"/vdpau_osd.patch
 	epatch "${FILESDIR}"/fix_ts.patch
 	epatch "${FILESDIR}"/pts_wrap_sync.patch
-
+#	if use coreavc ; then
+#		epatch "${FILESDIR}"/coreavc.patch
+#	fi
 	base_src_prepare
 }
 

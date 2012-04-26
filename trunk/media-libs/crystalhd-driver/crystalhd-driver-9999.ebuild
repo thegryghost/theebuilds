@@ -30,8 +30,8 @@ pkg_setup() {
 src_prepare() {
 	# Patch a few issues which have not been fixed upstream.
 	epatch "${FILESDIR}/${P}-fix-missing-delay-header.patch"
-	epatch "${FILESDIR}/${P}-use-8-dma-buffers.patch"
-	epatch "${FILESDIR}/${P}-quiet-dmesg.patch"
+	#epatch "${FILESDIR}/${P}-use-8-dma-buffers.patch"
+	#epatch "${FILESDIR}/${P}-quiet-dmesg.patch"
 	eautoconf
 }
 

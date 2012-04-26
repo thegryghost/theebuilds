@@ -120,6 +120,7 @@ src_prepare() {
 	fi
 	epatch "${FILESDIR}/freiordl.patch"
 	epatch "${FILESDIR}/ffmpeg_monotone_0.10.2.patch"
+	epatch "${FILESDIR}/crystal_non_exp.patch"
 }
 
 src_configure() {

@@ -1,0 +1,36 @@
+diff --git a/driver/linux/crystalhd_fleafuncs.c b/driver/linux/crystalhd_fleafuncs.c
+index 1aa7115..8753591 100644
+--- a/driver/linux/crystalhd_fleafuncs.c
++++ b/driver/linux/crystalhd_fleafuncs.c
+@@ -2777,8 +2777,10 @@ bool flea_GetPictureInfo(struct crystalhd_hw *hw, struct crystalhd_rx_dma_pkt *
+ 		goto getpictureinfo_err;
+ 	PicInfoLineNum = *(uint32_t*)(dio->pib_va);
+ 	if (PicInfoLineNum > 1092) {
++/* Silence dmesg log spew
+ 		dev_err(dev, "Invalid Line Number[%x], DoneSz:0x%x Bytes\n",
+ 			(int)PicInfoLineNum, rx_pkt->dio_req->uinfo.y_done_sz * 4);
++*/
+ 		goto getpictureinfo_err;
+ 	}
+ 
+diff --git a/driver/linux/crystalhd_linkfuncs.c b/driver/linux/crystalhd_linkfuncs.c
+index 8366cc3..2e1739a 100644
+--- a/driver/linux/crystalhd_linkfuncs.c
++++ b/driver/linux/crystalhd_linkfuncs.c
+@@ -638,7 +638,7 @@ bool link_GetPictureInfo(struct crystalhd_hw *hw, uint32_t picHeight, uint32_t p
+ 	int i;
+ 	unsigned long res = 0;
+ 
+-	dev_dbg(&hw->adp->pdev->dev, "getting Picture Info\n");
++	//dev_dbg(&hw->adp->pdev->dev, "getting Picture Info\n");
+ 
+ 	*PicNumber = 0;
+ 	*PicMetaData = 0;
+@@ -671,7 +671,7 @@ bool link_GetPictureInfo(struct crystalhd_hw *hw, uint32_t picHeight, uint32_t p
+ 
+ 	PicInfoLineNum = link_GetPicInfoLineNum(dio, dio->pib_va);
+ 	if (PicInfoLineNum > 1092) {
+-		dev_dbg(&hw->adp->pdev->dev, "Invalid Line Number[%x]\n", (int)PicInfoLineNum);
++		//dev_dbg(&hw->adp->pdev->dev, "Invalid Line Number[%x]\n", (int)PicInfoLineNum);
+ 		goto getpictureinfo_err;
+ 	}

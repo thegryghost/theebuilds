@@ -1,0 +1,11 @@
+diff --git a/driver/linux/crystalhd_flea_ddr.c b/driver/linux/crystalhd_flea_ddr.c
+index 48dca86..3415f29 100644
+--- a/driver/linux/crystalhd_flea_ddr.c
++++ b/driver/linux/crystalhd_flea_ddr.c
+@@ -24,6 +24,7 @@
+  * along with this driver.  If not, see <http://www.gnu.org/licenses/>.
+  **********************************************************************/
+ 
++#include <linux/delay.h>
+ #include "crystalhd_hw.h"
+ #include "crystalhd_flea_ddr.h"

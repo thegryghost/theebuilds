@@ -39,7 +39,7 @@ FONT_URI="
 if [[ ${PV} == *9999* ]]; then
 	RELEASE_URI=""
 else
-	RELEASE_URI="http://www.splitted-desktop.com/~gbeauchesne/mplayer-vaapi/mplayer-vaapi-20110127-FULL.tar.bz2"
+	RELEASE_URI="http://www.splitted-desktop.com/static/libva/mplayer-vaapi/mplayer-vaapi-20110127-FULL.tar.bz2"
 fi
 SRC_URI="${RELEASE_URI}
 	!truetype? ( ${FONT_URI} )"

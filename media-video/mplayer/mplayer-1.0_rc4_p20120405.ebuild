@@ -250,6 +250,8 @@ src_prepare() {
 	# fix path to bash executable in configure scripts
 	sed -i -e "1c\#!${EPREFIX}/bin/bash" configure version.sh || die
 	epatch ${FILESDIR}/vaapi/vaapi-20120405.patch
+	epatch ${FILESDIR}/demux_ts_h264.patch
+	epatch ${FILESDIR}/fix_ts2.patch
 	base_src_prepare
 }
 

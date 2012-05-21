@@ -1,0 +1,18 @@
+--- src/mainwindow.cpp.org	2012-05-21 02:12:51.313017101 -0400
++++ src/mainwindow.cpp	2012-05-21 02:12:53.159017168 -0400
+@@ -1173,13 +1173,13 @@
+     //check available space on destination before we start
+     struct statfs info;
+     statfs(newPath.toLocal8Bit(), &info);
+-
++/*
+     if((qint64) info.f_bavail*info.f_bsize < total)
+     {
+         emit copyProgressFinished(2,newFiles);
+         return 0;
+     }
+-
++*/
+ 
+     //main loop
+     for(int i = 0; i < files.count(); ++i)

@@ -1,0 +1,26 @@
+--- libdvbmpeg/remux.c.org	2011-02-24 20:19:28.000000000 -0500
++++ libdvbmpeg/remux.c	2011-02-24 20:20:44.000000000 -0500
+@@ -1096,8 +1096,8 @@
+ 
+ 
+ #define REPACK      2048 
+-#define ABUF_SIZE   REPACK*1024
+-#define VBUF_SIZE   REPACK*10240
++#define ABUF_SIZE   REPACK*8096
++#define VBUF_SIZE   REPACK*20360
+ 
+ void remux_main(uint8_t *buf, int count, void *pr)
+ {
+--- server/livestreamer.c.org	2011-02-24 22:05:21.000000000 -0500
++++ server/livestreamer.c	2011-02-24 22:05:42.000000000 -0500
+@@ -286,8 +286,8 @@
+ 							tspat_buf[19] = crc >>  8 & 0xff;     // Checksum
+ 							tspat_buf[20] = crc & 0xff;           // Checksum
+ 							int written = siBuffer.PutTS(tspat_buf, TS_SIZE);
+-							if (written != TS_SIZE)
+-								siBuffer.ReportOverflow(TS_SIZE - written);
++							//if (written != TS_SIZE)
++							//	siBuffer.ReportOverflow(TS_SIZE - written);
+ 							if (pmtPid != prevPmtPid) {
+ 								m_Streamer->SetPid(pmtPid, true);
+ 								Add(pmtPid, 0x02);

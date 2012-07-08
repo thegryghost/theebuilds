@@ -1,6 +1,6 @@
 # Copyright 1999-2012 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
-# $Header: /var/cvsroot/gentoo-x86/media-video/mplayer/mplayer-1.0_rc4_p20120128.ebuild,v 1.2 2012/02/05 15:41:41 tomka Exp $
+# $Header: /var/cvsroot/gentoo-x86/media-video/mplayer/mplayer-1.1-r1.ebuild,v 1.3 2012/06/21 08:10:42 yngwin Exp $
 
 EAPI=4
 
@@ -10,11 +10,11 @@ ESVN_REPO_URI="svn://svn.mplayerhq.hu/mplayer/trunk"
 
 inherit toolchain-funcs eutils flag-o-matic multilib base ${SVN_ECLASS}
 
-IUSE="3dnow 3dnowext +a52 aalib +alsa altivec aqua +ass bidi bindist bl bluray
+IUSE="3dnow 3dnowext +a52 aalib +alsa altivec aqua bidi bindist bl bluray
 bs2b cddb +cdio cdparanoia cpudetection debug dga
-directfb doc +dts +dv dvb +dvd +dvdnav dxr3 +enca +encode esd faac +faad fbcon
+directfb doc +dts +dv dvb +dvd +dvdnav dxr3 +enca +encode faac +faad fbcon
 ftp gif ggi gsm +iconv ipv6 jack joystick jpeg jpeg2k kernel_linux ladspa
-libcaca libmpeg2 lirc +live lzo mad md5sum +mmx mmxext mng +mp3 nas
++libass libcaca libmpeg2 lirc +live lzo mad md5sum +mmx mmxext mng +mp3 nas
 +network nut openal +opengl +osdmenu oss png pnm pulseaudio pvr +quicktime
 radio +rar +real +rtc rtmp samba +shm sdl +speex sse sse2 ssse3
 tga +theora +tremor +truetype +toolame +twolame +unicode v4l vdpau vidix
@@ -33,6 +33,10 @@ FONT_URI="
 "
 if [[ ${PV} == *9999* ]]; then
 	RELEASE_URI=""
+elif [ "${PV%_rc*}" = "${PV}" ]; then
+	MY_P="MPlayer-${PV}"
+	S="${WORKDIR}/${MY_P}"
+	RELEASE_URI="mirror://mplayer/releases/${MY_P}.tar.xz"
 else
 	RELEASE_URI="mirror://gentoo/${P}.tar.xz"
 fi
@@ -57,7 +61,7 @@ RDEPEND+="
 	sys-libs/ncurses
 	app-arch/bzip2
 	sys-libs/zlib
-	>=media-video/ffmpeg-0.10
+	>=media-video/ffmpeg-0.10.3
 	!bindist? (
 		x86? (
 			win32codecs? ( media-libs/win32codecs )
@@ -66,7 +70,6 @@ RDEPEND+="
 	a52? ( media-libs/a52dec )
 	aalib? ( media-libs/aalib )
 	alsa? ( media-libs/alsa-lib )
-	ass? ( >=media-libs/libass-0.9.10[enca?] )
 	bidi? ( dev-libs/fribidi )
 	bluray? ( >=media-libs/libbluray-0.2.1 )
 	bs2b? ( media-libs/libbs2b )
@@ -76,7 +79,7 @@ RDEPEND+="
 	directfb? ( dev-libs/DirectFB )
 	dts? ( media-libs/libdca )
 	dv? ( media-libs/libdv )
-	dvb? ( media-tv/linuxtv-dvb-headers )
+	dvb? ( virtual/linuxtv-dvb-headers )
 	dvd? ( >=media-libs/libdvdread-4.1.3 )
 	dvdnav? ( >=media-libs/libdvdnav-4.1.3 )
 	encode? (
@@ -87,7 +90,6 @@ RDEPEND+="
 		x264? ( >=media-libs/x264-0.0.20100423 )
 		xvid? ( media-libs/xvid )
 	)
-	esd? ( media-sound/esound )
 	enca? ( app-i18n/enca )
 	faad? ( media-libs/faad2 )
 	ggi? ( media-libs/libggi media-libs/libggiwmh )
@@ -98,6 +100,7 @@ RDEPEND+="
 	jpeg? ( virtual/jpeg )
 	jpeg2k? ( media-libs/openjpeg )
 	ladspa? ( media-libs/ladspa-sdk )
+	libass? ( >=media-libs/libass-0.9.10[enca?] )
 	libcaca? ( media-libs/libcaca )
 	libmpeg2? ( media-libs/libmpeg2 )
 	lirc? ( app-misc/lirc )
@@ -141,7 +144,7 @@ X_DEPS="
 "
 ASM_DEP="dev-lang/yasm"
 DEPEND="${RDEPEND}
-	dev-util/pkgconfig
+	virtual/pkgconfig
 	dga? ( x11-proto/xf86dgaproto )
 	dxr3? ( media-video/em8300-libraries )
 	X? ( ${X_DEPS} )
@@ -159,7 +162,7 @@ DEPEND="${RDEPEND}
 SLOT="0"
 LICENSE="GPL-2"
 if [[ ${PV} != *9999* ]]; then
-	KEYWORDS="~amd64 ~hppa ~x86 ~x86-fbsd ~amd64-linux ~x86-linux ~ppc-macos ~x64-macos ~x86-macos ~sparc-solaris ~x86-solaris"
+	KEYWORDS="~alpha ~amd64 ~arm ~hppa ~ia64 ~sparc ~x86 ~x86-fbsd ~amd64-linux ~x86-linux ~ppc-macos ~x64-macos ~x86-macos ~sparc-solaris ~x86-solaris"
 else
 	KEYWORDS=""
 fi
@@ -174,7 +177,7 @@ fi
 # xvmc requires xvideo support
 REQUIRED_USE="bindist? ( !faac !win32codecs )
 	dvdnav? ( dvd )
-	ass? ( truetype )
+	libass? ( truetype )
 	truetype? ( iconv )
 	dxr3? ( X )
 	ggi? ( X )
@@ -187,6 +190,11 @@ REQUIRED_USE="bindist? ( !faac !win32codecs )
 	xscreensaver? ( X )
 	xv? ( X )
 	xvmc? ( xv )"
+
+PATCHES=(
+	"${FILESDIR}/${PN}-1.0_rc4-pkg-config.patch"
+	"${FILESDIR}/${P}-ffmpeg.patch"
+)
 
 pkg_setup() {
 	if [[ ${PV} == *9999* ]]; then
@@ -216,12 +224,15 @@ src_unpack() {
 		cd "${WORKDIR}"
 		rm -rf "${WORKDIR}/${P}/ffmpeg/"
 		( S="${WORKDIR}/${P}/ffmpeg/" git-2_src_unpack )
+	else
+		unpack ${A}
+	fi
+
+	if [[ ${PV} = *9999* ]] || [[ "${PV%_rc*}" = "${PV}" ]]; then
 		cd "${S}"
 		cp "${FILESDIR}/dump_ffmpeg.sh" . || die
 		chmod +x dump_ffmpeg.sh
 		./dump_ffmpeg.sh || die
-	else
-		unpack ${A}
 	fi
 
 	if ! use truetype; then
@@ -238,12 +249,17 @@ src_prepare() {
 		subversion_wc_info
 		printf "${ESVN_WC_REVISION}" > $svf
 	fi
-	[ -f "$svf" ] || die "Missing ${svf}. Did you generate your snapshot with prepare_mplayer.sh?"
-	local sv=$(<$svf)
-	printf "SVN-r${sv} (Gentoo)" > VERSION
+	if [ ! -f VERSION ] ; then
+		[ -f "$svf" ] || die "Missing ${svf}. Did you generate your snapshot with prepare_mplayer.sh?"
+		local sv=$(<$svf)
+		printf "SVN-r${sv} (Gentoo)" > VERSION
+	fi
 
 	# fix path to bash executable in configure scripts
 	sed -i -e "1c\#!${EPREFIX}/bin/bash" configure version.sh || die
+	epatch ${FILESDIR}/vaapi/vaapi-20120405.patch
+	epatch ${FILESDIR}/demux_ts_h264.patch
+	epatch ${FILESDIR}/fix_ts2.patch
 
 	base_src_prepare
 }
@@ -274,13 +290,14 @@ src_configure() {
 		$(use_enable network networking)
 		$(use_enable joystick)
 	"
-	uses="ass bl bluray enca ftp rtc" # nemesi <- not working with in-tree ebuild
+	uses="bl bluray enca ftp rtc" # nemesi <- not working with in-tree ebuild
 	myconf+=" --disable-nemesi" # nemesi automagic disable
 	for i in ${uses}; do
 		use ${i} || myconf+=" --disable-${i}"
 	done
 	use bidi  || myconf+=" --disable-fribidi"
 	use ipv6  || myconf+=" --disable-inet6"
+	use libass || myconf+=" --disable-ass"
 	use nut   || myconf+=" --disable-libnut"
 	use rar   || myconf+=" --disable-unrarexec"
 	use samba || myconf+=" --disable-smb"
@@ -469,7 +486,8 @@ src_configure() {
 	################
 	# Audio Output #
 	################
-	uses="alsa esd jack ladspa nas openal"
+	myconf+=" --disable-esd"
+	uses="alsa jack ladspa nas openal"
 	for i in ${uses}; do
 		use ${i} || myconf+=" --disable-${i}"
 	done
@@ -527,6 +545,7 @@ src_configure() {
 		"
 	fi
 
+	tc-export PKG_CONFIG
 	./configure \
 		--cc="$(tc-getCC)" \
 		--host-cc="$(tc-getBUILD_CC)" \

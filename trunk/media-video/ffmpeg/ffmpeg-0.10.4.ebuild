@@ -10,6 +10,8 @@ if [ "${PV#9999}" != "${PV}" ] ; then
 	EGIT_REPO_URI="git://git.videolan.org/ffmpeg.git"
 fi
 
+X264_SNAPSHOT="20120707-2245"
+
 inherit eutils flag-o-matic multilib toolchain-funcs ${SCM}
 
 DESCRIPTION="Complete solution to record, convert and stream audio and video. Includes libavcodec."
@@ -19,7 +21,8 @@ if [ "${PV#9999}" != "${PV}" ] ; then
 elif [ "${PV%_p*}" != "${PV}" ] ; then # Snapshot
 	SRC_URI="mirror://gentoo/${P}.tar.bz2"
 else # Release
-	SRC_URI="http://ffmpeg.org/releases/${P/_/-}.tar.bz2"
+	SRC_URI="http://ffmpeg.org/releases/${P/_/-}.tar.bz2
+			http://download.videolan.org/pub/videolan/x264/snapshots/x264-snapshot-${X264_SNAPSHOT}.tar.bz2"
 fi
 FFMPEG_REVISION="${PV#*_p}"
 
@@ -115,6 +118,11 @@ REQUIRED_USE="bindist? ( encode? ( !faac !aacplus ) !openssl )
 
 S=${WORKDIR}/${P/_/-}
 
+src_unpack() {
+	unpack ${A}
+	unpack x264-snapshot-${X264_SNAPSHOT}.tar.bz2
+}
+
 src_prepare() {
 	if [ "${PV%_p*}" != "${PV}" ] ; then # Snapshot
 		export revision=git-N-${FFMPEG_REVISION}
@@ -122,6 +130,8 @@ src_prepare() {
 	epatch "${FILESDIR}/freiordl.patch"
 	epatch "${FILESDIR}/ffmpeg_monotone_0.10.2.patch"
 	epatch "${FILESDIR}/crystal_non_exp.patch"
+	cd ${WORKDIR}/x264-snapshot-${X264_SNAPSHOT}
+	econf && emake
 }
 
 src_configure() {
@@ -240,13 +250,22 @@ src_configure() {
 	# Misc stuff
 	use hardcoded-tables && myconf="${myconf} --enable-hardcoded-tables"
 
+	if use static-libs; then
+		myconf="${myconf} --enable-libx264"
+		myconf="${myconf} --disable-shared"
+		myconf="${myconf}  --extra-ldflags=-L../x264-snapshot-${X264_SNAPSHOT}"
+		CFLAGS="${CFLAGS} -I../x264-snapshot-${X264_SNAPSHOT}"
+#-extra-cflags=-I../x264-snapshot-${X264_SNAPSHOT} --extra-ldflags=-L../x264-snapshot-${X264_SNAPSHOT}
+	else
+		myconf="${myconf} --enable-shared"
+	fi
+
 	cd "${S}"
 	./configure \
 		--prefix="${EPREFIX}/usr" \
 		--libdir="${EPREFIX}/usr/$(get_libdir)" \
 		--shlibdir="${EPREFIX}/usr/$(get_libdir)" \
 		--mandir="${EPREFIX}/usr/share/man" \
-		--enable-shared \
 		--cc="$(tc-getCC)" \
 		--cxx="$(tc-getCXX)" \
 		--ar="$(tc-getAR)" \
@@ -265,19 +284,25 @@ src_compile() {
 			emake tools/$i
 		fi
 	done
+	ls
 }
 
 src_install() {
-	emake DESTDIR="${D}" install install-man
+	if use static-libs; then
+		mv ffmpeg ffmpeg-0.10.4
+		dobin ffmpeg-0.10.4
+	else
+		emake DESTDIR="${D}" install install-man
 
-	dodoc Changelog README INSTALL
-	dodoc -r doc/*
+		dodoc Changelog README INSTALL
+		dodoc -r doc/*
 
-	for i in ${FFTOOLS} ; do
-		if use fftools_$i ; then
-			dobin tools/$i
-		fi
-	done
+		for i in ${FFTOOLS} ; do
+			if use fftools_$i ; then
+				dobin tools/$i
+			fi
+		done
+	fi
 }
 
 src_test() {

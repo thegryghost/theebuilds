@@ -1,6 +1,6 @@
 # Copyright 1999-2012 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
-# $Header: /var/cvsroot/gentoo-x86/media-video/ffmpeg/ffmpeg-0.10.ebuild,v 1.2 2012/01/31 00:17:33 jdhore Exp $
+# $Header: /var/cvsroot/gentoo-x86/media-video/ffmpeg/ffmpeg-0.10.4.ebuild,v 1.1 2012/07/23 12:33:48 aballier Exp $
 
 EAPI="4"
 
@@ -26,28 +26,33 @@ FFMPEG_REVISION="${PV#*_p}"
 LICENSE="GPL-2 amr? ( GPL-3 ) encode? ( aac? ( GPL-3 ) )"
 SLOT="0"
 if [ "${PV#9999}" = "${PV}" ] ; then
-	KEYWORDS="~amd64 ~hppa ~ppc ~ppc64 ~x86 ~x86-fbsd"
+	KEYWORDS="~alpha ~amd64 ~arm ~hppa ~ia64 ~ppc ~ppc64 ~sparc ~x86 ~amd64-fbsd ~x86-fbsd ~amd64-linux ~x86-linux"
 fi
 IUSE="
-	aac aacplus alsa amr ass bindist +bzip2 cdio celt cpudetection debug
+	aac aacplus alsa amr bindist +bzip2 cdio celt cpudetection debug
 	dirac doc +encode faac frei0r gnutls gsm +hardcoded-tables ieee1394 jack
-	jpeg2k libv4l modplug mp3 network openal openssl oss pic pulseaudio
-	+qt-faststart rtmp schroedinger sdl speex static-libs test theora threads
+	jpeg2k libass libv4l modplug mp3 network openal openssl oss pic pulseaudio
+	rtmp schroedinger sdl speex static-libs test theora threads
 	truetype v4l vaapi vdpau vorbis vpx X x264 xvid +zlib
 	"
 
 # String for CPU features in the useflag[:configure_option] form
 # if :configure_option isn't set, it will use 'useflag' as configure option
-CPU_FEATURES="3dnow:amd3dnow 3dnowext:amd3dnowext altivec avx mmx mmxext:mmx2 ssse3 vis neon iwmmxt"
+CPU_FEATURES="3dnow:amd3dnow 3dnowext:amd3dnowext altivec avx mmx mmxext:mmx2 ssse3 vis neon"
 
 for i in ${CPU_FEATURES}; do
 	IUSE="${IUSE} ${i%:*}"
 done
 
+FFTOOLS="aviocat cws2fws ffeval graph2dot ismindex pktdumper qt-faststart trasher"
+
+for i in ${FFTOOLS}; do
+	IUSE="${IUSE} +fftools_$i"
+done
+
 RDEPEND="
 	alsa? ( media-libs/alsa-lib )
 	amr? ( media-libs/opencore-amr )
-	ass? ( media-libs/libass )
 	bzip2? ( app-arch/bzip2 )
 	cdio? ( dev-libs/libcdio )
 	celt? ( >=media-libs/celt-0.11.1 )
@@ -64,11 +69,12 @@ RDEPEND="
 		xvid? ( >=media-libs/xvid-1.1.0 )
 	)
 	frei0r? ( media-plugins/frei0r-plugins )
-	gnutls? ( net-libs/gnutls )
+	gnutls? ( >=net-libs/gnutls-2.12.16 )
 	gsm? ( >=media-sound/gsm-1.0.12-r1 )
 	ieee1394? ( media-libs/libdc1394 sys-libs/libraw1394 )
 	jack? ( media-sound/jack-audio-connection-kit )
 	jpeg2k? ( >=media-libs/openjpeg-1.3-r2 )
+	libass? ( media-libs/libass )
 	libv4l? ( media-libs/libv4l )
 	modplug? ( media-libs/libmodplug )
 	openal? ( >=media-libs/openal-1.1 )
@@ -84,25 +90,27 @@ RDEPEND="
 	X? ( x11-libs/libX11 x11-libs/libXext x11-libs/libXfixes )
 	zlib? ( sys-libs/zlib )
 	!media-video/qt-faststart
+	!media-libs/libpostproc
 "
 
 DEPEND="${RDEPEND}
 	>=sys-devel/make-3.81
-	dirac? ( dev-util/pkgconfig )
+	dirac? ( virtual/pkgconfig )
 	doc? ( app-text/texi2html )
-	gnutls? ( dev-util/pkgconfig )
-	ieee1394? ( dev-util/pkgconfig )
-	libv4l? ( dev-util/pkgconfig )
+	gnutls? ( virtual/pkgconfig )
+	ieee1394? ( virtual/pkgconfig )
+	libv4l? ( virtual/pkgconfig )
 	mmx? ( dev-lang/yasm )
-	rtmp? ( dev-util/pkgconfig )
-	schroedinger? ( dev-util/pkgconfig )
+	rtmp? ( virtual/pkgconfig )
+	schroedinger? ( virtual/pkgconfig )
 	test? ( net-misc/wget )
-	truetype? ( dev-util/pkgconfig )
+	truetype? ( virtual/pkgconfig )
 	v4l? ( sys-kernel/linux-headers )
 "
 # faac is license-incompatible with ffmpeg
 REQUIRED_USE="bindist? ( encode? ( !faac !aacplus ) !openssl )
 	libv4l? ( v4l )
+	fftools_cws2fws? ( zlib )
 	test? ( encode zlib )"
 
 S=${WORKDIR}/${P/_/-}
@@ -111,7 +119,9 @@ src_prepare() {
 	if [ "${PV%_p*}" != "${PV}" ] ; then # Snapshot
 		export revision=git-N-${FFMPEG_REVISION}
 	fi
-	epatch ${FILESDIR}/ffmpeg_monotone_0.10.patch
+	epatch "${FILESDIR}/freiordl.patch"
+	epatch "${FILESDIR}/ffmpeg_monotone_0.10.2.patch"
+	epatch "${FILESDIR}/crystal_non_exp.patch"
 }
 
 src_configure() {
@@ -168,7 +178,7 @@ src_configure() {
 	# libavfilter options
 	use frei0r && myconf="${myconf} --enable-frei0r"
 	use truetype && myconf="${myconf} --enable-libfreetype"
-	use ass && myconf="${myconf} --enable-libass"
+	use libass && myconf="${myconf} --enable-libass"
 
 	# Threads; we only support pthread for now but ffmpeg supports more
 	use threads && myconf="${myconf} --enable-pthreads"
@@ -250,10 +260,11 @@ src_configure() {
 src_compile() {
 	emake
 
-	if use qt-faststart; then
-		tc-export CC
-		emake -C tools qt-faststart
-	fi
+	for i in ${FFTOOLS} ; do
+		if use fftools_$i ; then
+			emake tools/$i
+		fi
+	done
 }
 
 src_install() {
@@ -262,9 +273,11 @@ src_install() {
 	dodoc Changelog README INSTALL
 	dodoc -r doc/*
 
-	if use qt-faststart; then
-		dobin tools/qt-faststart
-	fi
+	for i in ${FFTOOLS} ; do
+		if use fftools_$i ; then
+			dobin tools/$i
+		fi
+	done
 }
 
 src_test() {

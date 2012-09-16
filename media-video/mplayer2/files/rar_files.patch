@@ -1,0 +1,720 @@
+Index: stream/stream_rar.c
+===================================================================
+--- stream/stream_rar.c	(revision 0)
++++ stream/stream_rar.c	(revision 0)
+@@ -0,0 +1,157 @@
++/*  
++ *  reads video file inside of uncompressed, multi-volume rar archives
++ * 
++ *  Copyright (C) 2009  Emiel Neggers <emiel@neggers.net>
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, either version 3 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "config.h"
++
++#include <stdio.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <stdlib.h>
++
++#include "mp_msg.h"
++#include "stream.h"
++//#include "help_mp.h"
++#include "m_option.h"
++#include "m_struct.h"
++
++#include "unrar.h"
++
++static struct stream_priv_s {
++  char *filename;
++  char *filename2;
++  rar_archive_t *rar;
++} stream_priv_dflts = {
++  NULL
++};
++
++#define ST_OFF(f) M_ST_OFF(struct stream_priv_s,f)
++/// URL definition
++static m_option_t stream_opts_fields[] = {
++  {"string", ST_OFF(filename), CONF_TYPE_STRING, 0, 0 ,0, NULL},
++  {"filename", ST_OFF(filename2), CONF_TYPE_STRING, 0, 0 ,0, NULL},
++  { NULL, NULL, 0, 0, 0, 0,  NULL }
++};
++static struct m_struct_st stream_opts = {
++  "rar",
++  sizeof(struct stream_priv_s),
++  &stream_priv_dflts,
++  stream_opts_fields
++};  
++
++static int fill_buffer(stream_t *s, char* buffer, int max_len){
++  struct stream_priv_s* p = s->priv;
++  int r = rar_read(p->rar,buffer,max_len);
++  return (r <= 0) ? -1 : r;
++}
++
++static int seek(stream_t *s,off_t newpos) {
++//static int seek(stream_t *s,long long unsigned int newpos) {
++  struct stream_priv_s* p = s->priv;
++  s->pos = newpos;
++  if(rar_seek(p->rar,s->pos)<0) {
++    s->eof=1;
++    return 0;
++  }
++  return 1;
++}
++
++static int control(stream_t *s, int cmd, void *arg) {
++  struct stream_priv_s* p = s->priv;
++  switch(cmd) {
++    case STREAM_CTRL_GET_SIZE: {
++      *((long long unsigned int*)arg) = rar_size(p->rar);
++      return 1;
++    }
++    case STREAM_CTRL_RESET: {
++      rar_seek(p->rar, 0);
++      //p->rar = rar_open(p->filename);
++    }
++  }
++  return STREAM_UNSUPPORTED;
++}
++
++static int open_rar(stream_t *stream,int mode, void* opts, int* file_format) {
++  struct stream_priv_s* p;
++  char *filename;
++
++  // get filename from option 'url'
++  if (((struct stream_priv_s*)opts)->filename)
++    filename = ((struct stream_priv_s*)opts)->filename;
++  else if (((struct stream_priv_s*)opts)->filename2)
++    filename = ((struct stream_priv_s*)opts)->filename2;
++  else
++    filename = NULL;
++
++  if(!filename) {
++    mp_msg(MSGT_OPEN,MSGL_ERR, "[rar] No filename\n");
++    m_struct_free(&stream_opts,opts);
++    return STREAM_ERROR;
++  }
++
++  // do not handle any non-rar file
++  if(!rar_has_rar_filename(filename)) {
++    m_struct_free(&stream_opts,opts);
++    return STREAM_UNSUPPORTED;
++  }
++
++  // no write support
++  if(mode != STREAM_READ) {
++    mp_msg(MSGT_OPEN,MSGL_ERR, "[rar] Unsupported open mode %d\n",mode);
++    m_struct_free(&stream_opts,opts);
++    return STREAM_ERROR;
++  }
++
++  p = calloc(1,sizeof(struct stream_priv_s));
++  p->filename = strdup( filename );
++  p->rar = rar_open(p->filename);
++
++  if(p->rar == NULL) {
++    mp_msg(MSGT_OPEN,MSGL_ERR, "[rar] Failed to open rar archive %s\n", p->filename);
++    free(p->filename); free(p);
++    m_struct_free(&stream_opts,opts);
++    return STREAM_UNSUPPORTED;
++  }
++
++  stream->end_pos = rar_size(p->rar);
++  stream->type = STREAMTYPE_FILE;
++
++  //mp_msg(MSGT_OPEN,MSGL_V,"[rar] File size is %"PRId64" bytes\n", (int64_t)len);
++
++  stream->fd = -1;
++  stream->seek = seek;
++  stream->fill_buffer = fill_buffer;
++  stream->control = control;
++  stream->priv = p;
++
++  m_struct_free(&stream_opts,opts);
++  return STREAM_OK;
++}
++
++stream_info_t stream_info_rar = {
++  "RAR",
++  "rar",
++  "Emiel Neggers",
++  "play videos stored in uncompressed rar files",
++  open_rar,
++  { "rar", "", NULL },
++  &stream_opts,
++  1 // Urls are an option string
++};
+Index: stream/unrar.c
+===================================================================
+--- stream/unrar.c	(revision 0)
++++ stream/unrar.c	(revision 0)
+@@ -0,0 +1,351 @@
++/*  
++ *  reads video file inside of uncompressed, multi-volume rar archives
++ * 
++ *  Copyright (C) 2009  Emiel Neggers <emiel@neggers.net>
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, either version 3 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <stdio.h>
++#include <sys/types.h>
++#include <unistd.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++//#include <dirent.h>
++#include <libgen.h>
++#include <ctype.h>
++#include <stdint.h>
++#include <math.h>
++#include <string.h>
++#include <errno.h>
++
++#include "unrar.h"
++
++#include "mp_msg.h"
++
++/***************************************************************************/
++
++#define BUFSIZE 512
++#define RAR_HEADER_SIZE 128
++#define UINT32(b) ( (*((b)+3))<<24 | *(((b)+2))<<16 | *(((b)+1))<<8 | *(((b)+0)) )
++
++int _rar_init_part(rar_archive_t *rar) {
++  unsigned char buf[RAR_HEADER_SIZE];
++  int i, size;
++  uint32_t spp;
++  unsigned int hs;
++
++  // get current rar filesize
++  rar->cur_file_size = lseek(rar->fd, 0L, SEEK_END);
++  if(rar->cur_file_size < 0)
++    mp_msg(MSGT_STREAM, MSGL_ERR, "lseek failed: %s\n", strerror(errno));
++  // seek back to start
++  lseek(rar->fd, 0L, SEEK_SET);
++
++  // read & parse header
++  read(rar->fd, buf, RAR_HEADER_SIZE);
++  i = 0x14;
++  size = (buf[i+0x06] << 8) | buf[i+0x05]; // size of file_header block
++  hs = i + size; // size of total header
++  spp = UINT32(buf+i+0x07); // pack size
++  rar->trailing_bytes = rar->cur_file_size - hs - spp;
++  
++  // seek past header
++  if( lseek(rar->fd, hs, SEEK_SET) < 0 )
++    mp_msg(MSGT_STREAM, MSGL_ERR, "lseek failed: %s\n", strerror(errno));
++
++  return 0;
++}
++
++// open new file
++int _rar_openfile(rar_archive_t *rar, char *filename) {
++  struct stat buf;
++  if(stat(filename, &buf) < 0) {
++    mp_msg(MSGT_STREAM,MSGL_V,"[rar] failed to open part %s: %s\n", 
++      filename, strerror(errno));
++    return -1;
++  }
++
++  if(rar->fd != -1) {
++    close(rar->fd);
++    rar->fd = -1;
++  }
++
++  rar->fd = open(filename, O_RDONLY);
++ 
++  if(rar->fd < 0) {
++    mp_msg(MSGT_STREAM,MSGL_V,"[rar] failed to open part %s: %s\n", 
++      filename, strerror(errno));
++    return rar->fd;
++  }
++
++  _rar_init_part(rar);
++
++  return rar->fd;
++}
++
++// open part number _num_
++int _rar_openpart(rar_archive_t *rar, int num) {
++  char *filename;
++  int len;
++  
++  if (num == rar->cur_file) {
++    _rar_init_part(rar);
++    return rar->fd;
++  }
++  
++  // generate filename for the given volume number
++  len = strlen( rar->path ) + strlen( rar->basename ) + 32;
++  filename = calloc(1,len);
++
++  if(rar->naming_scheme == NAMING_NEW) {
++    snprintf(filename, len,  "%s/%s.part%0*d.rar",
++      rar->path,
++      rar->basename,
++      rar->num_length,
++      num + 1);
++  } else {
++    if( num == 0 ) {
++      snprintf(filename, len, "%s/%s.rar", rar->path, rar->basename);
++    } else {
++      snprintf(filename, len, "%s/%s.r%02d",
++        rar->path,
++        rar->basename,
++        num - 1);
++    }
++  }
++
++  if(_rar_openfile(rar, filename) < 0) {
++    free(filename);
++    return -1;
++  }
++  mp_msg(MSGT_STREAM,MSGL_V,"[rar] opened part %d: %s\n", num+1, filename);
++  free(filename);
++
++  rar->cur_file = num;
++  
++  return rar->fd;
++}
++
++// open next part
++int _rar_nextpart(rar_archive_t *rar) {
++  return _rar_openpart(rar, rar->cur_file + 1);
++}
++
++int rar_has_rar_filename(char *f) {
++  int i;
++  i = strlen(f);
++
++  if(i < 4) return 0;
++
++  // file ends with .r\d\d
++  if( (f[i-3] == 'r' || f[i-3] == 'R') && isdigit(f[i-2]) && isdigit(f[i-1]) ) {
++    return 2;
++  }
++  // file ends with .rar
++  if( (f[i-3] == 'r' || f[i-3] == 'R') && 
++      (f[i-2] == 'a' || f[i-2] == 'A') &&
++      (f[i-1] == 'r' || f[i-1] == 'R') ) {
++    return 1;
++  }
++  return 0;
++}
++
++// initialize stuff:
++//  - basename for all rar files
++//  - figure out old or new naming scheme
++//  - get header size to skip on each file
++//  - get file- and packsize of the file inside the rars
++int _rar_init(rar_archive_t *rar) {
++  if(_rar_openfile(rar, rar->filename) < 0)
++    return -1;
++
++  // get filesize
++  rar->filesize = lseek(rar->fd, 0, SEEK_END);
++  lseek(rar->fd, 0, SEEK_SET);
++
++  // find naming scheme, header size and packsize
++  {
++    unsigned char buf[RAR_HEADER_SIZE];
++    int i, len;
++    int size;
++    uint64_t s;
++   
++    // read rar headers
++    len = read(rar->fd, buf, RAR_HEADER_SIZE);
++
++    // test if it is marked as a rar archive
++    if(len < 61 || buf[0] != 'R' || buf[1] != 'a' || buf[2] != 'r' || buf[3] != '!' || 
++         buf[0x09] != 0x73 || buf[0x16] != 0x74) {
++      return -1;
++    }
++
++    // password protected archives aren't supported
++    if(buf[0x14 + 0x03] & 0x04) {
++      mp_msg(MSGT_OPEN,MSGL_ERR,
++        "[rar] Password protected rar volumes are not supported\n");
++      return -1;
++    }
++
++    // compressed archives aren't supported
++    if(buf[0x14 + 0x19] != 0x30) {
++      mp_msg(MSGT_OPEN,MSGL_ERR,
++        "[rar] Compressed rar volumes are not supported\n");
++      return -1;
++    }
++
++    // get naming scheme from archive header
++    if(buf[0x0A] & 0x10) {
++      rar->naming_scheme = NAMING_NEW;
++    } else {
++      rar->naming_scheme = NAMING_OLD;
++    }
++    
++    // read file header
++    i = 0x14; // start of file header
++    size = (buf[i+0x06] << 8) | buf[i+0x05]; // size of file_header block
++    rar->header_size = i + size; // size of total header (from start to end of this header)
++    rar->size_per_part = UINT32(buf+i+0x07); // pack size
++    rar->trailing_bytes = rar->filesize - rar->header_size - rar->size_per_part;
++        
++    if( buf[i+0x04] & 0x1 ) {
++      // large file
++      s = UINT32(buf+i+0x24); s = s << 32; // unpsize HIGH
++      s += UINT32(buf+i+0x0B) & 0xffffffff; // unpsize
++      rar->size = s;
++    } else {
++      rar->size = UINT32(buf+i+0x0B); // unpsize
++    }
++  }
++
++  // set file basename
++  {
++    char *p, *t;
++    rar->basename = basename( rar->filename );
++    rar->path = dirname( rar->filename );
++    // remove extension .rar
++    p = strrchr(rar->basename, '.');
++    *p = '\0';
++
++    // if new naming scheme, also remove .part\d+ from basename and find
++    // the number of digits used in the filename
++    if(rar->naming_scheme == NAMING_NEW) {
++      // locate .part\d+
++      if((p = strrchr(rar->basename, '.')) != NULL && strlen(p) > 5 &&
++              (p = strstr(p, ".part")) != NULL && isdigit(*(p+5))) {
++        rar->num_length = 0;
++        t = p + 5;
++        while(isdigit(*(t++))) rar->num_length++;
++        *p = '\0';
++      } else {
++        // error parsing filename
++        return -1;
++      }
++    }
++  }
++
++  if(rar->naming_scheme == NAMING_NEW)
++    mp_msg(MSGT_OPEN,MSGL_INFO,"[rar] volume size: %u (new naming)\n", rar->filesize);
++  else
++    mp_msg(MSGT_OPEN,MSGL_INFO,"[rar] volume size: %u (old naming)\n", rar->filesize);
++  mp_msg(MSGT_OPEN,MSGL_INFO,"[rar] video filesize: %llu\n", rar->size);
++
++  return 0;
++}
++
++/*************************************************************************/
++
++rar_archive_t *rar_open(char *filename) {
++  rar_archive_t *rar = malloc(sizeof(rar_archive_t));
++
++  rar->filename = strdup(filename);
++
++  rar->path = NULL;
++  rar->basename = NULL;
++  rar->naming_scheme = NAMING_OLD;
++  rar->filesize = 0;
++  rar->cur_file = -1;
++
++  rar->fd = -1;
++
++  if(_rar_init(rar) < 0 || _rar_openpart(rar, 0) < 0) {
++    rar_free(rar);
++    return NULL;
++  }
++
++  return rar;
++}
++
++void rar_free(rar_archive_t *rar) {
++  free(rar->filename);
++  if(rar->fd != -1) {
++    close(rar->fd);
++    rar->fd = -1;
++  }
++  free(rar);
++}
++
++int rar_read(rar_archive_t *rar, void *buf, int count) {
++  long int res = 0;
++  long int pos = lseek(rar->fd, 0L, SEEK_CUR);
++  if(pos < 0)
++    mp_msg(MSGT_STREAM, MSGL_ERR, "lseek failed: %s\n", strerror(errno));
++
++  if( (pos + count) > (rar->cur_file_size - rar->trailing_bytes) ) {
++    // read last part of this file, and start of next file
++    res = read(rar->fd, buf, rar->cur_file_size - rar->trailing_bytes - pos);
++    if( res < 0 ) {
++      mp_msg(MSGT_STREAM, MSGL_ERR, "read failed: %s\n", strerror(errno));
++      return res;
++    }
++    if(_rar_nextpart(rar) < 0) { // there is no next part
++      return res;
++    }
++    res += read(rar->fd, (char*)buf + res, count - res);
++    return res;
++  }
++
++  res = read(rar->fd, buf, count);
++  if(res < 0)
++    mp_msg(MSGT_STREAM, MSGL_ERR, "read failed: %s\n", strerror(errno));
++
++  return res;
++}
++
++long long int rar_seek(rar_archive_t *rar, long long int offset) {
++  int p;
++  long long int o = offset;
++  long long int spp = rar->size_per_part;
++  long int res;
++
++  p = offset / rar->size_per_part;
++
++  if(_rar_openpart(rar, p) < 0) {
++    return -1;
++  }
++
++  o = offset - (spp * p) + rar->header_size;
++  res = o & 0xffffffff;
++  if( (res = lseek(rar->fd, res, SEEK_SET)) < 0 )
++    return res;
++
++  return offset;
++}
++
++long long unsigned int rar_size(rar_archive_t *rar) {
++  return rar->size;
++}
++
+Index: stream/stream.c
+===================================================================
+--- stream/stream.c	(revision 29972)
++++ stream/stream.c	(working copy)
+@@ -59,6 +59,7 @@
+ extern const stream_info_t stream_info_null;
+ extern const stream_info_t stream_info_mf;
+ extern const stream_info_t stream_info_ffmpeg;
++extern const stream_info_t stream_info_rar;
+ extern const stream_info_t stream_info_file;
+ extern const stream_info_t stream_info_ifo;
+ extern const stream_info_t stream_info_dvd;
+@@ -119,6 +120,7 @@
+ 
+   &stream_info_null,
+   &stream_info_mf,
++  &stream_info_rar,
+   &stream_info_file,
+   NULL
+ };
+Index: stream/unrar.h
+===================================================================
+--- stream/unrar.h	(revision 0)
++++ stream/unrar.h	(revision 0)
+@@ -0,0 +1,164 @@
++/*  
++ *  reads video file inside of uncompressed, multi-volume rar archives
++ * 
++ *  Copyright (C) 2009  Emiel Neggers <emiel@neggers.net>
++ *
++ *  This program is free software: you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation, either version 3 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/*************************************************************************/
++/* RAR ARCHIVE HEADERS:
++
++ MARK_HEAD (7 bytes)
++ 0x00-0x06    Fixed byte sequence: 0x52 0x61 0x72 0x21 0x1a 0x07 0x00
++ 
++ MAIN_HEAD (13 bytes)
++ 0x07-0x08    Head crc
++ 0x09         Header type: 0x73
++ 0x0A-0x0B    Bit flags:
++                0x0001  - Volume attribute (archive volume)
++                0x0002  - Archive comment present
++                          RAR 3.x uses the separate comment block
++                          and does not set this flag.
++
++                0x0004  - Archive lock attribute
++                0x0008  - Solid attribute (solid archive)
++                0x0010  - New volume naming scheme (\'volname.partN.rar\')
++                0x0020  - Authenticity information present
++                          RAR 3.x does not set this flag.
++
++                0x0040  - Recovery record present
++                0x0080  - Block headers are encrypted
++                0x0100  - First volume (set only by RAR 3.0 and later)
++
++                other bits in HEAD_FLAGS are reserved for
++                internal use
++ 0x0C-0x0D      Archive header total size including archive comments
++ 0x0E-0x13      reserved
++
++ FILE_HEAD (40 bytes + variable length) (starting position 0x14)
++ 0x00-0x01    Head crc
++ 0x02         Header type: 0x74
++ 0x03-0x04    Bit flags:
++                0x01 - file continued from previous volume
++                0x02 - file continued in next volume
++                0x04 - file encrypted with password
++
++                0x08 - file comment present
++                       RAR 3.x uses the separate comment block
++                       and does not set this flag.
++
++                0x10 - information from previous files is used (solid flag)
++                       (for RAR 2.0 and later)
++
++                bits 7 6 5 (for RAR 2.0 and later)
++
++                     0 0 0    - dictionary size   64 KB
++                     0 0 1    - dictionary size  128 KB
++                     0 1 0    - dictionary size  256 KB
++                     0 1 1    - dictionary size  512 KB
++                     1 0 0    - dictionary size 1024 KB
++                     1 0 1    - dictionary size 2048 KB
++                     1 1 0    - dictionary size 4096 KB
++                     1 1 1    - file is directory
++
++               0x100 - HIGH_PACK_SIZE and HIGH_UNP_SIZE fields
++                       are present. These fields are used to archive
++                       only very large files (larger than 2Gb),
++                       for smaller files these fields are absent.
++
++               0x200 - FILE_NAME contains both usual and encoded
++                       Unicode name separated by zero. In this case
++                       NAME_SIZE field is equal to the length
++                       of usual name plus encoded Unicode name plus 1.
++
++               0x400 - the header contains additional 8 bytes
++                       after the file name, which are required to
++                       increase encryption security (so called 'salt').
++
++               0x800 - Version flag. It is an old file version,
++                       a version number is appended to file name as ';n'.
++
++              0x1000 - Extended time field present.
++
++              0x8000 - this bit always is set, so the complete
++                       block size is HEAD_SIZE + PACK_SIZE
++                       (and plus HIGH_PACK_SIZE, if bit 0x100 is set)
++
++ 0x05-0x06    File header full size including file name and comments
++ 0x07-0x0A    Compressed file size
++ 0x0B-0x0E    Uncompressed file size
++ 0x0F         Operating system used for archiving
++ 0x10-0x13    File CRC
++ 0x14-0x17    Date and time in standard MS DOS format
++ 0x18         RAR version needed to extract file
++              Version number is encoded as 10 * Major version + minor version
++ 0x19         Packing method (0x30 - storing)
++ 0x1A-0x1B    File name size NAME_SIZE
++ 0x1C-0x1F    File attributes
++ -- optional (if HIGH_PACK_SIZE and HIGH_UNP_SIZE are set) --
++ 0x20-0x23    High 4 bytes of 64 bit value of compressed file size
++ 0x24-0x27    High 4 bytes of 64 bit value of uncompressed file size
++ --
++ 0x20 or 0x28   File name - string of NAME_SIZE bytes size
++*/
++
++#ifndef _UNRAR_H
++  #define _UNRAR_H
++
++#ifndef __USE_FILE_OFFSET64
++  #define __USE_FILE_OFFSET64
++#endif
++
++#include <stdio.h>
++#include <sys/types.h>
++#include <unistd.h>
++
++/*
++#define NAMING_OLD 0
++#define NAMING_NEW 1
++*/
++
++enum naming_scheme_t {
++  NAMING_OLD = 0,  // .rar, .r00, .r01, ..
++  NAMING_NEW       // .part01.rar, .part02.rar, ..
++};
++
++typedef struct {
++  char *filename;
++  char *path;
++  char *basename;
++  unsigned int naming_scheme;
++
++  long long unsigned int size; // size of the first file in the rar
++  unsigned int header_size; // size of the header junk to skip in each file
++  unsigned int size_per_part;
++  unsigned int filesize;
++  long unsigned int trailing_bytes;
++  
++  int fd; // current file descriptor
++  int num_files; // number of rar files on filesystem
++  int num_length; // part.001.rar = 3, part.01.rar = 2, etc
++  int cur_file; // currently opened file number (0 .. num_files - 1)
++  long int cur_file_size;
++} rar_archive_t;
++
++int rar_has_rar_filename(char *f);
++rar_archive_t *rar_open(char *filename);
++void rar_free(rar_archive_t *rar);
++int rar_read(rar_archive_t *rar, void *buf, int count);
++long long int rar_seek(rar_archive_t *rar, long long int offset);
++long long unsigned int rar_size(rar_archive_t *rar);
++
++#endif /* _UNRAR_H */
+Index: Makefile
+===================================================================
+--- Makefile	(revision 29972)
++++ Makefile	(working copy)
+@@ -510,6 +510,8 @@
+               stream/stream_cue.c \
+               stream/stream_file.c \
+               stream/stream_mf.c \
++              stream/unrar.c \
++              stream/stream_rar.c \
+               stream/stream_null.c \
+               stream/url.c \
+               $(SRCS_COMMON-yes)

@@ -232,6 +232,7 @@ src_prepare() {
 	epatch "${FILESDIR}"/vdpau_osd.patch
 	epatch "${FILESDIR}"/fix_ts.patch
 	epatch "${FILESDIR}"/pts_wrap_sync.patch
+	epatch "${FILESDIR}"/rar_files.patch
 
 	base_src_prepare
 }

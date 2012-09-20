@@ -25,9 +25,13 @@ RDEPEND=$DEPEND
 src_unpack() {
 	unpack ${A}
 	cd ${S}
-	epatch ${FILESDIR}/makefile.patch
+#	epatch ${FILESDIR}/makefile.patch
 	epatch ${FILESDIR}/avld_0.1.4.patch
 	epatch ${FILESDIR}/bad.patch
+	sed -i 's/<linux\/\(videodev.h\)>/"libv4l1-\1"/' video_device.c
+	sed -i '347,350d;358,361d' video_device.c
+	cp ${FILESDIR}/libv4l1-videodev.h .
+	sed -e "22a#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)" -e "22a#include <linux/module.h>\n#endif" -i video_device.c
 }
 
 pkg_setup() {

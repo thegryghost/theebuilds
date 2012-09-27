@@ -8,6 +8,8 @@ EAPI=4
 
 inherit toolchain-funcs eutils flag-o-matic multilib base ${VCS_ECLASS}
 
+FFMPEG_VERION="0.11.2"
+
 NAMESUF="${PN/mplayer/}"
 DESCRIPTION="Media Player for Linux"
 HOMEPAGE="http://www.mplayer2.org/"
@@ -18,6 +20,7 @@ else
 	RELEASE_URI="http://dev.gentooexperimental.org/~scarabeus/${P}.tar.xz"
 fi
 SRC_URI="${RELEASE_URI}
+	http://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERION.tar.bz2
 	!truetype? (
 		mirror://mplayer/releases/fonts/font-arial-iso-8859-1.tar.bz2
 		mirror://mplayer/releases/fonts/font-arial-iso-8859-2.tar.bz2
@@ -235,6 +238,14 @@ src_prepare() {
 	epatch "${FILESDIR}"/rar_files.patch
 
 	base_src_prepare
+
+	cd ${WORKDIR}/ffmpeg-$FFMPEG_VERION
+	./configure --prefix=../ff_install
+	#econf --prefix=../ff_install
+	emake
+	einstall
+	mkdir ${WORKDIR}/ff_build
+	cp -r $D/* ${WORKDIR}/ff_build
 }
 
 src_configure() {
@@ -471,6 +482,13 @@ src_configure() {
 		"
 	fi
 
+	PKG_CONFIG_PATH="${WORKDIR}/ff_build/usr/lib/pkgconfig:${PKG_CONFIG_PATH}"
+	export PKG_CONFIG_PATH
+
+	myconf="${myconf} --enable-static"
+	myconf="${myconf} --extra-ldflags=-L${WORKDIR}/ff_build/usr/lib"
+	myconf="${myconf} --extra-cflags=-I${WORKDIR}/ff_build/usr/include"
+
 	./configure \
 		--cc="$(tc-getCC)" \
 		--pkg-config="$(tc-getPKG_CONFIG)" \
@@ -481,6 +499,7 @@ src_configure() {
 		--datadir="${EPREFIX}"/usr/share/${PN} \
 		--mandir="${EPREFIX}"/usr/share/man \
 		--localedir="${EPREFIX}"/usr/share/locale \
+		--enable-translation \
 		--enable-translation \
 		${myconf} || die
 }

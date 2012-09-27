@@ -76,7 +76,7 @@ REQUIRED_USE="
 # Rar: althrought -gpl version is nice, it cant do most functions normal rars can
 #	nemesi? ( net-libs/libnemesi )
 # virtual/ffmpeg does not have all USE
-LIBAV_USE="[amr?,bzip2?,gsm?,jpeg2k?,rtmp?,schroedinger?,threads?,vpx?]"
+#LIBAV_USE="[amr?,bzip2?,gsm?,jpeg2k?,rtmp?,schroedinger?,threads?,vpx?]"
 RDEPEND+="
 	sys-libs/ncurses
 	sys-libs/zlib
@@ -133,7 +133,6 @@ RDEPEND+="
 	png? ( media-libs/libpng )
 	pnm? ( media-libs/netpbm )
 	portaudio? ( >=media-libs/portaudio-19_pre20111121 )
-	postproc? ( || ( media-libs/libpostproc <media-video/libav-0.8.2-r1 media-video/ffmpeg ) )
 	pulseaudio? ( media-sound/pulseaudio )
 	quvi? ( media-libs/libquvi )
 	rar? (
@@ -154,10 +153,6 @@ RDEPEND+="
 	vorbis? ( media-libs/libvorbis )
 	xanim? ( media-video/xanim )
 	xvid? ( media-libs/xvid )
-	|| (
-		>=media-video/libav-0.8.1${LIBAV_USE}
-		>=media-video/ffmpeg-0.10.2${LIBAV_USE}
-	)
 	symlink? ( !media-video/mplayer )
 "
 ASM_DEP="dev-lang/yasm"
@@ -485,7 +480,7 @@ src_configure() {
 	PKG_CONFIG_PATH="${WORKDIR}/ff_build/usr/lib/pkgconfig:${PKG_CONFIG_PATH}"
 	export PKG_CONFIG_PATH
 
-	myconf="${myconf} --enable-static"
+#	myconf="${myconf} --enable-static"
 	myconf="${myconf} --extra-ldflags=-L${WORKDIR}/ff_build/usr/lib"
 	myconf="${myconf} --extra-cflags=-I${WORKDIR}/ff_build/usr/include"
 

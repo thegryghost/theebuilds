@@ -15,7 +15,7 @@ HOMEPAGE="http://www.mplayer2.org/"
 if [[ ${PV} == *9999* ]]; then
 	EGIT_REPO_URI="git://git.mplayer2.org/mplayer2.git"
 else
-	RELEASE_URI="http://rion-overlay.googlecode.com/files/${P}.tar.xz"
+	RELEASE_URI="http://dev.gentooexperimental.org/~scarabeus/${P}.tar.xz"
 fi
 SRC_URI="${RELEASE_URI}
 	!truetype? (

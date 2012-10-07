@@ -9,6 +9,7 @@ EAPI=4
 inherit toolchain-funcs eutils flag-o-matic multilib base ${VCS_ECLASS}
 
 FFMPEG_VERION="0.11.2"
+#FFMPEG_VERION="1.0"
 
 NAMESUF="${PN/mplayer/}"
 DESCRIPTION="Media Player for Linux"

@@ -155,6 +155,7 @@ src_prepare() {
 	eend 0
 
 	epatch "${FILESDIR}/${PN}-1.7.22-makefile-install-header.diff"
+	epatch "${FILESDIR}/fontconfig.patch"
 
 	sed -i i18n-to-gettext \
 		-e '/MSGIDBUGS/s/""/"automatically created from i18n.c by vdr-plugin.eclass <vdr\\@gentoo.org>"/'

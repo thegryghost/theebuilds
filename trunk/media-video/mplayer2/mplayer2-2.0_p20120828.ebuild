@@ -223,11 +223,11 @@ src_prepare() {
 			-i TOOLS/midentify.sh || die
 	fi
 
-	epatch "${FILESDIR}"/2.0_p20111126/demux_ts_h264.patch
-	epatch "${FILESDIR}"/2.0_p20111126/mp2_new_live_seek1.patch
+	epatch "${FILESDIR}"/2.0_p20120828/demux_ts_h264.patch
+	epatch "${FILESDIR}"/2.0_p20120828/mp2_new_live_seek1.patch
 	epatch "${FILESDIR}"/2.0_p20120828/mp2_vdpau_crop.patch
-	epatch "${FILESDIR}"/2.0_p20111126/stupid_assert2.patch
-	epatch "${FILESDIR}"/2.0_p20111126/cc2.patch
+	epatch "${FILESDIR}"/2.0_p20120828/stupid_assert2.patch
+	epatch "${FILESDIR}"/2.0_p20120828/cc2.patch
 	epatch "${FILESDIR}"/vdpau_osd.patch
 	epatch "${FILESDIR}"/fix_ts.patch
 	epatch "${FILESDIR}"/pts_wrap_sync.patch

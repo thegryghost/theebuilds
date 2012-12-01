@@ -34,7 +34,7 @@ ipv6 jack joystick jpeg kernel_linux ladspa lcms +libass libcaca lirc mad
 md5sum mng +mp3 +network nut +opengl oss png pnm portaudio +postproc
 pulseaudio pvr +quicktime quvi radio +rar +real +rtc samba sdl +speex tga
 +theora +unicode v4l vcd vdpau +vorbis win32codecs +X xanim xinerama
-+xscreensaver +xv xvid yuv4mpeg
++xscreensaver +xv xvid yuv4mpeg ffmpeg_build
 "
 IUSE+=" symlink"
 
@@ -218,12 +218,14 @@ src_prepare() {
 
 	base_src_prepare
 
-	cd ${WORKDIR}/ffmpeg-$FFMPEG_VERION
-	./configure --prefix=../ff_install
-	emake
-	einstall
-	mkdir ${WORKDIR}/ff_build
-	cp -r $D/* ${WORKDIR}/ff_build
+	if use ffmpeg_build; then
+		cd ${WORKDIR}/ffmpeg-$FFMPEG_VERION
+		./configure --prefix=../ff_install
+		emake
+		einstall
+		mkdir ${WORKDIR}/ff_build
+		cp -r $D/* ${WORKDIR}/ff_build
+	fi
 }
 
 src_configure() {
@@ -428,10 +430,12 @@ src_configure() {
 		"
 	fi
 
-	PKG_CONFIG_PATH="${WORKDIR}/ff_build/usr/lib/pkgconfig:${PKG_CONFIG_PATH}"
-	export PKG_CONFIG_PATH
-	myconf="${myconf} --extra-ldflags=-L${WORKDIR}/ff_build/usr/lib"
-	myconf="${myconf} --extra-cflags=-I${WORKDIR}/ff_build/usr/include"
+	if use ffmpeg_build; then
+		PKG_CONFIG_PATH="${WORKDIR}/ff_build/usr/lib/pkgconfig:${PKG_CONFIG_PATH}"
+		export PKG_CONFIG_PATH
+		myconf="${myconf} --extra-ldflags=-L${WORKDIR}/ff_build/usr/lib"
+		myconf="${myconf} --extra-cflags=-I${WORKDIR}/ff_build/usr/include"
+	fi
 
 	./configure \
 		--cc="$(tc-getCC)" \

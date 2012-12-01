@@ -41,7 +41,7 @@ RDEPEND="dev-python/pygame
 		encode? ( media-video/dvdbackup ) )
 	flac? ( media-libs/flac )
 	gphoto2? ( media-libs/libgphoto2 )
-	jpeg? ( virtual/jpeg )
+	jpeg? ( media-libs/libjpeg-turbo )
 	lame? ( media-sound/lame )
 	lirc? ( app-misc/lirc >=dev-python/pylirc-0.0.3 )
 	matrox? ( >=media-video/matroxset-0.3 )

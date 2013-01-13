@@ -18,7 +18,7 @@ DEPEND="virtual/linux-sources"
 S="${WORKDIR}/${FNAME}"
 
 
-MODULE_NAMES="asix(net:${S})"
+MODULE_NAMES="ax88179_178a(net:${S})"
 BUILD_TARGETS="modules"
 #CONFIG_CHECK="!AX8817X"
 #ERROR_AX8817X="${P} requires AX88179 USB Ethernet adapter (CONFIG_USB_NET_AX8817X) to be DISABLED"

@@ -40,10 +40,9 @@
  
  #define STREAM_BUFFER_SIZE 2048
  #define STREAM_MAX_SECTOR_SIZE (8*1024)
-diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 --- stream.org/stream_etp.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/stream_etp.c	2013-01-23 23:02:49.090153092 -0500
-@@ -0,0 +1,307 @@
++++ stream/stream_etp.c	2013-01-25 15:32:18.246774436 -0500
+@@ -0,0 +1,266 @@
 +
 +#include "config.h"
 +
@@ -185,79 +184,46 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +
 +		case STREAM_CTRL_SEEK_TO_TIME: // 6
 +		{
-+			uint16_t pid = 0;
-+			uint8_t start = 0, loop = 1;
-+			uint8_t flush[188] = {0};
 +			uint64_t tmp = 0;
-+			BITSTREAM * bitstream = NULL;
-+			fd_set readfds = {0};
-+			struct timeval tv = {0};
-+			int rc, t1;
++			uint8_t flush[188] = {0};
++			uint8_t loop = 1;
++			int rc = 0;
 +			uint32_t count = 0;
++//			uint16_t pid = 0;
++//			uint8_t start = 0, loop = 1;
 +
 +			pos = floor(*((double*)arg) * 90000);
 +			protocol_set_tuner_time_pos(priv->handle, pos);
-+			printf("SEEK TO TIME: %0.4f (%" PRId64")\n", *((double*)arg), pos);
 +
-+			while(1)
-+			{
-+				if (recv(s->fd, flush, 188, 0) <188)
-+					break;
-+				printf("L1..\n");
-+			}
 +			p = recv(priv->handle, &tmp, sizeof(uint64_t), 0);
 +			pos = tmp;
-+			printf("Returned: %" PRId64" (%0.4f)\n", pos, pos/90000.0);
 +
-+
-+			printf("ED1\n");
++			loop = 1;
++			tmp = 0;
 +
 +			while(loop)
 +			{
-+				if (recv(s->fd, flush, 188, 0) < 188)
-+					continue;
-+
-+				if (flush[0] != 0x47)
-+					continue;
-+
-+				start = (flush[1] & 0x40) >> 6;
-+				pid = ((flush[1] & 0x1F) << 8) | flush[2];
-+
-+				if (start && pid)
++				if (recv(s->fd, &flush[0], 1, 0))
 +				{
-+					bitstream = bits_create(flush, 188);
-+					if (bitstream)
++					if (flush[0] == 0x47)
 +					{
-+						MPEGTS_PACKET *packet = mpegts_parse_packet2(bitstream, 0);
-+						if (packet && packet->payload_start_struct)
++						count++;
++						rc = recv(s->fd, &flush[1], 187, 0);
++						tmp = 0;
++
++//						if (flush[1] == 0x1F && flush[2] == 0xFF)
++						if (flush[1] == TS_NULL_PACKET[1] && flush[2] == TS_NULL_PACKET[2])
 +						{
-+							count++;
-+							if (packet->payload_start_struct->stream_id == 0xE0)
-+							{
-+								int64_t tmp2 = 0;
-+								MPEGTS_PAYLOAD_START *psu = packet->payload_start_struct;
-+//								printf("JJ: 0x%x\n",psu->stream_id);
-+								tmp2 = imaxabs(pos - psu->pts);
-+								printf("HMM, waiting for: %" PRId64" (%0.4f) Got: %" PRId64" (%0.4f) Diff: %" PRId64" (%0.4f)\n", pos, pos/90000.0, psu->pts,psu->pts/90000.0, tmp2, tmp2/90000.0);
-+								if (tmp2 < (90000*3))
-+									loop = 0;
-+								mpegts_free_packet(packet);
-+							}
++//							printf("[%d] L1: 0x%x 0x%x 0x%x\n", count, flush[0], flush[1], flush[2]);
++							loop = 0;
 +						}
-+						free(bitstream);
 +					}
++					else
++						tmp++;
 +				}
-+/*
-+				if (count > 60)
-+				{
-+					loop = 0;
-+				}
-+*/
++				else
++					break;
 +			}
-+//			protocol_set_tuner_writing(priv->handle, 0);
-+
-+
-+
 +			return 1;
 +		}
 +		break;
@@ -312,20 +278,12 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +			stream->type = STREAMTYPE_ETP;
 +			protocol_set_tuner_channel(stream->fd, atoi(p->filename));
 +			q = recv(stream->fd, &lport, sizeof(uint16_t), 0);
++
 +			if (q && lport)
 +			{
 +				p->handle = connect2Server(p->host, lport, 0);
 +				if (p->handle)
-+				{
-+//					stream->seek = seek;
 +					stream->control = control;
-+
-+//					printf("command socket connected\n");
-+				}
-+				else
-+				{
-+					printf("couldn't establish command socket\n");
-+				}
 +			}
 +
 +			stream->close = close_f;
@@ -506,3 +464,4 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
  		default:
  			return DEMUXER_CTRL_NOTIMPL;
  	}
+

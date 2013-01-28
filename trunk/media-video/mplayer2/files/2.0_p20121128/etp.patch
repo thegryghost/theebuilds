@@ -447,7 +447,7 @@
  
  static void demux_seek_ts(demuxer_t *demuxer, float rel_seek_secs, float audio_delay, int flags)
  {
-@@ -3510,6 +3573,16 @@
+@@ -3510,6 +3573,31 @@
  			return DEMUXER_CTRL_OK;
  		}
  
@@ -461,7 +461,74 @@
 +			return DEMUXER_CTRL_OK;
 +		break;
 +
++		case DEMUXER_CTRL_GET_PERCENT_POS:
++		{
++			double tmp;
++			if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_LENGTH, &tmp) != STREAM_UNSUPPORTED)
++			{
++				if (tmp - demuxer->stream_pts < 5)
++					*((int *)arg) = 100;
++				else
++					*((int *)arg) = (int) ceil(((demuxer->stream_pts/tmp) * 100));
++				return DEMUXER_CTRL_OK;
++			}
++			return DEMUXER_CTRL_NOTIMPL;
++		}
++		break;
++
  		default:
  			return DEMUXER_CTRL_NOTIMPL;
  	}
-
+--- mplayer.c.org	2013-01-28 02:22:32.893520430 -0500
++++ mplayer.c	2013-01-28 02:41:48.499524500 -0500
+@@ -107,6 +107,7 @@
+ 
+ #include "input/input.h"
+ 
++int etp_video_sync = 0;
+ int slave_mode = 0;
+ int enable_mouse_movements = 0;
+ float start_volume = -1;
+@@ -2830,6 +2831,25 @@
+         // timer now
+         if (vf_output_queued_frame(sh_video->vfilter))
+             break;
++        while (etp_video_sync == 0 && mpctx->stream->type == STREAMTYPE_ETP)
++        {
++            double tmp = 0;
++            if ((*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_TIME_LENGTH, &tmp) != STREAM_UNSUPPORTED)
++            {
++//                printf("ETP TYPE: %0.4f -- %0.4f\n", mpctx->demuxer->stream_pts, tmp);
++                if (tmp - mpctx->demuxer->stream_pts < 2.7)
++                {
++                    set_osd_msg(OSD_MSG_TEXT, 1, 2, "Buffering.. ");
++                    usec_sleep(1000*1000);
++                    continue;
++                }
++                else
++                {
++                    printf("ETP Synced\n");
++                    etp_video_sync = 1;
++                }
++            }
++        }
+         int in_size = 0;
+         unsigned char *buf = NULL;
+         pts = MP_NOPTS_VALUE;
+@@ -3176,13 +3196,15 @@
+     int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
+                                 demuxer_style);
+     if (seekresult == 0) {
++       if (mpctx->stream->type == STREAMTYPE_ETP && demuxer_amount > 0)
++            set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "LIVE");
+         if (need_reset) {
+             reinit_audio_chain(mpctx);
+             seek_reset(mpctx, !timeline_fallthrough, false);
+         }
+         return -1;
+     }
+-
++    etp_video_sync = 0;
+     if (need_reset)
+         reinit_audio_chain(mpctx);
+     /* If we just reinitialized audio it doesn't need to be reset,

@@ -2476,12 +2476,12 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +			case PROTO_SET_STREAM_POS:
 +			case PROTO_TUNE_AND_STREAM:
 +			{
-+				uint32_t data_sz = 0;
-+				_rc = read(handle, &data_sz, sizeof(data_sz));
++				//uint32_t data_sz = 0;
++				_rc = read(handle, &ret->dataptr_size, sizeof(ret->dataptr_size));
 +
-+				if (_rc > 0)
++				if (_rc == sizeof(ret->dataptr_size))
 +				{
-+					ret->dataptr_size = sizeof(data_sz);
++					//ret->dataptr_size = data_sz;
 +					ret->dataptr = malloc(ret->dataptr_size);
 +					_rc = read(handle, ret->dataptr, ret->dataptr_size);
 +				}

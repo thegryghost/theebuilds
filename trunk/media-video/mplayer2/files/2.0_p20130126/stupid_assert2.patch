@@ -1,0 +1,11 @@
+--- libmpdemux/demuxer.c.org	2012-03-28 11:49:54.000000000 -0400
++++ libmpdemux/demuxer.c	2012-03-28 11:50:23.000000000 -0400
+@@ -835,7 +835,7 @@
+ struct demux_packet *ds_get_packet2(struct demux_stream *ds, bool repeat_last)
+ {
+     // This shouldn't get used together with partial reads
+-    assert(ds->buffer_pos == 0 || ds->buffer_pos >= ds->buffer_size);
++    //assert(ds->buffer_pos == 0 || ds->buffer_pos >= ds->buffer_size);
+     if (!repeat_last)
+         ds_fill_buffer(ds);
+     ds->buffer_pos = ds->buffer_size;

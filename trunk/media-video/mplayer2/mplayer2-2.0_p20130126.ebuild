@@ -204,7 +204,7 @@ src_prepare() {
 	epatch "${FILESDIR}"/2.0_p20130126/mp2_vdpau_crop.patch
 	epatch "${FILESDIR}"/2.0_p20130126/stupid_assert2.patch
 	epatch "${FILESDIR}"/2.0_p20130126/cc2.patch
-	#epatch "${FILESDIR}"/2.0_p20130126/hls.patch
+	epatch "${FILESDIR}"/2.0_p20130126/hls.patch
 	epatch "${FILESDIR}"/2.0_p20130126/etp.patch
 	epatch "${FILESDIR}"/2.0_p20130126/edpvr.patch
 	epatch "${FILESDIR}"/fix_ts.patch

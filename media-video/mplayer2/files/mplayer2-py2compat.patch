@@ -50,24 +50,6 @@ index ffa388e..5b34d7d 100755
  
  elements_ebml = (
      'EBML, 1a45dfa3, sub', (
-@@ -207,7 +207,7 @@
- 
-     def __init__(self, name, elid, valtype, namespace):
-         self.name = name
--        self.definename = '{}_ID_{}'.format(namespace, name.upper())
-+        self.definename = '{0}_ID_{1}'.format(namespace, name.upper())
-         self.fieldname = camelcase_to_words(name)
-         self.structname = 'ebml_' + self.fieldname
-         self.elid = elid
-@@ -292,7 +292,7 @@
-         print()
-         if el.subelements:
-             print('#define N', el.fieldname)
--            print('E_S("{}", {})'.format(el.name, len(el.subelements)))
-+            print('E_S("{0}", {1})'.format(el.name, len(el.subelements)))
-             for subel, multiple in el.subelements:
-                 print('F({0.definename}, {0.fieldname}, {1})'.format(
-                         subel, int(multiple)))
 diff --git a/TOOLS/vdpau_functions.py b/TOOLS/vdpau_functions.py
 index 39e38a8..85e6f1d 100755
 --- a/TOOLS/vdpau_functions.py

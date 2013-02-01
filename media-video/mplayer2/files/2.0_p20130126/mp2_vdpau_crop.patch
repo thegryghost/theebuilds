@@ -1,0 +1,44 @@
+--- libvo/vo_vdpau.c.org	2012-09-11 01:14:10.000000000 -0400
++++ libvo/vo_vdpau.c	2012-09-11 01:19:05.000000000 -0400
+@@ -172,6 +172,13 @@
+     int                                index_data_size;
+     uint32_t                           palette[PALETTE_SIZE];
+ 
++ 
++    int                                crop_top;
++    int                                crop_bottom;
++    int                                crop_left;
++    int                                crop_right;
++
++
+     // EOSD
+     // Pool of surfaces
+     struct eosd_bitmap_surface {
+@@ -396,10 +403,14 @@
+     vc->out_rect_vid.x1 = dst_rect.right;
+     vc->out_rect_vid.y0 = dst_rect.top;
+     vc->out_rect_vid.y1 = dst_rect.bottom;
+-    vc->src_rect_vid.x0 = src_rect.left;
+-    vc->src_rect_vid.x1 = src_rect.right;
++//    vc->src_rect_vid.x0 = src_rect.left;
++//    vc->src_rect_vid.x1 = src_rect.right;
++    vc->src_rect_vid.x0 = src_rect.left + vc->crop_left;
++    vc->src_rect_vid.x1 = src_rect.right + vc->crop_right;
+     vc->src_rect_vid.y0 = vc->flip ? src_rect.bottom : src_rect.top;
++    vc->src_rect_vid.y0 += vc->crop_top;
+     vc->src_rect_vid.y1 = vc->flip ? src_rect.top    : src_rect.bottom;
++    vc->src_rect_vid.y1 += vc->crop_bottom;
+     vc->border_x        = borders.left;
+     vc->border_y        = borders.top;
+ #ifdef CONFIG_FREETYPE
+@@ -1865,6 +1876,10 @@
+         OPT_FLAG_ON("composite-detect", composite_detect, 0, OPTDEF_INT(1)),
+         OPT_INT("queuetime_windowed", flip_offset_window, 0, OPTDEF_INT(50)),
+         OPT_INT("queuetime_fs", flip_offset_fs, 0, OPTDEF_INT(50)),
++        OPT_INT("crop_top", crop_top, 0, OPTDEF_INT(0)),
++        OPT_INT("crop_bottom", crop_bottom, 0, OPTDEF_INT(0)),
++        OPT_INT("crop_left", crop_left, 0, OPTDEF_INT(0)),
++        OPT_INT("crop_right", crop_right, 0, OPTDEF_INT(0)),
+         OPT_INTRANGE("output_surfaces", num_output_surfaces, 0,
+                      2, MAX_OUTPUT_SURFACES, OPTDEF_INT(3)),
+         {NULL},

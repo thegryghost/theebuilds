@@ -12,9 +12,26 @@
                $(SRCS_COMMON-yes) \
                $(SRCS_COMMON-NEGATED-no)
  
---- libmpdemux/demuxer.c.org	2013-01-24 15:10:52.321357656 -0500
-+++ libmpdemux/demuxer.c	2013-01-24 15:12:50.843358074 -0500
-@@ -1182,19 +1183,19 @@
+--- libmpdemux/demuxer.c.org	2013-02-05 00:12:39.497504798 -0500
++++ libmpdemux/demuxer.c	2013-02-04 23:57:27.376501586 -0500
+@@ -1173,29 +1173,32 @@
+         return 0;
+     }
+     // clear demux buffers:
+-    demux_flush(demuxer);
+-    demuxer->video->eof = 0;
+-    demuxer->audio->eof = 0;
+-    demuxer->sub->eof = 0;
++    if (demuxer->stream->type != STREAMTYPE_ETP)
++    {
++        demux_flush(demuxer);
++        demuxer->video->eof = 0;
++        demuxer->audio->eof = 0;
++        demuxer->sub->eof = 0;
++    }
+ 
+     /* HACK: assume any demuxer used with these streams can cope with
+      * the stream layer suddenly seeking to a different position under it
       * (nothing actually implements DEMUXER_CTRL_RESYNC now).
       */
      struct stream *stream = demuxer->stream;
@@ -37,40 +54,57 @@
              if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_LENGTH,
                                 &tmp) == STREAM_UNSUPPORTED)
                  goto dmx_seek;
-@@ -1202,6 +1203,33 @@
+@@ -1203,11 +1206,50 @@
          } else
              pts += rel_seek_secs;
  
 +
-+		if (stream->type == STREAMTYPE_ETP)
-+		{
-+			if (rel_seek_secs > 0)
-+			{
-+	            if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_LENGTH,
++        if (stream->type == STREAMTYPE_ETP)
++        {
++            if (rel_seek_secs > 0)
++            {
++                if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_LENGTH,
 +    	                           &tmp) != STREAM_UNSUPPORTED)
-+				{
-+					double diff = (tmp - demuxer->stream_pts);
-+//					printf("PTS: %0.4f, Seek to: %0.4f, End: %0.4f -- Diff: %0.4f\n", demuxer->stream_pts, pts, tmp, diff);
++                {
++                    double diff = (tmp - demuxer->stream_pts);
++                    printf("PTS: %0.4f, Seek to: %0.4f, End: %0.4f -- Diff: %0.4f\n", demuxer->stream_pts, pts, tmp, diff);
 +
-+					if (diff < 5)
-+						return 0;
++                    if (diff < 5)
++                        return 0;
 +
-+					if (!(diff - 4 > rel_seek_secs))
-+						pts = tmp - 4;
-+				}
-+			}
-+			else
-+			{
-+				pts--;
-+				if (pts < 0)
-+					pts = .5;
-+			}
-+		}
++                    if (!(diff - 4 > rel_seek_secs))
++                        pts = tmp - 4;
++                    if (tmp - pts <= 2)
++                        pts = -1; 
++                }
++            }
++            else
++            {
++                pts--;
++                if (pts < 0)
++                    pts = .5;
++            }
++        }
 +
-+//		printf("Seek to: %0.4f\n", pts);
++//      printf("Seek to: %0.4f\n", pts);
          if (stream_control(demuxer->stream, STREAM_CTRL_SEEK_TO_TIME, &pts)
              != STREAM_UNSUPPORTED) {
++            printf("Demux Seeked\n");
++            demux_flush(demuxer);
++            demuxer->video->eof = 0;
++            demuxer->audio->eof = 0;
++            demuxer->sub->eof = 0;
              demux_control(demuxer, DEMUXER_CTRL_RESYNC, NULL);
+             return 1;
+         }
++        else
++        {
++            printf("Demux NO Seek\n");
++            return 0;
++        }
+     }
+ 
+   dmx_seek:
 --- libmpdemux/demux_ts.c.org	2013-01-24 15:01:49.070355743 -0500
 +++ libmpdemux/demux_ts.c	2013-01-24 15:07:58.496357044 -0500
 @@ -3124,6 +3124,7 @@
@@ -182,27 +216,28 @@
  		default:
  			return DEMUXER_CTRL_NOTIMPL;
  	}
---- mplayer.c.org	2013-01-28 02:22:32.893520430 -0500
-+++ mplayer.c	2013-01-28 02:41:48.499524500 -0500
-@@ -107,6 +107,7 @@
+--- mplayer.c.org	2013-02-05 00:08:21.783503891 -0500
++++ mplayer.c	2013-02-04 23:44:44.638498900 -0500
+@@ -110,6 +110,8 @@
  
  #include "input/input.h"
  
++#define ETP_MAX_FROM_END		4.5
 +int etp_video_sync = 0;
  int slave_mode = 0;
  int enable_mouse_movements = 0;
  float start_volume = -1;
-@@ -2830,6 +2831,25 @@
+@@ -2843,6 +2867,25 @@
          // timer now
          if (vf_output_queued_frame(sh_video->vfilter))
              break;
-+        while (etp_video_sync == 0 && mpctx->stream->type == STREAMTYPE_ETP)
++        while (etp_video_sync == 0 && mpctx->stream->type == STREAMTYPE_ETP && mpctx->stream->control)
 +        {
 +            double tmp = 0;
 +            if ((*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_TIME_LENGTH, &tmp) != STREAM_UNSUPPORTED)
 +            {
 +//                printf("ETP TYPE: %0.4f -- %0.4f\n", mpctx->demuxer->stream_pts, tmp);
-+                if (tmp - mpctx->demuxer->stream_pts < 2.7)
++                if (tmp - mpctx->demuxer->stream_pts < ETP_MAX_FROM_END)
 +                {
 +                    set_osd_msg(OSD_MSG_TEXT, 1, 2, "Buffering.. ");
 +                    usec_sleep(1000*1000);
@@ -210,7 +245,7 @@
 +                }
 +                else
 +                {
-+                    printf("ETP Synced\n");
++//                    printf("ETP Synced\n");
 +                    etp_video_sync = 1;
 +                }
 +            }
@@ -218,12 +253,28 @@
          int in_size = 0;
          unsigned char *buf = NULL;
          pts = MP_NOPTS_VALUE;
-@@ -3176,13 +3196,15 @@
+@@ -3398,13 +3444,31 @@
      int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
                                  demuxer_style);
      if (seekresult == 0) {
-+       if (mpctx->stream->type == STREAMTYPE_ETP && demuxer_amount > 0)
-+            set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "LIVE");
++        if (mpctx->stream->type == STREAMTYPE_ETP && demuxer_amount > 0)
++        {
++            if (mpctx->stream->control)
++            {
++                double tmp;
++                if ((*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_TIME_LENGTH, &tmp) != STREAM_UNSUPPORTED)
++                {
++                     printf("MOO: %0.4f - %0.4f = %0.4f\n", tmp, mpctx->demuxer->stream_pts, tmp - mpctx->demuxer->stream_pts);
++                     if (tmp - mpctx->demuxer->stream_pts < ETP_MAX_FROM_END)
++                         set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "LIVE");
++                }
++                else
++                    set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "No Seek");
++            }
++            else
++                set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "No Seek");
++            need_reset = 0;
++        }
          if (need_reset) {
              reinit_audio_chain(mpctx);
              seek_reset(mpctx, !timeline_fallthrough, false);
@@ -264,8 +315,8 @@
  #define STREAM_BUFFER_SIZE 2048
  #define STREAM_MAX_SECTOR_SIZE (8*1024)
 --- stream.org/stream_etp.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/stream_etp.c	2013-01-29 22:51:36.914084444 -0500
-@@ -0,0 +1,277 @@
++++ stream/stream_etp.c	2013-02-05 00:14:21.912505159 -0500
+@@ -0,0 +1,291 @@
 +
 +#include "config.h"
 +
@@ -289,6 +340,7 @@
 +#include "etp/bitstream.h"
 +
 +#define SEEK_MAX_COUNT		200000
++#define LIVE_POS			0xFFFFFFFFFFFFFFFF
 +
 +static struct stream_priv_s
 +{
@@ -379,7 +431,8 @@
 +		case STREAM_CTRL_GET_TIME_LENGTH: // 1
 +		{
 +//			printf("Requesting total time (%d)\n", priv->handle);
-+			protocol_get_tuner_time_endpos(priv->handle);
++//			protocol_get_tuner_time_endpos(priv->handle);
++			protocol_get_tuner_time_endpos(s->fd);
 +			p = recv(priv->handle, &pos, sizeof(uint64_t), 0);
 +
 +			if (pos > 45000)
@@ -395,7 +448,7 @@
 +		{
 +/*
 +//			printf("Requesting current time (%d)\n", priv->handle);
-+			protocol_get_tuner_time_pos(priv->handle);
++			protocol_get_tuner_time_pos(s->fd);
 +			p = recv(priv->handle, &pos, sizeof(uint64_t), 0);
 +//			if (pos > 45000)
 +			{
@@ -418,11 +471,23 @@
 +
 +			do
 +			{
-+				pos = floor(*((double*)arg) * 90000);
++				if (*((double*)arg) < 0)
++					pos = LIVE_POS;
++				else
++					pos = floor(*((double*)arg) * 90000);
++
 +//				printf("Seeking to: %0.4f\n", pos/90000.0);
 +
-+				protocol_set_tuner_time_pos(priv->handle, pos);
++//				protocol_set_tuner_time_pos(priv->handle, pos);
++				protocol_set_tuner_time_pos(s->fd, pos);
 +				p = recv(priv->handle, &pos, sizeof(uint64_t), 0);
++
++				printf("POS: %" PRId64"\n", pos);
++				if ((int64_t)pos == -1)
++				{
++					printf("SEEK DID NOT HAPPEN\n");
++					return STREAM_UNSUPPORTED;
++				}
 +
 +				loop = 1;
 +				tmp = 0;
@@ -451,7 +516,7 @@
 +
 +				if (tmp < max_bad_count)
 +				{
-+					printf("Seek Good: %d\n", loop1_count);
++					printf("Seek Good: %d (tmp: %" PRId64"\n", loop1_count, tmp);
 +					return 1;
 +				}
 +
@@ -461,7 +526,6 @@
 +			printf("SEEK FAILED!\n");
 +		}
 +		break;
-+
 +/*
 +		case STREAM_CTRL_SEEK_TO_CHAPTER: // 2
 +		case STREAM_CTRL_GET_CURRENT_CHAPTER: // 3
@@ -484,11 +548,12 @@
 +
 +static void close_f(stream_t *s)
 +{
-+	if (s && s->fd)
-+	{
++	struct stream_priv_s *priv = s->priv;
++
++	if (s->fd > 0)
 +		closesocket(s->fd);
-+		s->fd = -1;
-+	}
++	if (priv->handle)
++		closesocket(priv->handle);
 +}
 +
 +static int open_s(stream_t *stream,int mode, void* opts, int* file_format)

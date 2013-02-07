@@ -222,7 +222,7 @@
  
  #include "input/input.h"
  
-+#define ETP_MAX_FROM_END		4.5
++#define ETP_MAX_FROM_END		3.4
 +int etp_video_sync = 0;
  int slave_mode = 0;
  int enable_mouse_movements = 0;
@@ -315,9 +315,8 @@
  #define STREAM_BUFFER_SIZE 2048
  #define STREAM_MAX_SECTOR_SIZE (8*1024)
 --- stream.org/stream_etp.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/stream_etp.c	2013-02-06 15:42:44.000000000 -0500
-@@ -0,0 +1,352 @@
-+
++++ stream/stream_etp.c	2013-02-07 01:26:56.670129084 -0500
+@@ -0,0 +1,368 @@
 +#include "config.h"
 +
 +#include <stdlib.h>
@@ -341,6 +340,7 @@
 +
 +#define SEEK_MAX_COUNT		500000
 +#define LIVE_POS			0xFFFFFFFFFFFFFFFF
++#define SEEK_FILL_SZ2		(188 * 80)
 +
 +static struct stream_priv_s
 +{
@@ -349,6 +349,7 @@
 +	char* filename;
 +	int handle;
 +	uint8_t id;
++	uint8_t is_seeking;
 +} stream_priv_dflts;
 +
 +#define ST_OFF(f) M_ST_OFF(struct stream_priv_s,f)
@@ -415,7 +416,7 @@
 +	return -1;
 +}
 +
-+static int _flush_incoming_stream(stream_t *s)
++static int _flush_incoming_stream(stream_t *s, int flush_count)
 +{
 +	int rc = -1, b;
 +	uint8_t loop = 1;
@@ -423,41 +424,60 @@
 +	uint32_t sync_count = 0, packet_skip = 0;
 +	uint16_t pid = 0;
 +
-+	printf("Flushing...\n");
-+	while(loop)
++//	printf("Flushing...\n");
++	if (flush_count == -1)
 +	{
-+		ioctl (s->fd,FIONREAD, &b);
-+
-+		if (b < 188)
++		while(loop)
 +		{
-+			loop = 0;
-+			continue;
-+		}
++			ioctl (s->fd,FIONREAD, &b);
 +
-+		if (recv(s->fd, &flush[0], 1, 0))
++			if (b < 188)
++			{
++				loop = 0;
++				continue;
++			}
++
++			if (recv(s->fd, &flush[0], 1, 0))
++			{
++				if (flush[0] == 0x47)
++				{
++					rc = recv(s->fd, &flush[1], 187, 0);
++//					pid = ((flush[1] & 0x1F) << 8) | flush[2];
++					if (flush[1] == TS_NULL_PACKET[1] && flush[2] == TS_NULL_PACKET[2])
++					{
++						loop = 0;
++						packet_skip = rc;
++					}
++					else
++						packet_skip++;
++				}
++				else
++					sync_count++;
++			}
++			else
++			{
++				printf("F me\n");
++				break;
++			}
++		}
++		return packet_skip;
++	}
++	else
++	{
++		if (recv(s->fd, flush, 1, 0))
 +		{
 +			if (flush[0] == 0x47)
 +			{
 +				rc = recv(s->fd, &flush[1], 187, 0);
-+//				pid = ((flush[1] & 0x1F) << 8) | flush[2];
-+				if (flush[1] == TS_NULL_PACKET[1] && flush[2] == TS_NULL_PACKET[2])
++				if (rc == 187)
 +				{
-+					loop = 0;
-+					packet_skip = rc;
++					ioctl (s->fd, FIONREAD, &b);
++					return b;
 +				}
-+				else
-+					packet_skip++;
 +			}
-+			else
-+				sync_count++;
 +		}
-+		else
-+		{
-+			printf("F me\n");
-+			break;
-+		}
++		return -1;
 +	}
-+	return packet_skip;
 +}
 +
 +
@@ -474,9 +494,15 @@
 +
 +	switch(cmd)
 +	{
-+
 +		case STREAM_CTRL_GET_TIME_LENGTH: // 1
 +		{
++//				loop1_count++;
++//				usleep(250*1000);
++			if (priv->is_seeking == 1)
++			{
++				printf("GET_TIME_LEN, but seeking\n");
++				return STREAM_UNSUPPORTED;
++			}
 +//			printf("Requesting total time (%d)\n", priv->handle);
 +//			protocol_get_tuner_time_endpos(priv->handle);
 +			protocol_get_tuner_time_endpos(s->fd);
@@ -512,9 +538,9 @@
 +			uint8_t tmp1 = 0;
 +			uint32_t loop1_count = 0;
 +			int rc = 0;
-+
-+			do
-+			{
++			priv->is_seeking = 1;
++//			do
++//			{
 +				if (*((double*)arg) < 0)
 +					pos = LIVE_POS;
 +				else
@@ -534,53 +560,41 @@
 +					return STREAM_UNSUPPORTED;
 +				}
 +//				printf("Start Flush\n");
-+				rc = _flush_incoming_stream(s);
-+//				printf("Flush Done\n");
++				rc = _flush_incoming_stream(s, -1);
++				printf("Flush Done: %d\n", rc);
 +
-+				if (rc < SEEK_MAX_COUNT)
++				if (1)
 +				{
++					int b=0;
 +					tmp1 = 0xDE;
++					rc = 0;
++//					ioctl (s->fd, FIONREAD, &b);
 +					p = send(priv->handle, &tmp1, 1, 0);
-+//					printf("Seek good Breaking...\n");
-+					return 1;
-+				}
-+/*
-+				loop = 1;
-+				tmp = 0;
++//					printf("Before flush2: %d\n", b);
 +
-+				while(loop)
-+				{
-+					if (recv(s->fd, &flush[0], 1, 0))
++					while(b < SEEK_FILL_SZ2)
 +					{
-+						if (flush[0] == 0x47)
++						b = _flush_incoming_stream(s, 1);
++//						printf("Data_wait: %d\n", b);
++						if (b < SEEK_FILL_SZ2)
 +						{
-+							rc = recv(s->fd, &flush[1], 187, 0);
-+							if (flush[1] == TS_NULL_PACKET[1] && flush[2] == TS_NULL_PACKET[2])
-+								loop = 0;
-+							else
-+								tmp++;
++							usleep(100*1000);
++							rc++;
 +						}
-+						else
-+							tmp++;
++
++						if (rc > 20)
++						{
++							printf("Data is NOT flowing: %d\n", rc);
++							priv->is_seeking = 0;
++							return 0;
++						}
 +					}
-+					else
-+						break;
-+
-+					if (tmp > max_bad_count)
-+						break;
-+				}
-+
-+				if (tmp < max_bad_count)
-+				{
-+					printf("Seek Good: %d (tmp: %" PRId64"\n", loop1_count, tmp);
++					printf("Data is flowing: %d (%d)\n", rc, b);
++					priv->is_seeking = 0;
 +					return 1;
 +				}
-+				else
-+					printf("SEEK NOT GOOD, doing again: %" PRId64"\n", tmp);
-+*/
-+				loop1_count++;
-+				usleep(250*1000);
-+			} while (1);
++//			} while (1);
++			priv->is_seeking = 0;
 +			printf("SEEK FAILED!\n");
 +		}
 +		break;
@@ -634,16 +648,18 @@
 +			stream->priv = p;
 +			stream->type = STREAMTYPE_ETP;
 +			protocol_set_tuner_channel(stream->fd, atoi(p->filename));
-+			
-+
-+
 +			q = recv(stream->fd, &lport, sizeof(uint16_t), 0);
 +
 +			if (q && lport)
 +			{
 +				p->handle = connect2Server(p->host, lport, 0);
 +				if (p->handle)
++				{
 +					stream->control = control;
++ //					stream->streaming_ctrl->prebuffer_size = 64*1024; // 64 KBytes
++//					stream->streaming_ctrl->buffering = 1;
++
++				}
 +			}
 +
 +			stream->close = close_f;

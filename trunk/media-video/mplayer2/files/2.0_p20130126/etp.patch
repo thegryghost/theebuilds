@@ -314,9 +314,10 @@
  
  #define STREAM_BUFFER_SIZE 2048
  #define STREAM_MAX_SECTOR_SIZE (8*1024)
+diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 --- stream.org/stream_etp.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/stream_etp.c	2013-02-07 01:26:56.670129084 -0500
-@@ -0,0 +1,368 @@
++++ stream/stream_etp.c	2013-02-08 02:27:07.507446095 -0500
+@@ -0,0 +1,449 @@
 +#include "config.h"
 +
 +#include <stdlib.h>
@@ -328,12 +329,14 @@
 +#include <unistd.h>
 +#include <errno.h>
 +#include <math.h>
++#include <time.h>
 +
 +#include "mp_msg.h"
 +#include "stream.h"
 +#include "m_option.h"
 +#include "m_struct.h"
 +#include "tcp.h"
++//#include "etp/utils.h"
 +#include "etp/protocol.h"
 +#include "etp/mpegts.h"
 +#include "etp/bitstream.h"
@@ -341,6 +344,8 @@
 +#define SEEK_MAX_COUNT		500000
 +#define LIVE_POS			0xFFFFFFFFFFFFFFFF
 +#define SEEK_FILL_SZ2		(188 * 80)
++
++FILE *debug_fp = NULL;
 +
 +static struct stream_priv_s
 +{
@@ -350,6 +355,11 @@
 +	int handle;
 +	uint8_t id;
 +	uint8_t is_seeking;
++	time_t last_timeend_send;
++	double last_timeend;
++
++	uint64_t last_timeend_send_ms;
++//	double last_timeend_send;
 +} stream_priv_dflts;
 +
 +#define ST_OFF(f) M_ST_OFF(struct stream_priv_s,f)
@@ -423,13 +433,19 @@
 +	uint8_t flush[188] = {0};
 +	uint32_t sync_count = 0, packet_skip = 0;
 +	uint16_t pid = 0;
++	printf("_flush_incoming_stream start\n");
 +
-+//	printf("Flushing...\n");
++	if (debug_fp)
++	{
++		fprintf(debug_fp, "_flush_incoming_stream start\n");
++		fflush(debug_fp);
++	}
++
 +	if (flush_count == -1)
 +	{
 +		while(loop)
 +		{
-+			ioctl (s->fd,FIONREAD, &b);
++			ioctl (s->fd, FIONREAD, &b);
 +
 +			if (b < 188)
 +			{
@@ -442,7 +458,7 @@
 +				if (flush[0] == 0x47)
 +				{
 +					rc = recv(s->fd, &flush[1], 187, 0);
-+//					pid = ((flush[1] & 0x1F) << 8) | flush[2];
++
 +					if (flush[1] == TS_NULL_PACKET[1] && flush[2] == TS_NULL_PACKET[2])
 +					{
 +						loop = 0;
@@ -456,9 +472,21 @@
 +			}
 +			else
 +			{
-+				printf("F me\n");
++				if (debug_fp)
++				{
++					fprintf(debug_fp, "-- F Me\n");
++					fflush(debug_fp);
++				}
++
++//				printf("F me\n");
 +				break;
 +			}
++		}
++		printf("_flush_incoming_stream end1\n");
++		if (debug_fp)
++		{
++			fprintf(debug_fp, "_flush_incoming_stream end1\n");
++			fflush(debug_fp);
 +		}
 +		return packet_skip;
 +	}
@@ -472,18 +500,29 @@
 +				if (rc == 187)
 +				{
 +					ioctl (s->fd, FIONREAD, &b);
++					printf("_flush_incoming_stream end2\n");
++					if (debug_fp)
++					{
++						fprintf(debug_fp, "_flush_incoming_stream end2\n");
++						fflush(debug_fp);
++					}
 +					return b;
 +				}
 +			}
++		}
++		printf("_flush_incoming_stream end3\n");
++		if (debug_fp)
++		{
++			fprintf(debug_fp, "_flush_incoming_stream end3\n");
++			fflush(debug_fp);
 +		}
 +		return -1;
 +	}
 +}
 +
-+
-+
 +static int control(stream_t *s, int cmd, void *arg)
 +{
++	uint8_t skipb=0;
 +	struct stream_priv_s *priv = s->priv;
 +	int p;
 +	uint64_t pos = 0;
@@ -496,109 +535,123 @@
 +	{
 +		case STREAM_CTRL_GET_TIME_LENGTH: // 1
 +		{
-+//				loop1_count++;
-+//				usleep(250*1000);
++			uint64_t now_ms = get_time_ms(NULL);
++
 +			if (priv->is_seeking == 1)
 +			{
 +				printf("GET_TIME_LEN, but seeking\n");
-+				return STREAM_UNSUPPORTED;
++				if (debug_fp)
++				{
++					fprintf(debug_fp, "GET_TIME_LEN, but seeking\n");
++					fflush(debug_fp);
++				}
++				return STREAM_ERROR;
 +			}
-+//			printf("Requesting total time (%d)\n", priv->handle);
-+//			protocol_get_tuner_time_endpos(priv->handle);
-+			protocol_get_tuner_time_endpos(s->fd);
-+			p = recv(priv->handle, &pos, sizeof(uint64_t), 0);
 +
-+			if (pos > 45000)
-+			{
-+//				printf("Total Time: %" PRId64" (%0.4f)\n", pos, (double)pos/90000.0);
-+				*((double *)arg) = (double)pos/90000.0;
-+				return 1;
-+			}
-+		}
-+		break;
++//			printf("TD: %" PRIu64" %" PRIu64" = %" PRIu64"\n", now_ms, priv->last_timeend_send_ms, now_ms - priv->last_timeend_send_ms);
 +
-+		case STREAM_CTRL_GET_CURRENT_TIME: // 5
-+		{
-+/*
-+//			printf("Requesting current time (%d)\n", priv->handle);
-+			protocol_get_tuner_time_pos(s->fd);
-+			p = recv(priv->handle, &pos, sizeof(uint64_t), 0);
-+//			if (pos > 45000)
++			if (now_ms - priv->last_timeend_send_ms < 700)
 +			{
-+//				printf("Current Time: %" PRId64" (%0.4f)\n", pos, (double)pos/90000.0);
-+				*((double *)arg) = (double)pos/90000.0;
-+				return 1;
++//				memcpy(arg, &priv->last_timeend, sizeof(double));
++				*((double *)arg) = priv->last_timeend;
++				return STREAM_OK;
 +			}
-+*/
++
++			pos = -1;
++			while (pos == -1)
++			{
++				protocol_get_tuner_time_endpos(s->fd);
++				p = recv(priv->handle, &pos, sizeof(uint64_t), 0);
++//				printf("GOT : %d -- %" PRId64" -- 0x%lx\n", p, sizeof(uint64_t), pos);
++			}
++
++//			printf("Req. Done: %" PRId64" (%0.f) -- bytes left: %d\n", pos, pos/90000.0, p);
++
++			if ((int64_t)pos != -1)
++			{
++				priv->last_timeend_send_ms = now_ms;
++				*((double*)arg) = priv->last_timeend = (double)pos/90000.0;
++//				memcpy(arg, &l1, sizeof(double));
++//				memcpy(&priv->last_timeend, &l1, sizeof(double));
++//				printf("Total Time: %" PRId64" (%0.4f) -- %0.4f\n", pos, (double)pos/90000.0, priv->last_timeend);
++				return STREAM_OK;
++			}
 +		}
 +		break;
 +
 +		case STREAM_CTRL_SEEK_TO_TIME: // 6
 +		{
++			int b=0;
 +			uint8_t tmp1 = 0;
 +			uint32_t loop1_count = 0;
 +			int rc = 0;
 +			priv->is_seeking = 1;
-+//			do
-+//			{
-+				if (*((double*)arg) < 0)
-+					pos = LIVE_POS;
-+				else
-+					pos = floor(*((double*)arg) * 90000);
++			if (*((double*)arg) < 0)
++				pos = LIVE_POS;
++			else
++				pos = floor(*((double*)arg) * 90000);
 +
-+				printf("Seeking to: %0.4f\n", pos/90000.0);
-+				protocol_set_tuner_time_pos(s->fd, pos);
-+//				printf("Waiting for position to come back\n");
-+				p = recv(priv->handle, &pos, sizeof(uint64_t), 0);
-+//				printf("POS: %0.4f -- Arg: %0.4f\n", pos/90000.0, *((double*)arg));
++			printf("---- Seeking to: %0.4f\n", pos/90000.0);
++			if (debug_fp)
++			{
++				fprintf(debug_fp, "---- Seeking to: %0.4f\n", pos/90000.0);
++				fflush(debug_fp);
++			}
++			protocol_set_tuner_time_pos(s->fd, pos);
++			p = recv(priv->handle, &pos, sizeof(uint64_t), 0);
 +
-+				if ((int64_t)pos == -1)
++			if ((int64_t)pos == -1)
++			{
++				tmp1 = 0xEE;
++				p = send(priv->handle, &tmp1, 1, 0);
++				printf("SEEK DID NOT HAPPEN\n");
++				if (debug_fp)
 +				{
-+					tmp1 = 0xEE;
-+					p = send(priv->handle, &tmp1, 1, 0);
-+//					printf("SEEK DID NOT HAPPEN\n");
-+					return STREAM_UNSUPPORTED;
++					fprintf(debug_fp, "SEEK DID NOT HAPPEN\n");
++					fflush(debug_fp);
 +				}
-+//				printf("Start Flush\n");
-+				rc = _flush_incoming_stream(s, -1);
-+				printf("Flush Done: %d\n", rc);
++				return STREAM_UNSUPPORTED;
++			}
++			rc = _flush_incoming_stream(s, -1);
 +
-+				if (1)
++			tmp1 = 0xDE;
++			rc = 0;
++			p = send(priv->handle, &tmp1, 1, 0);
++
++			while(b < SEEK_FILL_SZ2)
++			{
++				b = _flush_incoming_stream(s, 1);
++//				printf("Data_wait: %d\n", b);
++				if (b < SEEK_FILL_SZ2)
 +				{
-+					int b=0;
-+					tmp1 = 0xDE;
-+					rc = 0;
-+//					ioctl (s->fd, FIONREAD, &b);
-+					p = send(priv->handle, &tmp1, 1, 0);
-+//					printf("Before flush2: %d\n", b);
++					usleep(100*1000);
++					rc++;
++				}
 +
-+					while(b < SEEK_FILL_SZ2)
++				if (rc > 20)
++				{
++					printf("Data is NOT flowing: %d\n", rc);
++					if (debug_fp)
 +					{
-+						b = _flush_incoming_stream(s, 1);
-+//						printf("Data_wait: %d\n", b);
-+						if (b < SEEK_FILL_SZ2)
-+						{
-+							usleep(100*1000);
-+							rc++;
-+						}
-+
-+						if (rc > 20)
-+						{
-+							printf("Data is NOT flowing: %d\n", rc);
-+							priv->is_seeking = 0;
-+							return 0;
-+						}
++						fprintf(debug_fp, "Data is NOT flowing: %d\n", rc);
++						fflush(debug_fp);
 +					}
-+					printf("Data is flowing: %d (%d)\n", rc, b);
 +					priv->is_seeking = 0;
-+					return 1;
++					return 0;
 +				}
-+//			} while (1);
++			}
++			printf("Data is flowing: %d (%d)\n", rc, b);
++			if (debug_fp)
++			{
++				fprintf(debug_fp, "Data is flowing: %d (%d)\n", rc, b);
++				fflush(debug_fp);
++			}
 +			priv->is_seeking = 0;
-+			printf("SEEK FAILED!\n");
++			return 1;
 +		}
 +		break;
 +/*
++		case STREAM_CTRL_GET_CURRENT_TIME: // 5
 +		case STREAM_CTRL_SEEK_TO_CHAPTER: // 2
 +		case STREAM_CTRL_GET_CURRENT_CHAPTER: // 3
 +		case STREAM_CTRL_GET_NUM_CHAPTERS: // 4
@@ -621,7 +674,8 @@
 +static void close_f(stream_t *s)
 +{
 +	struct stream_priv_s *priv = s->priv;
-+
++//	if (debug_fp)
++//		fclose(debug_fp);
 +	if (s->fd > 0)
 +		closesocket(s->fd);
 +	if (priv->handle)
@@ -650,15 +704,43 @@
 +			protocol_set_tuner_channel(stream->fd, atoi(p->filename));
 +			q = recv(stream->fd, &lport, sizeof(uint16_t), 0);
 +
++			if (!debug_fp)
++			{
++				debug_fp = fopen("/tmp/etp_control.txt", "a+");
++			}
++			printf("Recvied port: %d (%d)\n", lport, q);
++
++			if (debug_fp)
++			{
++				fprintf(debug_fp, "Channel: %s\n", p->filename);
++				fprintf(debug_fp, "Recvied port: %d (%d)\n", lport, q);
++				fflush(debug_fp);
++			}
++
 +			if (q && lport)
 +			{
 +				p->handle = connect2Server(p->host, lport, 0);
 +				if (p->handle)
 +				{
++					printf("Connection made!\n");
++
++					if (debug_fp)
++					{
++						fprintf(debug_fp, "Connection made!\n");
++						fflush(debug_fp);
++					}
 +					stream->control = control;
 + //					stream->streaming_ctrl->prebuffer_size = 64*1024; // 64 KBytes
 +//					stream->streaming_ctrl->buffering = 1;
-+
++				}
++				else
++				{
++					printf("No Connection made :(\n");
++					if (debug_fp)
++					{
++						fprintf(debug_fp, "No Connection made :(\n");
++						fflush(debug_fp);
++					}
 +				}
 +			}
 +

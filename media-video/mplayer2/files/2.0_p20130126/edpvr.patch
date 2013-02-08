@@ -1,6 +1,6 @@
 diff -Naur stream.org/etp/bitstream.c stream/etp/bitstream.c
 --- stream.org/etp/bitstream.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/bitstream.c	2013-02-05 02:34:42.907689192 -0500
++++ stream/etp/bitstream.c	2013-02-08 16:38:07.190143231 -0500
 @@ -0,0 +1,201 @@
 +#include <stdio.h>
 +#include <stdlib.h>
@@ -205,7 +205,7 @@ diff -Naur stream.org/etp/bitstream.c stream/etp/bitstream.c
 +
 diff -Naur stream.org/etp/bitstream.h stream/etp/bitstream.h
 --- stream.org/etp/bitstream.h	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/bitstream.h	2013-02-05 02:34:42.908689192 -0500
++++ stream/etp/bitstream.h	2013-02-08 16:38:07.191143231 -0500
 @@ -0,0 +1,29 @@
 +#ifndef __BITSTREAM_STUFF
 +#define __BITSTREAM_STUFF
@@ -238,7 +238,7 @@ diff -Naur stream.org/etp/bitstream.h stream/etp/bitstream.h
 +#endif
 diff -Naur stream.org/etp/mpegts.c stream/etp/mpegts.c
 --- stream.org/etp/mpegts.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/mpegts.c	2013-02-05 02:34:42.909689192 -0500
++++ stream/etp/mpegts.c	2013-02-08 16:38:07.192143231 -0500
 @@ -0,0 +1,1202 @@
 +#include <stdio.h>
 +#include <stdlib.h>
@@ -1444,7 +1444,7 @@ diff -Naur stream.org/etp/mpegts.c stream/etp/mpegts.c
 +
 diff -Naur stream.org/etp/mpegts.h stream/etp/mpegts.h
 --- stream.org/etp/mpegts.h	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/mpegts.h	2013-02-05 02:34:42.911689192 -0500
++++ stream/etp/mpegts.h	2013-02-08 16:38:07.194143231 -0500
 @@ -0,0 +1,386 @@
 +#ifndef __MPEGTS_STUFF
 +#define __MPEGTS_STUFF
@@ -1834,8 +1834,8 @@ diff -Naur stream.org/etp/mpegts.h stream/etp/mpegts.h
 +#endif
 diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 --- stream.org/etp/protocol.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/protocol.c	2013-02-05 02:34:42.912689192 -0500
-@@ -0,0 +1,474 @@
++++ stream/etp/protocol.c	2013-02-08 16:38:07.195143231 -0500
+@@ -0,0 +1,476 @@
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <stdint.h>
@@ -1872,6 +1872,7 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +// ---------- SENDs
 +size_t _protocol_send_64(int handle, uint64_t p)
 +{
++//	printf("[PROTO] SEND64: %" PRId64" -- 0x%lx\n", p, p);
 +	if (handle)
 +		return write(handle, &p, sizeof(uint64_t));
 +	return -1;
@@ -1929,6 +1930,7 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +// -----------------------------=
 +size_t protocol_send_tuner_pos(int handle, uint64_t pos)
 +{
++//	printf("protocol_send_tuner_pos: %" PRId64" -- 0x%lx\n", pos, pos);
 +	if (handle && pos)
 +		return _protocol_send_64(handle, pos);
 +	return -1;
@@ -2064,10 +2066,10 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +		uint32_t _input = 0;
 +//		size_t _rc = 0;
 +
-+		ret->rc =  read(handle, &_input, sizeof(uint32_t));
-+		if (ret->rc <= 0)
++		ret->rc = read(handle, &_input, sizeof(uint32_t));
++		if (ret->rc < 0)
 +		{
-+//			printf("protocol_get_cmd 1\n");
++//			printf("protocol_get_cmd 1: %d (%s)\n",errno, strerror(errno));
 +			return ret;
 +		}
 +		if (!((_input & PROTO_CMD_MASK) == PROTO_CMD_START))
@@ -2096,7 +2098,7 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +				}
 +				else
 +				{
-+					printf("MOO\n");
++					printf("[PROTO] !!!! protocol_get_cmd error: %d (%s)\n", ret->rc, strerror(errno));
 +				}
 +			}
 +			break;
@@ -2312,7 +2314,7 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +
 diff -Naur stream.org/etp/protocol.h stream/etp/protocol.h
 --- stream.org/etp/protocol.h	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/protocol.h	2013-02-05 02:34:42.913689192 -0500
++++ stream/etp/protocol.h	2013-02-08 16:38:07.196143231 -0500
 @@ -0,0 +1,53 @@
 +#ifndef __TUNER_PROTOCOL_STUFF
 +#define __TUNER_PROTOCOL_STUFF
@@ -2369,8 +2371,8 @@ diff -Naur stream.org/etp/protocol.h stream/etp/protocol.h
 +#endif
 diff -Naur stream.org/etp/utils.c stream/etp/utils.c
 --- stream.org/etp/utils.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/utils.c	2013-02-05 02:34:42.914689192 -0500
-@@ -0,0 +1,487 @@
++++ stream/etp/utils.c	2013-02-08 16:38:07.197143231 -0500
+@@ -0,0 +1,503 @@
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <inttypes.h>
@@ -2737,6 +2739,22 @@ diff -Naur stream.org/etp/utils.c stream/etp/utils.c
 +	return ret;
 +}
 +
++
++int select_wait(int sock, int timeout_s, int timeout_u)
++{
++	fd_set readfds = {0};
++	struct timeval tv = {0};
++
++	tv.tv_sec = timeout_s;
++	tv.tv_usec = timeout_u;
++
++	FD_ZERO(&readfds);
++	FD_SET(sock, &readfds);
++
++	return select(sock+1, &readfds, NULL, NULL, &tv);
++}
++
++
 +int get_listen_socket(char * ip, uint16_t port)
 +{
 +	int server_socket = -1;
@@ -2860,8 +2878,8 @@ diff -Naur stream.org/etp/utils.c stream/etp/utils.c
 +#endif
 diff -Naur stream.org/etp/utils.h stream/etp/utils.h
 --- stream.org/etp/utils.h	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/utils.h	2013-02-05 02:34:42.915689192 -0500
-@@ -0,0 +1,81 @@
++++ stream/etp/utils.h	2013-02-08 16:38:07.198143231 -0500
+@@ -0,0 +1,82 @@
 +#ifndef __UTILS_STUFF
 +#define __UTILS_STUFF
 +
@@ -2931,6 +2949,7 @@ diff -Naur stream.org/etp/utils.h stream/etp/utils.h
 +int write_bytes_to_handle(int, uint8_t *, int, long int, long int);
 +int get_bytes_from_handle(int, uint8_t *, int, long int, long int, uint32_t);
 +
++int select_wait(int, int, int);
 +int get_listen_socket(char *, uint16_t);
 +size_t generic_curl_handler(void *, size_t, size_t, void *);
 +unsigned int htoi (const char *);

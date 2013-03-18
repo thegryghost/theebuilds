@@ -33,7 +33,7 @@ RDEPEND="dev-python/pygame
 	>=dev-python/kaa-metadata-0.7.3
 	>=dev-python/kaa-imlib2-0.2.3
 
-	media-video/mplayer
+	media-video/mplayer2
 	>=media-libs/libsdl-1.2.5
 
 	cdparanoia? ( media-sound/cdparanoia )

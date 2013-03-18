@@ -1,6 +1,6 @@
 diff -Naur stream.org/etp/bitstream.c stream/etp/bitstream.c
 --- stream.org/etp/bitstream.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/bitstream.c	2013-02-08 16:38:07.190143231 -0500
++++ stream/etp/bitstream.c	2013-03-18 00:57:02.787846390 -0400
 @@ -0,0 +1,201 @@
 +#include <stdio.h>
 +#include <stdlib.h>
@@ -205,7 +205,7 @@ diff -Naur stream.org/etp/bitstream.c stream/etp/bitstream.c
 +
 diff -Naur stream.org/etp/bitstream.h stream/etp/bitstream.h
 --- stream.org/etp/bitstream.h	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/bitstream.h	2013-02-08 16:38:07.191143231 -0500
++++ stream/etp/bitstream.h	2013-03-18 00:57:02.787846390 -0400
 @@ -0,0 +1,29 @@
 +#ifndef __BITSTREAM_STUFF
 +#define __BITSTREAM_STUFF
@@ -238,7 +238,7 @@ diff -Naur stream.org/etp/bitstream.h stream/etp/bitstream.h
 +#endif
 diff -Naur stream.org/etp/mpegts.c stream/etp/mpegts.c
 --- stream.org/etp/mpegts.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/mpegts.c	2013-02-08 16:38:07.192143231 -0500
++++ stream/etp/mpegts.c	2013-03-18 00:57:02.787846390 -0400
 @@ -0,0 +1,1202 @@
 +#include <stdio.h>
 +#include <stdlib.h>
@@ -1444,7 +1444,7 @@ diff -Naur stream.org/etp/mpegts.c stream/etp/mpegts.c
 +
 diff -Naur stream.org/etp/mpegts.h stream/etp/mpegts.h
 --- stream.org/etp/mpegts.h	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/mpegts.h	2013-02-08 16:38:07.194143231 -0500
++++ stream/etp/mpegts.h	2013-03-18 00:57:02.787846390 -0400
 @@ -0,0 +1,386 @@
 +#ifndef __MPEGTS_STUFF
 +#define __MPEGTS_STUFF
@@ -1834,8 +1834,8 @@ diff -Naur stream.org/etp/mpegts.h stream/etp/mpegts.h
 +#endif
 diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 --- stream.org/etp/protocol.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/protocol.c	2013-02-08 16:38:07.195143231 -0500
-@@ -0,0 +1,476 @@
++++ stream/etp/protocol.c	2013-03-18 00:57:02.787846390 -0400
+@@ -0,0 +1,854 @@
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <stdint.h>
@@ -1853,6 +1853,8 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +
 +#include "protocol.h"
 +#include "utils.h"
++#include "timers.h"
++//#include "device.h"
 +
 +
 +size_t _protocol_send_cmd(int, PROTOCOL_CMD_STRUCT *);
@@ -1950,6 +1952,113 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +	return -1;
 +}
 +
++
++
++int _protocol_do_connect(char *ip, uint16_t port)
++{
++	int sock = 0, sz = 0;
++	char req[1024] = {0};
++	uint8_t moo=0xFF;
++
++	sock = doconnect(ip, port);
++
++	if (sock ==  -1)
++		printf("NOOOOO\n");
++
++	sprintf(req, "eTUNER V001 \n\n");
++	sz = write_bytes_to_handle(sock, (uint8_t*)req, strlen(req), 2, 0);
++
++	if (sz ==  -1)
++	{
++		printf("[CeTUNE] Error sending GET req\n");
++		close(sock);
++		return -1;
++	}
++
++	memset(&req, 0, 1024);
++	sz = get_bytes_from_handle(sock, &moo, 1, 5, 0, 0);
++
++	if (sz == -1)
++	{
++		close(sock);
++		return -1;
++	}
++
++	if (moo == PROTOCOL_INIT_GOOD)
++		return sock;
++
++	return -1;
++
++}
++
++size_t protocol_get_tuner_count(char *ip, uint16_t port, int * h1)
++{
++	int handle = _protocol_do_connect(ip, port);
++
++	if (handle && h1)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++		memcpy(h1, &handle, sizeof(int));
++		pstruct.cmd = PROTO_QUERY_TUNER_COUNT;
++		pstruct.dataptr_size = 0;
++		pstruct.dataptr = NULL;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
++size_t protocol_get_channel_count(char *ip, uint16_t port, int *h1)
++{
++	int handle = _protocol_do_connect(ip, port);
++	if (handle && h1)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++
++		memcpy(h1, &handle, sizeof(int));
++		pstruct.cmd = PROTO_QUERY_CHANNEL_COUNT;
++		pstruct.dataptr_size = 0;
++		pstruct.dataptr = NULL;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
++size_t protocol_get_channel_list(char *ip, uint16_t port, int *h1)
++{
++	int handle = _protocol_do_connect(ip, port);
++	if (handle && h1)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++		memcpy(h1, &handle, sizeof(int));
++
++		pstruct.cmd = PROTO_QUERY_CHANNEL_LIST;
++		pstruct.dataptr_size = 0;
++		pstruct.dataptr = NULL;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
++size_t protocol_get_rec_list(char *ip, uint16_t port, int *h1)
++{
++	int handle = _protocol_do_connect(ip, port);
++	if (handle && h1)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++		memcpy(h1, &handle, sizeof(int));
++
++		pstruct.cmd = PROTO_QUERY_REC_LIST;
++		pstruct.dataptr_size = 0;
++		pstruct.dataptr = NULL;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
 +size_t protocol_get_tuner_time_pos(int handle)
 +{
 +	if (handle)
@@ -1997,7 +2106,92 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +	return -1;
 +}
 +
++uint64_t protocol_get_tuner_time_startpos(int handle)
++{
++	uint64_t ret = 0;
++	if (handle)
++	{
++		size_t tmp;
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++
++		pstruct.cmd = PROTO_GET_STREAM_START_POS;
++		pstruct.dataptr_size = 0;
++		pstruct.dataptr = NULL;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
 +//-----------------------------------------
++
++size_t protocol_get_timer_list(char *ip, uint16_t port, int *h1)
++{
++	int handle = _protocol_do_connect(ip, port);
++	if (handle && h1)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++		memcpy(h1, &handle, sizeof(int));
++
++		pstruct.cmd = PROTO_QUERY_TIMER_LIST;
++		pstruct.dataptr_size = 0;
++		pstruct.dataptr = NULL;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
++/*
++size_t protocol_get_timer_list(int handle)
++{
++	if (handle)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++
++		pstruct.cmd = PROTO_QUERY_TIMER_LIST;
++		pstruct.dataptr_size = 0;
++		pstruct.dataptr = NULL;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++*/
++size_t protocol_add_timer(char *ip, uint16_t port, uint8_t *data, uint32_t data_sz, int *h1)
++{
++	int handle = _protocol_do_connect(ip, port);
++
++	if (handle && h1 && data && data_sz)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++		memcpy(h1, &handle, sizeof(int));
++
++		pstruct.cmd = PROTO_TIMER_ADD;
++		printf("hh: %d\n", data_sz);
++		pstruct.dataptr_size = data_sz;
++		pstruct.dataptr = data;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
++
++size_t protocol_del_timer(int handle, uint32_t id)
++{
++	if (handle)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++
++		pstruct.cmd = PROTO_TIMER_ADD;
++		pstruct.dataptr_size = sizeof(id);
++		pstruct.dataptr = (uint8_t*)&id;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
 +
 +size_t protocol_set_tuner_channel(int handle, uint32_t channel)
 +{
@@ -2028,22 +2222,68 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +	}
 +	return -1;
 +}
++
 +/*
-+size_t protocol_set_tuner_writing(int handle, uint8_t pos)
++size_t protocol_get_tuner_count(char *ip, uint16_t port, int * h1)
 +{
-+	if (handle && pos)
++	int handle = _protocol_do_connect(ip, port);
++
++	if (handle && h1)
 +	{
 +		PROTOCOL_CMD_STRUCT pstruct = {0};
-+
-+		pstruct.cmd = PROTO_SET_WRITING;
-+		pstruct.dataptr_size = sizeof(pos);
-+		pstruct.dataptr = (uint8_t*)&pos;
++		memcpy(h1, &handle, sizeof(int));
++		pstruct.cmd = PROTO_QUERY_TUNER_COUNT;
++		pstruct.dataptr_size = 0;
++		pstruct.dataptr = NULL;
 +
 +		return _protocol_send_cmd(handle, &pstruct);
 +	}
 +	return -1;
 +}
 +*/
++
++size_t protocol_play_rec_id2(char *ip, uint16_t port, int * h1, uint32_t id)
++{
++	int handle = _protocol_do_connect(ip, port);
++
++	if (handle && h1)
++	{
++		memcpy(h1, &handle, sizeof(int));
++		return protocol_play_rec_id(handle, id);
++	}
++	return -1;
++}
++
++size_t protocol_play_rec_id(int handle, uint32_t id)
++{
++	if (handle && id)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++
++		pstruct.cmd = PROTO_REC_PLAYREC;
++		pstruct.dataptr_size = sizeof(id);
++		pstruct.dataptr = (uint8_t*)&id;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
++size_t protocol_del_rec_id(int handle, uint32_t id)
++{
++	if (handle && id)
++	{
++		PROTOCOL_CMD_STRUCT pstruct = {0};
++
++		pstruct.cmd = PROTO_REC_DELREC;
++		pstruct.dataptr_size = sizeof(id);
++		pstruct.dataptr = (uint8_t*)&id;
++
++		return _protocol_send_cmd(handle, &pstruct);
++	}
++	return -1;
++}
++
 +void protocol_free_cmd_struct(PROTOCOL_CMD_STRUCT * p)
 +{
 +	if (p)
@@ -2082,18 +2322,19 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +
 +		switch(ret->cmd)
 +		{
-+//			case PROTO_SET_WRITING:
++			case PROTO_TIMER_ADD:
 +			case PROTO_SET_STREAM_POS:
 +			case PROTO_TUNE_AND_STREAM:
++			case PROTO_REC_PLAYREC:
++			case PROTO_REC_DELREC:
 +			{
 +				uint32_t data_sz = 0;
 +				ret->rc = read(handle, &data_sz, sizeof(data_sz));
 +
 +				if (ret->rc > 0)
 +				{
-+//					ret->dataptr_size = sizeof(data_sz);
 +					ret->dataptr_size = data_sz;
-+					ret->dataptr = malloc(ret->dataptr_size);
++					ret->dataptr = calloc(1, ret->dataptr_size);
 +					ret->rc = read(handle, ret->dataptr, ret->dataptr_size);
 +				}
 +				else
@@ -2102,13 +2343,14 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +				}
 +			}
 +			break;
-+
++/*
++			case PROTO_TIMER_LIST:
 +			case PROTO_INIT_CONNECTION:
 +			case PROTO_GET_STREAM_END_POS:
 +			case PROTO_GET_STREAM_POS:
 +			case PROTO_GET_STREAM_ID:
++*/
 +			default:
-+
 +			break;
 +		}
 +	}
@@ -2147,11 +2389,19 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +	return _rc;
 +}
 +
-+//******************************************************
++//-------------------------
 +#ifdef _MAIN_
 +
 +
-+uint8_t ugly[188*3] = {0};
++UTILS_HOSTPORT_STRUCT *hostport = NULL;
++
++#define PROTO_MAIN_LIST_REC			1
++#define PROTO_MAIN_LIST_CHAN		2
++#define PROTO_MAIN_LIST_TIMER		3
++#define PROTO_MAIN_SET_TIMER		4
++
++char *remote_ip = NULL;
++uint8_t proto_cmd = 0;
 +
 +void display_usage(char *exe)
 +{
@@ -2159,16 +2409,10 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +}
 +
 +
-+static const char *optString = "a:l:p:m:c:d:?h";
++static const char *optString = "a:c:?h";
 +
 +static const struct option longOpts[] =
 +{
-+	{ "listenip", required_argument, NULL, 'l' },
-+	{ "listenport", required_argument, NULL, 'p' },
-+	{ "tuners", required_argument, NULL, 'm' },
-+	{ "hdhrip", required_argument, NULL, 'c' },
-+	{ "hdhrport", required_argument, NULL, 'd' },
-+
 +	{ "help", no_argument, NULL, 'h' },
 +	{ NULL, no_argument, NULL, 0 }
 +};
@@ -2189,28 +2433,12 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +	{
 +		switch ( opt )
 +		{
-+			case 'l':
-+//				__bindip = optarg;
-+				break;
-+
-+			case 'p':
-+//				__bindport = atoi(optarg);
-+				break;
-+
-+			case 'm':
-+//				__maxtuners = atoi(optarg);
++			case 'a':
++				remote_ip = optarg;
 +				break;
 +
 +			case 'c':
-+//				__hdhr_channels_file = optarg;
-+				break;
-+
-+			case 'a':
-+//				__hdhr_dev_name = optarg;
-+				break;
-+
-+			case 'd':
-+//				__devport = atoi(optarg);
++				proto_cmd = atoi(optarg);
 +				break;
 +
 +			case 'h':
@@ -2236,66 +2464,186 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +//   printf("SIGPIPE caught\n");
 +}
 +
-+void doconnect(char *ip, uint16_t port, uint32_t channel)
++
++int _proto_main_get_timer_list(UTILS_HOSTPORT_STRUCT * hostp)
++{
++	if (hostp)
++	{
++		int sock = 0, sz, rc =0;
++		protocol_get_timer_list(hostp->hostname, hostp->port, &sock);
++		if (sock > 0)
++		{
++			TIMER_STRUCT timer = {0};
++			uint32_t count = 0;
++			sz = get_bytes_from_handle(sock, (uint8_t*)&count, sizeof(count), 5, 0, 0);
++			printf("count: %d\n", count);
++
++			while(count && timer.is_last == 0)
++			{
++				sz = get_bytes_from_handle(sock, (uint8_t*)&timer, sizeof(TIMER_STRUCT), 5, 0, 0);
++				timer_print_timer(&timer);
++			}
++			close(sock);
++			return 0;
++		}
++	}
++	return -1;
++}
++
++int _proto_main_get_rec_list(UTILS_HOSTPORT_STRUCT * hostp)
++{
++	if (hostp)
++	{
++		int sock = 0, sz, rc =0;
++		protocol_get_rec_list(hostp->hostname, hostp->port, &sock);
++		if (sock > 0)
++		{
++			TIMER_STRUCT timer = {0};
++			uint32_t count = 0;
++			sz = get_bytes_from_handle(sock, (uint8_t*)&count, sizeof(count), 5, 0, 0);
++			printf("count: %d\n", count);
++			while(count && timer.is_last == 0)
++			{
++				sz = get_bytes_from_handle(sock, (uint8_t*)&timer, sizeof(TIMER_STRUCT), 5, 0, 0);
++				timer_print_timer(&timer);
++			}
++			close(sock);
++			return 0;
++		}
++	}
++	return -1;
++}
++
++
++int _proto_main_get_chan_list(UTILS_HOSTPORT_STRUCT * hostp)
++{
++	if (hostp)
++	{
++		int sock = 0, sz, rc =0, f = 0;
++		protocol_get_channel_list(hostp->hostname, hostp->port, &sock);
++		if (sock > 0)
++		{
++			PROTOCOL_CHANNEL_STRUCT p_channel= {0};
++			while(p_channel.is_last == 0)
++			{
++				sz = get_bytes_from_handle(sock, (uint8_t*)&p_channel, sizeof(PROTOCOL_CHANNEL_STRUCT), 5, 0, 0);
++				printf("[%d] Channel %d, Name: %s (%d)\n", f, p_channel.num, p_channel.name, p_channel.is_last);
++				f++;
++			}
++			close(sock);
++			return 0;
++		}
++	}
++	return -1;
++}
++
++int _proto_main_set_timer(UTILS_HOSTPORT_STRUCT * hostp, int chan)
++{
++	if (hostp)
++	{
++		int sock;
++		TIMER_STRUCT timer = {0};
++
++		timer.channel_num = chan;
++		strncpy(timer.channel_name,"ED1", 12);
++		strncpy(timer.title,"Fake Title", 63);
++		strncpy(timer.plot,"Faake Plot", 127);
++		strncpy(timer.plot_outline,"Plot Lines", 127);
++		strncpy(timer.genre,"Fake Genere1", 63);
++		strncpy(timer.sub_genre,"Fake SebGenere1", 63);
++
++		timer.start_epoch = time(NULL) + 2;
++		timer.end_epoch = timer.start_epoch + 33;
++		protocol_add_timer(hostp->hostname, hostp->port, (void*)&timer, sizeof(TIMER_STRUCT), &sock);
++
++		return 0;
++	}
++	return -1;
++}
++void _doconnect(char *ip, uint16_t port, uint32_t channel, int cmd, int chan)
 +{
 +	if (ip && port)
 +	{
-+		struct sockaddr_in dest;
-+		int sock = 0, sz, i, j;
-+		char req[1024] = {0}, in=0, last=0;
-+		uint8_t moo=0xFF;
++		uint8_t packet[188] = {0};
++		int sock = 0, sz, rc =0;
++		int32_t count = -1, f =0;
++		uint16_t lport = 0;
 +
-+		sock = socket(AF_INET, SOCK_STREAM, 0);
-+		memset(&dest, 0, sizeof(dest));
-+		dest.sin_family = AF_INET;
-+		dest.sin_addr.s_addr = inet_addr(ip);
-+		dest.sin_port = htons(port);
 +
-+		sz = connect(sock, (struct sockaddr *)&dest, sizeof(struct sockaddr));
-+		if (sz == -1)
++		switch (cmd)
 +		{
-+			printf("[CeTUNE] Problem connecting: %s\n", strerror(errno));
-+			return;
-+		}
-+
-+		sprintf(req, "eTUNER V001 \n\n");
-+		sz = write_bytes_to_handle(sock, (uint8_t*)req, strlen(req), 2, 0);
-+
-+		if (sz ==  -1)
-+		{
-+			printf("[CeTUNE] Error sending GET req\n");
-+			close(sock);
-+			return;
-+//			continue;
-+		}
-+
-+		memset(&req, 0, 1024);
-+		sz = get_bytes_from_handle(sock, &moo, 1, 5, 0, 0);
-+
-+		if (sz == -1)
-+		{
-+			close(sock);
-+//			continue;
-+		}
-+
-+		if (moo == PROTOCOL_INIT_GOOD)
-+		{
-+//			printf("2: 0x%x, chan: %d\n", moo, channel);
-+			protocol_send_tuner_channel(sock, channel);
-+		}
-+
-+		while (1)
-+		{
-+			sz = get_bytes_from_handle(sock, &ugly[0], 188*3, 5, 0, 0);
-+//			printf("sz: %d\n", sz);
-+			printf(".");
-+			if (sz == -1)
++			case 1:
 +			{
-+				break;
 +			}
-+			usleep(250);
++			break;
++
++			case 2:
++			{
++				TIMER_STRUCT timer = {0};
++				time_t t1 = time(NULL);
++				time_t t2 = t1 +  30;
++				timer.channel_num = chan;
++				strncpy(timer.channel_name,"ED1", 12);
++				strncpy(timer.title,"Fake Title", 63);
++				strncpy(timer.plot,"Faake Plot", 127);
++				strncpy(timer.plot_outline,"Plot Lines", 127);
++				strncpy(timer.genre,"Fake Genere1", 63);
++				strncpy(timer.sub_genre,"Fake SebGenere1", 63);
++				timer.start_epoch = time(NULL) + 2;
++				timer.end_epoch = timer.start_epoch + 33;
++				protocol_add_timer(ip, port, (void*)&timer, sizeof(TIMER_STRUCT), &sock);
++			}
++			break;
++
++			case 3:
++			{
++/*
++				int fh = open("file.mpg" , O_RDWR | O_CREAT | O_TRUNC, 0666);
++				protocol_play_rec_id2(ip, port, &sock, chan);
++				sz = get_bytes_from_handle(sock, (uint8_t*)&lport, sizeof(lport), 5, 0, 0);
++				printf("SZ: %d -- Port: %d\n", sz, lport);
++				doconnect(ip, lport);
++
++				sz = get_bytes_from_handle(sock, (uint8_t*)packet, 188, 5, 0, 0);
++				if (sz == 188)
++				{
++					int i;
++					printf("1\n");
++					for (i=0; i < 188; i++)
++						if (packet[i] != SPECIAL_NULL_PACKET[i])
++							break;
++
++					if (i >= 188)
++ 					{
++						printf("[RESTREAM] Talking to a sibling, turn off PAT/PMT & timestamp fixing\n");
++						while (sz != -1)
++						{
++							printf("moo1\n");
++							sz = get_bytes_from_handle(sock, (uint8_t*)packet, 188, 5, 0, 0);
++							write(fh, packet, 188);
++							printf("moo2: %d\n", sz);
++							if (sz == 188)
++							{
++								if (packet[0] == 0x47)
++								{
++									printf("GOOD!\n");
++								}
++								else
++									printf("BAD: 0x%x\n", packet[0]);
++							}
++						}
++					}
++				}
++				else
++				{
++					printf("4\n");
++				}
++				usleep(1000 *1000 * 10);
++*/
++			}
++			break;
 +		}
-+		close(sock);
++
 +	}
 +}
 +
@@ -2304,7 +2652,37 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +	signal(SIGPIPE,sigpipe_handler);
 +	signal(SIGINT,sigint_handler);
 +
-+	doconnect(argv[1], atoi(argv[2]), atoi(argv[3]));
++    get_opts(argc, argv);
++	if (remote_ip && proto_cmd > 0)
++	{
++		hostport = utils_split_host(remote_ip);
++		printf("cmd: %d, ip: %s, port: %d\n", proto_cmd, hostport->hostname, hostport->port);
++
++		switch(proto_cmd)
++		{
++			case PROTO_MAIN_LIST_REC :
++				printf("Getting Recordings List\n");
++				_proto_main_get_rec_list(hostport);
++			break;
++
++			case PROTO_MAIN_LIST_CHAN :
++				printf("Getting Channel List\n");
++				_proto_main_get_chan_list(hostport);
++			break;
++
++			case PROTO_MAIN_LIST_TIMER :
++				printf("Getting Timer List\n");
++				_proto_main_get_timer_list(hostport);
++			break;
++/*
++			case PROTO_MAIN_LIST_TIMER :
++				printf("Setting Timer\n");
++				_proto_main_set_timer(hostport, 809);
++			break;
++*/
++		}
++	}
++//	_doconnect(argv[1], atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), atoi(argv[5]) );
 +//	usleep(1000 *1000 * 10);
 +//	get_opts(argc, argv);
 +	printf("BYE!\n");
@@ -2314,8 +2692,8 @@ diff -Naur stream.org/etp/protocol.c stream/etp/protocol.c
 +
 diff -Naur stream.org/etp/protocol.h stream/etp/protocol.h
 --- stream.org/etp/protocol.h	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/protocol.h	2013-02-08 16:38:07.196143231 -0500
-@@ -0,0 +1,53 @@
++++ stream/etp/protocol.h	2013-03-18 00:57:02.787846390 -0400
+@@ -0,0 +1,88 @@
 +#ifndef __TUNER_PROTOCOL_STUFF
 +#define __TUNER_PROTOCOL_STUFF
 +
@@ -2339,7 +2717,27 @@ diff -Naur stream.org/etp/protocol.h stream/etp/protocol.h
 +#define PROTO_GET_STREAM_END_POS		4
 +#define PROTO_GET_STREAM_POS			5
 +#define PROTO_GET_STREAM_ID				6
-+//#define PROTO_SET_WRITING				7
++#define PROTO_QUERY_CHANNEL_COUNT		7
++#define PROTO_QUERY_CHANNEL_LIST		8
++#define PROTO_QUERY_TUNER_COUNT			9
++#define PROTO_TIMER_ADD					10
++#define PROTO_TIMER_DEL					11
++#define PROTO_QUERY_TIMER_LIST			12
++#define PROTO_QUERY_REC_LIST			13
++#define PROTO_QUERY_REC_COUNT			14
++#define PROTO_REC_PLAYREC				15
++#define PROTO_REC_DELREC				16
++#define PROTO_GET_STREAM_START_POS		17
++
++struct protocol_channel_struct
++{
++	char 		name[255];
++	int32_t		id;
++	int32_t	 	num;
++	char 		icon_path[8096];
++	uint8_t		is_last;
++};
++typedef struct protocol_channel_struct PROTOCOL_CHANNEL_STRUCT;
 +
 +struct protocol_cmd_struct
 +{
@@ -2358,21 +2756,127 @@ diff -Naur stream.org/etp/protocol.h stream/etp/protocol.h
 +
 +size_t protocol_get_tuner_time_pos(int);
 +size_t protocol_get_tuner_time_endpos(int);
++size_t protocol_get_tuner_time_startpos(int);
 +size_t protocol_get_tuner_id(int);
++size_t protocol_get_tuner_count(char *, uint16_t, int*);
 +
 +size_t protocol_send_tuner_init_status(int, uint8_t);
 +size_t protocol_send_tuner_pos(int, uint64_t);
 +size_t protocol_send_tuner_id(int, uint8_t);
 +void protocol_free_cmd_struct(PROTOCOL_CMD_STRUCT *);
-+//size_t protocol_set_tuner_writing(int, uint8_t);
++
++size_t protocol_get_channel_count(char *, uint16_t, int *);
++size_t protocol_get_channel_list(char *, uint16_t, int*);
++
++size_t protocol_get_rec_list(char *, uint16_t, int*);
++size_t protocol_del_rec_id(int, uint32_t);
++size_t protocol_play_rec_id2(char *, uint16_t, int *, uint32_t);
++size_t protocol_play_rec_id(int, uint32_t);
++
++
++//size_t protocol_get_timer_list(int);
++size_t protocol_get_timer_list(char *, uint16_t, int*);
++size_t protocol_add_timer(char *, uint16_t, uint8_t *, uint32_t, int *);
++size_t protocol_del_timer(int, uint32_t);
 +
 +// End of Function Declarations
 +
 +#endif
+diff -Naur stream.org/etp/timers.h stream/etp/timers.h
+--- stream.org/etp/timers.h	1969-12-31 19:00:00.000000000 -0500
++++ stream/etp/timers.h	2013-03-18 00:57:02.788846390 -0400
+@@ -0,0 +1,87 @@
++#ifndef __TIMER_STUFF
++#define __TIMER_STUFF
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <time.h>
++#include <pthread.h>
++#include <unistd.h>
++
++
++#define TIMER_MAX_TIMERS			254
++
++#define TIMER_STATUS_INVALID		0x00
++#define TIMER_STATUS_WAITING		0x01
++#define TIMER_STATUS_BUSY			0x02
++#define TIMER_STATUS_DONE			0x03
++
++struct timer_struct
++{
++//	pthread_t 	threadid;
++
++	uint32_t	id;
++	uint8_t 	status;
++//	uint8_t		url_count;
++//	char 		urls[10][4096];
++	char 		url[4096];
++	char		backup_urls[10][4096];
++
++	uint64_t	channel_num;
++	char 		channel_name[13];
++	char 		title[64];
++	char 		plot[128];
++	char 		plot_outline[128];
++	char 		genre[64];
++	char 		sub_genre[64];
++
++	time_t		start_epoch;
++	time_t		end_epoch;
++
++	uint8_t		is_last;
++	struct 		timer_struct *next;
++	struct 		timer_control_struct *parent;
++//	void 		*extra_data[5];
++	void 		*extra_data;
++};
++typedef struct timer_struct TIMER_STRUCT;
++
++struct timer_control_struct
++{
++	char			*record_dir;
++	char			*state_filename;
++	int				state_fileh;
++	uint8_t			die;
++
++	pthread_mutex_t file_mutex;
++	pthread_t 		timer_thread;
++
++	uint32_t		timer_count;
++	TIMER_STRUCT	timers[TIMER_MAX_TIMERS];
++
++	int				(*cb_timer_change_state)(TIMER_STRUCT *);
++	void			*extra_data;
++};
++typedef struct timer_control_struct TIMER_CONTROL_STRUCT;
++
++struct timer_arg_struct
++{
++	char			*state_filename;
++	char			*record_dir;
++	void			*extra_data;
++};
++typedef struct timer_arg_struct TIMER_ARG_STRUCT;
++
++
++TIMER_CONTROL_STRUCT * timers_init(TIMER_ARG_STRUCT *);
++int timers_load_file(TIMER_CONTROL_STRUCT *);
++int timers_save_file(TIMER_CONTROL_STRUCT *);
++int timer_add_timer(TIMER_CONTROL_STRUCT *, TIMER_STRUCT *);
++int timer_del_timer(TIMER_CONTROL_STRUCT *, int32_t);
++TIMER_STRUCT * timer_list_timer(TIMER_CONTROL_STRUCT *);
++TIMER_STRUCT * timer_get_timer_by_id(TIMER_CONTROL_STRUCT *, uint32_t);
++int timer_count_timer(TIMER_CONTROL_STRUCT *);
++void timer_print_timer(TIMER_STRUCT *);
++void timer_print_list(TIMER_CONTROL_STRUCT *);
++
++#endif
 diff -Naur stream.org/etp/utils.c stream/etp/utils.c
 --- stream.org/etp/utils.c	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/utils.c	2013-02-08 16:38:07.197143231 -0500
-@@ -0,0 +1,503 @@
++++ stream/etp/utils.c	2013-03-18 00:57:02.788846390 -0400
+@@ -0,0 +1,619 @@
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <inttypes.h>
@@ -2830,7 +3334,7 @@ diff -Naur stream.org/etp/utils.c stream/etp/utils.c
 +		}
 +		else
 +		{
-+			carg->data = malloc(nmemb);
++			carg->data = calloc(1, nmemb);
 +			carg->data_size = nmemb;
 +		}
 +		memcpy(carg->data + last_sz, buffer, nmemb);
@@ -2868,6 +3372,122 @@ diff -Naur stream.org/etp/utils.c stream/etp/utils.c
 +	}
 +	return ret;
 +}
++/*
++int doconnect(char *ip, uint16_t port)
++{
++	int rc = -1;
++	if (ip && port)
++	{
++		struct sockaddr_in dest;
++		int sock = 0, sz;
++
++		sock = socket(AF_INET, SOCK_STREAM, 0);
++		memset(&dest, 0, sizeof(dest));
++		dest.sin_family = AF_INET;
++		dest.sin_addr.s_addr = inet_addr(ip);
++		dest.sin_port = htons(port);
++
++		rc = connect(sock, (struct sockaddr *)&dest, sizeof(struct sockaddr));
++		if (rc == 0)
++		{
++			printf("HERE!\n");
++			rc = sock;
++		}
++		else
++		{
++			printf("[UTILS] Problem connecting: %s -- %d\n", strerror(errno), rc);
++		}
++
++	}
++	return rc;
++}
++*/
++int doconnect(char *ip, uint16_t port)
++{
++	int rc = -1;
++
++	if (ip && port)
++	{
++		struct addrinfo hints = {0}, *res = NULL;
++		int sock = 0, sz;
++		char service[13] = {0};
++		snprintf(service, 12, "%d", port);
++
++		hints.ai_socktype = SOCK_STREAM;
++		hints.ai_family = AF_INET;
++
++		sz = getaddrinfo(ip, service, &hints, &res);
++		if (sz != 0)
++		{
++			printf("getaddrinfo failed\n");
++			return -1;
++		}
++
++		sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
++		if (sock == -1)
++		{
++			printf("BLAAAAAH\n");
++			return -1;
++		}
++
++		sz = connect(sock,res->ai_addr, res->ai_addrlen);
++		if (sz == 0)
++		{
++			return sock;
++		}
++		else
++		{
++			printf("[UTILS] Problem connecting: %s -- %d\n", strerror(errno), sz);
++		}
++
++	}
++	return -1;
++}
++
++UTILS_HOSTPORT_STRUCT * utils_split_host(char *in)
++{
++	UTILS_HOSTPORT_STRUCT * ret = NULL;
++	if (in)
++	{
++		ret = calloc(1, sizeof(UTILS_HOSTPORT_STRUCT));
++		if (ret)
++		{
++			char *tmpp = NULL;
++			char *host = strdup(in);
++			int j, sz = strlen(host);
++
++			for (j=0; j < sz; j++)
++			{
++				if (host[j] == ':')
++				{
++					host[j] = '\0';
++					tmpp = &host[j+1];
++				}
++				else if (host[j] == '/')
++				{
++					host[j] = '\0';
++				}
++			}
++			strncpy(ret->hostname, host, 4095);
++			ret->port = atoi(tmpp);
++			free(host);
++		}
++	}
++	return ret;
++}
++
++
++int utils_free_datapair(UTILS_DATAPAIR_STRUCT *carg)
++{
++	if (carg)
++	{
++		if (carg->data)
++			free(carg->data);
++		free(carg);
++		return 0;
++	}
++	return -1;
++}
 +
 +#ifdef _MAIN_
 +
@@ -2878,14 +3498,15 @@ diff -Naur stream.org/etp/utils.c stream/etp/utils.c
 +#endif
 diff -Naur stream.org/etp/utils.h stream/etp/utils.h
 --- stream.org/etp/utils.h	1969-12-31 19:00:00.000000000 -0500
-+++ stream/etp/utils.h	2013-02-08 16:38:07.198143231 -0500
-@@ -0,0 +1,82 @@
++++ stream/etp/utils.h	2013-03-18 00:57:02.788846390 -0400
+@@ -0,0 +1,95 @@
 +#ifndef __UTILS_STUFF
 +#define __UTILS_STUFF
 +
 +#include <stdint.h>
 +#include <inttypes.h>
 +
++#define OUTPUT_FILE_MODE		0666
 +#define BYTE_SIZE				8
 +
 +#define MAX_33BITS				0x1FFFFFFFF
@@ -2915,9 +3536,17 @@ diff -Naur stream.org/etp/utils.h stream/etp/utils.h
 +{
 +	uint8_t * data;
 +	uint32_t data_size;
-+	void * extra;
++//	void * extra;
 +};
 +typedef struct utils_datapair_struct UTILS_DATAPAIR_STRUCT;
++
++struct utils_hostport_struct
++{
++	char hostname[4096];
++	uint16_t port;
++//	void * extra;
++};
++typedef struct utils_hostport_struct UTILS_HOSTPORT_STRUCT;
 +
 +
 +// --------------------------
@@ -2951,6 +3580,8 @@ diff -Naur stream.org/etp/utils.h stream/etp/utils.h
 +
 +int select_wait(int, int, int);
 +int get_listen_socket(char *, uint16_t);
++int doconnect(char *, uint16_t);
++//int doconnect2(char *, uint16_t);
 +size_t generic_curl_handler(void *, size_t, size_t, void *);
 +unsigned int htoi (const char *);
 +
@@ -2960,5 +3591,7 @@ diff -Naur stream.org/etp/utils.h stream/etp/utils.h
 +size_t get_bufsize(int);
 +uint32_t get_nearest_page_size(uint32_t, uint32_t);
 +uint32_t get_time_ms(void);
++int utils_free_datapair(UTILS_DATAPAIR_STRUCT *);
++UTILS_HOSTPORT_STRUCT * utils_split_host(char *);
 +
 +#endif

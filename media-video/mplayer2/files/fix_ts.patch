@@ -74,3 +74,28 @@
  
  		es->payload_size -= packet_len;
  
+--- libmpdemux/demux_ts.c.org	2013-04-19 01:01:24.970111468 -0400
++++ libmpdemux/demux_ts.c	2013-04-19 01:02:57.123109454 -0400
+@@ -336,6 +336,7 @@
+ 
+ static int parse_avc_sps(uint8_t *buf, int len, int *w, int *h);
+ static inline uint8_t *pid_lang_from_pmt(ts_priv_t *priv, int pid);
++static void demux_seek_resync_ts(demuxer_t *);
+ 
+ static void ts_add_stream(demuxer_t * demuxer, ES_stream_t *es)
+ {
+@@ -3148,6 +3149,14 @@
+ 			}
+ 			else
+ 			{
++				if (tss->last_pts && (fabs(es->pts - tss->last_pts) > 2))
++				{
++					printf("sync? pts: %0.2f (%0.2f) -- %0.2f\n", es->pts, tss->last_pts, es->pts - tss->last_pts);
++					es->pts = tss->pts = tss->last_pts = 0;
++					demux_seek_resync_ts(demuxer);
++					continue;
++				}
++
+ 				if(es->pts == 0.0)
+ 					es->pts = tss->pts = tss->last_pts;
+ 				else

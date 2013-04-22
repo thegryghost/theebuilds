@@ -21,8 +21,8 @@
    return n;
  }
  
---- libmpdemux/demux_ts.c.org	2011-09-30 00:18:08.000000000 -0400
-+++ libmpdemux/demux_ts.c	2011-09-30 00:17:22.000000000 -0400
+--- libmpdemux/demux_ts.c.org	2013-04-22 01:07:03.244438548 -0400
++++ libmpdemux/demux_ts.c	2013-04-22 01:10:00.951434664 -0400
 @@ -62,6 +62,8 @@
  int ts_keep_broken=0;
  off_t ts_probe = 0;
@@ -32,12 +32,64 @@
  
  typedef enum
  {
-@@ -835,11 +837,25 @@
+@@ -101,7 +103,7 @@
+ 	unsigned char *start;
+ 	uint16_t payload_size;
+ 	es_stream_type_t type, subtype;
+-	double pts, last_pts;
++	double pts, last_pts, last_vpts;
+ 	int pid;
+ 	char lang[4];
+ 	int last_cc;				// last cc code (-1 if first packet)
+@@ -664,6 +666,7 @@
+ 
+ static off_t ts_detect_streams(demuxer_t *demuxer, tsdemux_init_t *param)
+ {
++	uint16_t pids[8192] = {0};
+ 	int video_found = 0, audio_found = 0, i, num_packets = 0, req_apid, req_vpid, req_spid;
+ 	int is_audio, is_video, is_sub, has_tables;
+ 	int32_t p, chosen_pid = 0;
+@@ -806,9 +809,33 @@
+ 
+ 			mp_msg(MSGT_DEMUXER, MSGL_DBG2, "TYPE: %x, PID: %d, PROG FOUND: %d\n", es.type, es.pid, param->prog);
+ 
++			if (param->apid > 0 && param->vpid > 0 && priv->pmt)
++			{
++				int i;
++				for(i = 0; i < priv->pmt->es_cnt; i++)
++				{
++//					printf("MM: %d\n", priv->pmt->es[i].pid);
++					if (!pids[priv->pmt->es[i].pid])
++						break;
++				}
++//				printf("Haz both a (%d) v (%d): %" PRId64" -- %d\n", param->apid, param->vpid, pos, priv->pat.progs_cnt);
++				if (i >= priv->pmt->es_cnt)
++				{
++					for(i = 0; i < priv->pmt->es_cnt; i++)
++					{
++						if (IS_AUDIO(priv->pmt->es[i].type))
++						{
++							if (priv->pmt->es[i].pid < first_apid)
++								first_apid = param->apid = priv->pmt->es[i].pid;
++						}
++					}
++					break;
++				}
++			}
+ 
+ 			if(is_video)
+ 			{
++				pids[es.pid] = 1;
+ 				if((req_vpid == -1) || (req_vpid == es.pid))
+ 				{
+ 					param->vtype = IS_VIDEO(es.type) ? es.type : es.subtype;
+@@ -836,11 +853,26 @@
  
  			if(is_audio)
  			{
 -				if((req_apid == -1) || (req_apid == es.pid))
 +				int fscod = -1;
++				pids[es.pid] = 1;
 +				if (es.start[0] == 0x0b && es.start[1] == 0x77 && es.start[2] && es.start[3])
 +				{
 +					fscod = es.start[4] & 0x3F;
@@ -60,9 +112,7 @@
  				}
  			}
  
---- libmpdemux/demux_ts.c.org	2012-04-01 00:45:37.000000000 -0400
-+++ libmpdemux/demux_ts.c	2012-04-01 00:44:34.000000000 -0400
-@@ -1604,7 +1633,10 @@
+@@ -1618,7 +1650,10 @@
  		if(type_from_pmt != UNKNOWN)
  			es->type = type_from_pmt;
  		else
@@ -74,21 +124,11 @@
  
  		es->payload_size -= packet_len;
  
---- libmpdemux/demux_ts.c.org	2013-04-19 01:01:24.970111468 -0400
-+++ libmpdemux/demux_ts.c	2013-04-19 01:02:57.123109454 -0400
-@@ -336,6 +336,7 @@
- 
- static int parse_avc_sps(uint8_t *buf, int len, int *w, int *h);
- static inline uint8_t *pid_lang_from_pmt(ts_priv_t *priv, int pid);
-+static void demux_seek_resync_ts(demuxer_t *);
- 
- static void ts_add_stream(demuxer_t * demuxer, ES_stream_t *es)
- {
-@@ -3148,6 +3149,14 @@
+@@ -3130,11 +3165,22 @@
  			}
  			else
  			{
-+				if (tss->last_pts && (fabs(es->pts - tss->last_pts) > 2))
++				if (is_video && tss->last_pts && (fabs(es->pts - tss->last_pts) > 2))
 +				{
 +					printf("sync? pts: %0.2f (%0.2f) -- %0.2f\n", es->pts, tss->last_pts, es->pts - tss->last_pts);
 +					es->pts = tss->pts = tss->last_pts = 0;
@@ -99,3 +139,11 @@
  				if(es->pts == 0.0)
  					es->pts = tss->pts = tss->last_pts;
  				else
+ 					tss->pts = tss->last_pts = es->pts;
+ 
++				if (is_video)
++					tss->last_vpts = tss->pts;
++
+ 				mp_msg(MSGT_DEMUX, MSGL_DBG2, "ts_parse, NEW pid=%d, PSIZE: %u, type=%X, start=%p, len=%d\n",
+ 					es->pid, es->payload_size, es->type, es->start, es->size);
+ 

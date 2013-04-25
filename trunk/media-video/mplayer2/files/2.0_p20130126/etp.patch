@@ -784,7 +784,7 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +
 +			if (now_ms - priv->last_timeend_send_ms < 700)
 +			{
-+//				memcpy(arg, &priv->last_timeend, sizeof(double));
++				protocol_send_keepalive(s->fd);
 +				*((double *)arg) = priv->last_timeend;
 +				return STREAM_OK;
 +			}

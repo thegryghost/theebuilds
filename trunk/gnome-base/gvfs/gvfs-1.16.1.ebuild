@@ -82,6 +82,7 @@ src_prepare() {
 	epatch ${FILESDIR}/mtp_1.patch
 	epatch ${FILESDIR}/mtp_2.patch
 	epatch ${FILESDIR}/mtp_3.patch
+	epatch ${FILESDIR}/mtp_4.patch
 	gnome2_src_prepare
 }
 

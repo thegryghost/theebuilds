@@ -8,6 +8,8 @@ EAPI=4
 
 inherit python toolchain-funcs eutils flag-o-matic multilib base ${VCS_ECLASS}
 
+FFMPEG_VERION="1.2.1"
+
 NAMESUF="${PN/mplayer/}"
 DESCRIPTION="Media Player for Linux"
 HOMEPAGE="http://www.mplayer2.org/"
@@ -15,7 +17,8 @@ HOMEPAGE="http://www.mplayer2.org/"
 if [[ ${PV} == *9999* ]]; then
 	EGIT_REPO_URI="git://git.mplayer2.org/mplayer2.git"
 else
-	SRC_URI="http://rion-overlay.googlecode.com/files/${P}.tar.xz"
+	SRC_URI="http://rion-overlay.googlecode.com/files/${P}.tar.xz
+			http://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERION.tar.bz2"
 fi
 
 LICENSE="GPL-3"
@@ -31,7 +34,7 @@ ipv6 jack joystick jpeg kernel_linux ladspa lcms +libass libcaca lirc mad
 md5sum mng +mp3 +network nut +opengl oss png pnm portaudio +postproc
 pulseaudio pvr +quicktime quvi radio +rar +real +rtc samba sdl +speex tga
 +theora +unicode v4l vcd vdpau +vorbis win32codecs +X xanim xinerama
-+xscreensaver +xv xvid yuv4mpeg
++xscreensaver +xv xvid yuv4mpeg static
 "
 IUSE+=" symlink"
 
@@ -212,6 +215,14 @@ src_prepare() {
 	epatch "${FILESDIR}"/rar_files.patch
 
 	base_src_prepare
+	if use static; then
+		cd ${WORKDIR}/ffmpeg-$FFMPEG_VERION
+		./configure --prefix=../ff_install
+		emake
+		einstall
+		mkdir ${WORKDIR}/ff_build
+		cp -r $D/* ${WORKDIR}/ff_build
+	fi
 }
 
 src_configure() {
@@ -411,6 +422,12 @@ src_configure() {
 		"
 	fi
 
+	if use static; then
+		PKG_CONFIG_PATH="${WORKDIR}/ff_build/usr/lib/pkgconfig:${PKG_CONFIG_PATH}"
+		export PKG_CONFIG_PATH
+		myconf="${myconf} --extra-ldflags=-L${WORKDIR}/ff_build/usr/lib"
+		myconf="${myconf} --extra-cflags=-I${WORKDIR}/ff_build/usr/include"
+	fi
 	./configure \
 		--cc="$(tc-getCC)" \
 		--pkg-config="$(tc-getPKG_CONFIG)" \

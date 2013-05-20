@@ -1,4 +1,4 @@
---- Makefile.org    2013-01-24 15:00:30.297355466 -0500
+)--- Makefile.org    2013-01-24 15:00:30.297355466 -0500
 +++ Makefile    2013-01-24 15:10:12.356357516 -0500
 @@ -406,6 +406,11 @@
                sub/vobsub.c \
@@ -48,111 +48,6 @@
  
  
  typedef enum {
---- mplayer.c.org	2013-03-18 01:03:47.993837533 -0400
-+++ mplayer.c	2013-03-18 01:08:37.428831206 -0400
-@@ -110,6 +110,8 @@
- 
- #include "input/input.h"
- 
-+#define ETP_MAX_FROM_END		3.4
-+int etp_video_sync = 0;
- int slave_mode = 0;
- int enable_mouse_movements = 0;
- float start_volume = -1;
-@@ -2833,6 +2835,25 @@
-         // timer now
-         if (vf_output_queued_frame(sh_video->vfilter))
-             break;
-+        while (etp_video_sync == 0 && mpctx->stream->type == STREAMTYPE_ETP && mpctx->stream->control)
-+        {
-+            double tmp = 0;
-+            if ((*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_TIME_LENGTH, &tmp) != STREAM_UNSUPPORTED)
-+            {
-+//                printf("ETP TYPE: %0.4f -- %0.4f\n", mpctx->demuxer->stream_pts, tmp);
-+                if (tmp - mpctx->demuxer->stream_pts < ETP_MAX_FROM_END)
-+                {
-+                    set_osd_msg(OSD_MSG_TEXT, 1, 2, "Buffering.. ");
-+                    usec_sleep(1000*1000);
-+                    continue;
-+                }
-+                else
-+                {
-+//                    printf("ETP Synced\n");
-+                    etp_video_sync = 1;
-+                }
-+            }
-+        }
-         int in_size = 0;
-         unsigned char *buf = NULL;
-         pts = MP_NOPTS_VALUE;
-@@ -3105,6 +3105,9 @@
- 		}
-         else
-             sh_video->pts = sh_video->last_pts;
-+
-+        if (0 && mpctx->stream->type == STREAMTYPE_ETP)
-+            sh_video->pts = sh_video->last_pts = 0;
-     }
-     double frame_time = sh_video->pts - sh_video->last_pts;
-     sh_video->last_pts = sh_video->pts;
-@@ -3180,13 +3201,25 @@
-     int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
-                                 demuxer_style);
-     if (seekresult == 0) {
-+        if (mpctx->stream->type == STREAMTYPE_ETP)
-+        {
-+            if (demuxer_amount > 0)
-+            {
-+                set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "LIVE");
-+            }
-+            else if (demuxer_amount < 0)
-+            {
-+                set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "START");
-+            }
-+            need_reset = 0;
-+        }
-         if (need_reset) {
-             reinit_audio_chain(mpctx);
-             seek_reset(mpctx, !timeline_fallthrough, false);
-         }
-         return -1;
-     }
--
-+    etp_video_sync = 0;
-     if (need_reset)
-         reinit_audio_chain(mpctx);
-     /* If we just reinitialized audio it doesn't need to be reset,
-@@ -3259,7 +3292,14 @@
-     // <= 0 means DEMUXER_CTRL_NOTIMPL or DEMUXER_CTRL_DONTKNOW
-     if (demux_control(demuxer, DEMUXER_CTRL_GET_TIME_LENGTH,
-                       (void *) &get_time_ans) > 0)
-+    {
-+        if (demuxer->stream->type == STREAMTYPE_ETP) {
-+            double tmp;
-+            if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_START, &tmp) != STREAM_UNSUPPORTED)
-+               return get_time_ans - tmp;
-+        }
-         return get_time_ans;
-+    }
- 
-     struct sh_video *sh_video = mpctx->d_video->sh;
-     struct sh_audio *sh_audio = mpctx->d_audio->sh;
-@@ -3281,8 +3321,14 @@
- double get_current_time(struct MPContext *mpctx)
- {
-     struct demuxer *demuxer = mpctx->demuxer;
--    if (demuxer->stream_pts != MP_NOPTS_VALUE)
-+    if (demuxer->stream_pts != MP_NOPTS_VALUE) {
-+        if (demuxer->stream->type == STREAMTYPE_ETP) {
-+            double tmp;
-+            if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_START, &tmp) != STREAM_UNSUPPORTED)
-+               return demuxer->stream_pts - tmp;
-+        }
-         return demuxer->stream_pts;
-+    }
-     if (mpctx->sh_video) {
-         double pts = mpctx->video_pts;
-         if (pts != MP_NOPTS_VALUE)
 --- libmpdemux/demuxer.c.org	2013-03-18 01:11:07.588827924 -0400
 +++ libmpdemux/demuxer.c	2013-03-18 00:50:45.681854632 -0400
 @@ -1172,29 +1173,32 @@
@@ -784,7 +679,7 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +
 +			if (now_ms - priv->last_timeend_send_ms < 700)
 +			{
-+				protocol_send_keepalive(s->fd);
++//				memcpy(arg, &priv->last_timeend, sizeof(double));
 +				*((double *)arg) = priv->last_timeend;
 +				return STREAM_OK;
 +			}
@@ -1014,3 +909,206 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +	&stream_opts,
 +	1
 +};
+--- mplayer.c.org	2013-05-19 03:26:06.846374014 -0400
++++ mplayer.c	2013-05-19 03:27:44.282371884 -0400
+@@ -110,6 +110,8 @@
+ 
+ #include "input/input.h"
+ 
++#define ETP_MAX_FROM_END		3.4
++int etp_video_sync = 0;
+ int slave_mode = 0;
+ int enable_mouse_movements = 0;
+ float start_volume = -1;
+@@ -2837,6 +2839,25 @@
+         // timer now
+         if (vf_output_queued_frame(sh_video->vfilter))
+             break;
++        /*while (etp_video_sync == 0 && mpctx->stream->type == STREAMTYPE_ETP && mpctx->stream->control)
++        {
++            double tmp = 0;
++            if ((*mpctx->stream->control)(mpctx->stream, STREAM_CTRL_GET_TIME_LENGTH, &tmp) != STREAM_UNSUPPORTED)
++            {
++//                printf("ETP TYPE: %0.4f -- %0.4f\n", mpctx->demuxer->stream_pts, tmp);
++                if (tmp - mpctx->demuxer->stream_pts < ETP_MAX_FROM_END)
++                {
++                    set_osd_msg(OSD_MSG_TEXT, 1, 2, "Buffering.. ");
++                    usec_sleep(1000*1000);
++                    continue;
++                }
++                else
++                {
++//                    printf("ETP Synced\n");
++                    etp_video_sync = 1;
++                }
++            }
++        }*/
+         int in_size = 0;
+         unsigned char *buf = NULL;
+         pts = MP_NOPTS_VALUE;
+@@ -2939,6 +2960,9 @@
+             sh_video->last_pts = sh_video->pts;
+         else
+             sh_video->pts = sh_video->last_pts;
++
++        if (0 && mpctx->stream->type == STREAMTYPE_ETP)
++            sh_video->pts = sh_video->last_pts = 0;
+     }
+     double frame_time = sh_video->pts - sh_video->last_pts;
+     sh_video->last_pts = sh_video->pts;
+@@ -3172,7 +3196,10 @@
+         && seek.type == MPSEEK_RELATIVE) {
+         seek.type = MPSEEK_ABSOLUTE;
+         seek.direction = seek.amount > 0 ? 1 : -1;
+-        seek.amount += get_current_time(mpctx);
++        if (mpctx->stream->type == STREAMTYPE_ETP)
++              seek.type = 1;
++        else
++            seek.amount += get_current_time(mpctx);
+     }
+ 
+     /* At least the liba52 decoder wants to read from the input stream
+@@ -3277,13 +3304,25 @@
+     int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, audio_delay,
+                                 demuxer_style);
+     if (seekresult == 0) {
++        if (mpctx->stream->type == STREAMTYPE_ETP)
++        {
++            if (demuxer_amount > 0)
++            {
++                set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "LIVE");
++            }
++            else if (demuxer_amount < 0)
++            {
++                set_osd_msg(OSD_MSG_TEXT, 1, opts->osd_duration, "START");
++            }
++            need_reset = 0;
++        }
+         if (need_reset) {
+             reinit_audio_chain(mpctx);
+             seek_reset(mpctx, !timeline_fallthrough, false);
+         }
+         return -1;
+     }
+-
++    etp_video_sync = 0;
+     if (need_reset)
+         reinit_audio_chain(mpctx);
+     /* If we just reinitialized audio it doesn't need to be reset,
+@@ -3356,7 +3395,14 @@
+     // <= 0 means DEMUXER_CTRL_NOTIMPL or DEMUXER_CTRL_DONTKNOW
+     if (demux_control(demuxer, DEMUXER_CTRL_GET_TIME_LENGTH,
+                       (void *) &get_time_ans) > 0)
++    {
++        if (demuxer->stream->type == STREAMTYPE_ETP) {
++            double tmp;
++            if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_START, &tmp) != STREAM_UNSUPPORTED)
++               return get_time_ans - tmp;
++        }
+         return get_time_ans;
++    }
+ 
+     struct sh_video *sh_video = mpctx->d_video->sh;
+     struct sh_audio *sh_audio = mpctx->d_audio->sh;
+@@ -3378,8 +3424,14 @@
+ double get_current_time(struct MPContext *mpctx)
+ {
+     struct demuxer *demuxer = mpctx->demuxer;
+-    if (demuxer->stream_pts != MP_NOPTS_VALUE)
++    if (demuxer->stream_pts != MP_NOPTS_VALUE) {
++        if (demuxer->stream->type == STREAMTYPE_ETP) {
++            double tmp;
++            if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_START, &tmp) != STREAM_UNSUPPORTED)
++               return demuxer->stream_pts - tmp;
++        }
+         return demuxer->stream_pts;
++    }
+     if (mpctx->sh_video) {
+         double pts = mpctx->video_pts;
+         if (pts != MP_NOPTS_VALUE)
+--- libmpdemux/demux_lavf.c.org	2013-05-20 01:36:36.066253623 -0400
++++ libmpdemux/demux_lavf.c	2013-05-20 01:42:49.313245464 -0400
+@@ -80,6 +80,7 @@
+     bool use_dts;
+     bool seek_by_bytes;
+     int bitrate;
++    uint64_t first_pts;
+ } lavf_priv_t;
+ 
+ static void _mp_update_end(stream_t *stream)
+@@ -797,6 +798,27 @@
+     dp->avpacket = pkt;
+ 
+     int64_t ts = priv->use_dts ? pkt->dts : pkt->pts;
++    if (demux->stream->type == STREAMTYPE_ETP)
++    {
++        demux_stream_t *ds = demux->video;
++
++        if (!priv->first_pts)
++        {
++            double tmp1=0;
++            if (stream_control(demux->stream, STREAM_CTRL_GET_TIME_START, &tmp1) != STREAM_UNSUPPORTED)
++            {
++//                priv->avfc->streams[ds->id]->pts_wrap_reference = floor(tmp1 * 90000.0);
++                  priv->first_pts = floor(tmp1 * 90000.0);
++            }
++        }
++        if (priv->avfc->streams[ds->id]->pts_wrap_reference == AV_NOPTS_VALUE ||
++            priv->first_pts < priv->avfc->streams[ds->id]->pts_wrap_reference)
++            priv->avfc->streams[ds->id]->pts_wrap_reference = priv->first_pts;
++
++        demux->stream_pts = ts / 90000.0;
++//        printf("lavf pts: %0.2f\n", demux->stream_pts);
++    }
++
+     if (ts != AV_NOPTS_VALUE) {
+         dp->pts = ts * av_q2d(priv->avfc->streams[id]->time_base);
+         priv->last_pts = dp->pts * AV_TIME_BASE;
+@@ -856,9 +878,19 @@
+     lavf_priv_t *priv = demuxer->priv;
+ 
+     switch (cmd) {
++    case DEMUXER_CTRL_RESYNC:
++        printf("lavf -- ETP -- DEMUXER_CTRL_RESYNC\n");
++        return DEMUXER_CTRL_NOTIMPL;
+     case DEMUXER_CTRL_CORRECT_PTS:
+         return DEMUXER_CTRL_OK;
+     case DEMUXER_CTRL_GET_TIME_LENGTH:
++        if (demuxer->stream->type == STREAMTYPE_ETP)
++        {
++//            printf("lavf -- ETP -- DEMUXER_CTRL_GET_TIME_LEN\n");
++            if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_LENGTH, arg) != STREAM_UNSUPPORTED)
++                return DEMUXER_CTRL_OK;
++        }
++
+         if (priv->seek_by_bytes) {
+             /* Our bitrate estimate may be better than would be used in
+              * otherwise similar fallback code at higher level */
+@@ -875,6 +907,27 @@
+         return DEMUXER_CTRL_OK;
+ 
+     case DEMUXER_CTRL_GET_PERCENT_POS:
++        if (demuxer->stream->type == STREAMTYPE_ETP)
++        {
++            double tmp=0, tmp1=0;
++  //          printf("lavf -- ETP -- DEMUXER_CTRL_GET_PERCENT_POS\n");
++            if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_START, &tmp1) != STREAM_UNSUPPORTED)
++            {
++                if (stream_control(demuxer->stream, STREAM_CTRL_GET_TIME_LENGTH, &tmp) != STREAM_UNSUPPORTED)
++                {
++                    double end = tmp - tmp1;
++                    double pts = demuxer->stream_pts - tmp1;
++                    int p = ceil((pts/end) * 100);
++//                  printf("B: %0.2f -- E: %0.2f, PTS: %0.2f  -- %0.2f %0.2f (%d) (%0.2f)\n" , tmp1, tmp, demuxer->stream_pts, pts, end,$
++                    if (tmp - demuxer->stream_pts < 5)
++                        *((int *)arg) = 100;
++                    else
++                        *((int *)arg) = p;
++                    return DEMUXER_CTRL_OK;
++                }
++            }
++            return DEMUXER_CTRL_NOTIMPL;
++        }
+         if (priv->seek_by_bytes)
+             return DEMUXER_CTRL_DONTKNOW;  // let it use the fallback code
+         if (priv->avfc->duration == 0 || priv->avfc->duration == AV_NOPTS_VALUE)

@@ -1026,17 +1026,33 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
      if (mpctx->sh_video) {
          double pts = mpctx->video_pts;
          if (pts != MP_NOPTS_VALUE)
---- libmpdemux/demux_lavf.c.org	2013-05-20 01:36:36.066253623 -0400
-+++ libmpdemux/demux_lavf.c	2013-05-20 01:42:49.313245464 -0400
-@@ -80,6 +80,7 @@
-     bool use_dts;
-     bool seek_by_bytes;
-     int bitrate;
-+    uint64_t first_pts;
- } lavf_priv_t;
+--- libmpdemux/demux_lavf.c.org	2013-05-20 22:47:01.028587517 -0400
++++ libmpdemux/demux_lavf.c	2013-05-20 22:47:48.743586475 -0400
+@@ -63,6 +63,8 @@
+ #define BIO_BUFFER_SIZE 32768
  
- static void _mp_update_end(stream_t *stream)
-@@ -797,6 +798,27 @@
+ typedef struct lavf_priv {
++    uint64_t first_pts;
++    int first_pts_set;
+     AVInputFormat *avif;
+     AVFormatContext *avfc;
+     AVIOContext *pb;
+@@ -748,6 +750,14 @@
+     return 0;
+ }
+ 
++static void demux_fix_ts_wrap(demuxer_t *demuxer, uint64_t pts)
++{
++    int i;
++    lavf_priv_t *priv = demuxer->priv;
++    for(i=0; i < priv->avfc->nb_streams; i++)
++        priv->avfc->streams[i]->pts_wrap_reference =pts;
++}
++
+ static int demux_lavf_fill_buffer(demuxer_t *demux, demux_stream_t *dsds)
+ {
+     lavf_priv_t *priv = demux->priv;
+@@ -797,6 +807,31 @@
      dp->avpacket = pkt;
  
      int64_t ts = priv->use_dts ? pkt->dts : pkt->pts;
@@ -1050,13 +1066,17 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +            if (stream_control(demux->stream, STREAM_CTRL_GET_TIME_START, &tmp1) != STREAM_UNSUPPORTED)
 +            {
 +//                priv->avfc->streams[ds->id]->pts_wrap_reference = floor(tmp1 * 90000.0);
-+                  priv->first_pts = floor(tmp1 * 90000.0);
++                 priv->first_pts = floor(tmp1 * 90000.0);
++                 priv->first_pts_set = 0;
++
 +            }
 +        }
-+        if (priv->avfc->streams[ds->id]->pts_wrap_reference == AV_NOPTS_VALUE ||
-+            priv->first_pts < priv->avfc->streams[ds->id]->pts_wrap_reference)
-+            priv->avfc->streams[ds->id]->pts_wrap_reference = priv->first_pts;
 +
++        if (!priv->first_pts_set)
++        {
++            demux_fix_ts_wrap(demux, priv->first_pts_set);
++            priv->first_pts_set = 1;
++        }
 +        demux->stream_pts = ts / 90000.0;
 +//        printf("lavf pts: %0.2f\n", demux->stream_pts);
 +    }
@@ -1064,12 +1084,20 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
      if (ts != AV_NOPTS_VALUE) {
          dp->pts = ts * av_q2d(priv->avfc->streams[id]->time_base);
          priv->last_pts = dp->pts * AV_TIME_BASE;
-@@ -856,9 +878,19 @@
+@@ -856,9 +891,27 @@
      lavf_priv_t *priv = demuxer->priv;
  
      switch (cmd) {
 +    case DEMUXER_CTRL_RESYNC:
-+        printf("lavf -- ETP -- DEMUXER_CTRL_RESYNC\n");
++        if (demuxer->stream->type == STREAMTYPE_ETP)
++        {
++            demux_flush(demuxer);
++            ds_free_packs(demuxer->video);
++            ds_free_packs(demuxer->audio);
++            priv->last_pts = 0;
++            av_seek_frame(priv->avfc, -1, (188*2), AVSEEK_FLAG_BYTE);
++            return DEMUXER_CTRL_OK;
++        }
 +        return DEMUXER_CTRL_NOTIMPL;
      case DEMUXER_CTRL_CORRECT_PTS:
          return DEMUXER_CTRL_OK;
@@ -1084,7 +1112,7 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
          if (priv->seek_by_bytes) {
              /* Our bitrate estimate may be better than would be used in
               * otherwise similar fallback code at higher level */
-@@ -875,6 +907,27 @@
+@@ -875,6 +928,27 @@
          return DEMUXER_CTRL_OK;
  
      case DEMUXER_CTRL_GET_PERCENT_POS:

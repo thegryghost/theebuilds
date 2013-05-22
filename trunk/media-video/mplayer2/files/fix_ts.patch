@@ -143,7 +143,7 @@
 +//				tss->first_pts = es->pts;
 +			}
 +
-+			if (tss->first_pts && es->pts < tss->first_pts)
++			if (tss->first_pts && es->pts && es->pts < tss->first_pts)
 +			{
 +				printf("ts, adding: %0.2f %0.2f\n", tss->first_pts, es->pts);
 +				es->pts += (0x1FFFFFFFF / 90000.0);
@@ -155,7 +155,7 @@
  			}
  			else
  			{
-+				if (is_video && tss->last_pts && (fabs(es->pts - tss->last_pts) > 2))
++				if (is_video && es->pts && tss->last_pts && (fabs(es->pts - tss->last_pts) > 2))
 +				{
 +					printf("sync? pts: %0.2f (%0.2f) -- %0.2f\n", es->pts, tss->last_pts, es->pts - tss->last_pts);
 +					es->pts = tss->pts = tss->last_pts = 0;

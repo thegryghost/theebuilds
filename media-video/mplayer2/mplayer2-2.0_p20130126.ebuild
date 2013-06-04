@@ -18,7 +18,7 @@ if [[ ${PV} == *9999* ]]; then
 	EGIT_REPO_URI="git://git.mplayer2.org/mplayer2.git"
 else
 	SRC_URI="http://rion-overlay.googlecode.com/files/${P}.tar.xz
-			http://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERION.tar.bz2"
+			static? ( http://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERION.tar.bz2 )"
 fi
 
 LICENSE="GPL-3"

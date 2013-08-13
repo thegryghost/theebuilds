@@ -36,3 +36,14 @@
        state.canpause = pvrinputstream->CanPause();
        state.canseek  = pvrinputstream->CanSeek();
      }
+--- ./xbmc/cores/dvdplayer/DVDDemuxers/DVDFactoryDemuxer.cpp.org	2013-08-12 20:07:11.010551289 -0400
++++ ./xbmc/cores/dvdplayer/DVDDemuxers/DVDFactoryDemuxer.cpp	2013-08-12 20:14:02.191521429 -0400
+@@ -98,7 +98,7 @@
+ 
+     std::string filename = pInputStream->GetFileName();
+     /* Use PVR demuxer only for live streams */
+-    if (filename.substr(0, 14) == "pvr://channels")
++    if (filename.substr(0, 14) == "pvr://channels" || filename.substr(0, 17) == "pvr://recordings/")
+     {
+       boost::shared_ptr<CPVRClient> client;
+       if (g_PVRClients->GetPlayingClient(client) &&

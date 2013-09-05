@@ -456,14 +456,14 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +			continue;
 +		}
 +
-+		if (select_wait(s->fd, 1, 0) == 0)
++		if (select_wait_read(s->fd, 1, 0) == 0)
 +			continue;
 +
 +		if (recv(s->fd, &flush[0], 1, 0))
 +		{
 +			if (flush[0] == 0x47)
 +			{
-+				if (select_wait(s->fd, 1, 0) == 0)
++				if (select_wait_read(s->fd, 1, 0) == 0)
 +					continue;
 +
 +				recv(s->fd, &flush[1], 187, 0);
@@ -498,7 +498,7 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +	int b = 0, rc, ret = -1;
 +	uint8_t flush[188] = {0};
 +
-+	if (select_wait(s->fd, wait, 0) < 0)
++	if (select_wait_read(s->fd, wait, 0) < 0)
 +	{
 +		printf("NOOOOOOOOOO\n");
 +		return -1;
@@ -535,7 +535,7 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +				fflush(debug_fp);
 +			}
 +
-+			rc = select_wait(s->fd, 0, 250*1000);
++			rc = select_wait_read(s->fd, 0, 250*1000);
 +			if (rc == 0)
 +			{
 +				printf("I iz sleeping\n");
@@ -563,7 +563,7 @@ diff -Naur stream.org/stream_etp.c stream/stream_etp.c
 +			fflush(debug_fp);
 +		}
 +
-+		while (select_wait(s->fd, wait, 0) == 0)
++		while (select_wait_read(s->fd, wait, 0) == 0)
 +		{
 +			printf("huh?\n");
 +		}

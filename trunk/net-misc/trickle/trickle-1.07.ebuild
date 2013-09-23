@@ -3,7 +3,6 @@
 # $Header: $
 inherit eutils versionator
 
-
 DESCRIPTION=""
 HOMEPAGE="http://monkey.org/~marius/pages/?page=trickle"
 SRC_URI="http://monkey.org/~marius/trickle/${P}.tar.gz"

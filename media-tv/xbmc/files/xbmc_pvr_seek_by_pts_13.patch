@@ -1,0 +1,121 @@
+--- ./xbmc/cores/dvdplayer/DVDDemuxers/DVDFactoryDemuxer.cpp.org	2013-10-27 02:28:19.000000000 -0400
++++ ./xbmc/cores/dvdplayer/DVDDemuxers/DVDFactoryDemuxer.cpp	2013-10-27 02:29:37.000000000 -0400
+@@ -118,7 +118,7 @@
+ 
+     std::string filename = pInputStream->GetFileName();
+     /* Use PVR demuxer only for live streams */
+-    if (filename.substr(0, 14) == "pvr://channels")
++    if (filename.substr(0, 14) == "pvr://channels" || filename.substr(0, 17) == "pvr://recordings/")
+     {
+       boost::shared_ptr<CPVRClient> client;
+       if (g_PVRClients->GetPlayingClient(client) &&
+--- ./xbmc/cores/dvdplayer/DVDInputStreams/DVDInputStreamPVRManager.cpp.org	2013-10-27 02:28:27.000000000 -0400
++++ ./xbmc/cores/dvdplayer/DVDInputStreams/DVDInputStreamPVRManager.cpp	2013-10-27 02:30:05.000000000 -0400
+@@ -73,6 +73,12 @@
+     return !m_pFile || m_eof;
+ }
+ 
++bool CDVDInputStreamPVRManager::SeekTime(int ms)
++{
++  printf("CDVDInputStreamPVRManager::ISeekTime: %d\n", ms);
++  return g_PVRClients->SeekTime(ms);
++}
++
+ bool CDVDInputStreamPVRManager::Open(const char* strFile, const std::string& content)
+ {
+   /* Open PVR File for both cases, to have access to ILiveTVInterface and
+--- ./xbmc/cores/dvdplayer/DVDInputStreams/DVDInputStreamPVRManager.h.org	2013-10-27 02:28:33.000000000 -0400
++++ ./xbmc/cores/dvdplayer/DVDInputStreams/DVDInputStreamPVRManager.h	2013-10-27 02:31:26.000000000 -0400
+@@ -41,6 +41,7 @@
+   , public CDVDInputStream::IChannel
+   , public CDVDInputStream::IDisplayTime
+   , public CDVDInputStream::ISeekable
++  , public CDVDInputStream::ISeekTime
+ {
+ public:
+   CDVDInputStreamPVRManager(IDVDPlayer* pPlayer);
+@@ -52,6 +53,7 @@
+   virtual bool Pause(double dTime) { return false; }
+   virtual bool IsEOF();
+   virtual int64_t GetLength();
++  virtual bool SeekTime(int);
+ 
+   virtual ENextStream NextStream();
+ 
+--- ./xbmc/cores/dvdplayer/DVDPlayer.cpp.org	2013-10-27 02:28:38.000000000 -0400
++++ ./xbmc/cores/dvdplayer/DVDPlayer.cpp	2013-10-27 02:40:43.000000000 -0400
+@@ -2045,6 +2045,15 @@
+         if(dynamic_cast<CDVDInputStream::ISeekTime*>(m_pInputStream) == NULL)
+           time -= DVD_TIME_TO_MSEC(m_State.time_offset - m_offset_pts);
+ 
++        if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
++        {
++          int64_t seek_amount = (int64_t)(msg.GetTime() - GetTime());
++          //int64_t current_pts = DVD_TIME_TO_MSEC(m_dvdPlayerVideo.GetCurrentPts());
++          time = (DVD_TIME_TO_MSEC(m_dvdPlayerVideo.GetCurrentPts()) + seek_amount + GetTime());
++          printf("hi, I'm here, time: %d, seek_amt: %" PRId64" -- %0.2f\n", time, seek_amount, m_dvdPlayerVideo.GetCurrentPts());
++          printf("----- ****** demuxer seek to: %d, pts: %0.2f -- %0.2f %0.2f\n", time, m_dvdPlayerVideo.GetCurrentPts(), m_State.time_offset, m_offset_pts);
++        }
++
+         CLog::Log(LOGDEBUG, "demuxer seek to: %d", time);
+         if (m_pDemuxer && m_pDemuxer->SeekTime(time, msg.GetBackward(), &start))
+         {
+@@ -2473,7 +2482,10 @@
+   }
+ 
+   int64_t seek;
+-  if (g_advancedSettings.m_videoUseTimeSeeking && GetTotalTime() > 2000*g_advancedSettings.m_videoTimeSeekForwardBig)
++  bool iseek = !(!dynamic_cast<CDVDInputStream::ISeekTime*>(m_pInputStream));
++  bool ispvr = m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER);
++//  if (g_advancedSettings.m_videoUseTimeSeeking && GetTotalTime() > 2000*g_advancedSettings.m_videoTimeSeekForwardBig)
++  if ((ispvr && iseek) || (g_advancedSettings.m_videoUseTimeSeeking && GetTotalTime() > 2000*g_advancedSettings.m_videoTimeSeekForwardBig))
+   {
+     if (bLargeStep)
+       seek = bPlus ? g_advancedSettings.m_videoTimeSeekForwardBig : g_advancedSettings.m_videoTimeSeekBackwardBig;
+@@ -3984,6 +3996,18 @@
+       state.canpause = ptr->CanPause();
+       state.canseek  = ptr->CanSeek();
+     }
++
++    if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
++    {
++      CDVDInputStreamPVRManager* pvrinputstream = static_cast<CDVDInputStreamPVRManager*>(m_pInputStream);
++      double tmp2 = ((double)pvrinputstream->GetLength()/90000.0) * DVD_TIME_BASE;
++      state.time       = DVD_TIME_TO_MSEC(m_clock.GetClock());
++      state.time_total = DVD_TIME_TO_MSEC(tmp2);
++//      printf("PVR START, clock: %0.2f, end: %0.2f\n",state.time, state.time_total);
++      state.canpause = pvrinputstream->CanPause();
++      state.canseek  = pvrinputstream->CanSeek();
++    }
++
+   }
+ 
+   if (m_Edl.HasCut())
+--- ./xbmc/pvr/addons/PVRClients.cpp.org	2013-10-27 02:28:44.000000000 -0400
++++ ./xbmc/pvr/addons/PVRClients.cpp	2013-10-27 02:41:18.000000000 -0400
+@@ -1432,3 +1432,15 @@
+     return client->IsPlayingEncryptedChannel();
+   return false;
+ }
++
++bool CPVRClients::SeekTime(int ms)
++{
++  PVR_CLIENT client;
++  if (GetPlayingClient(client))
++  {
++    double startpts = 0;
++    return client->SeekTime(ms, 0, &startpts);
++  }
++  return false;
++}
++
+--- ./xbmc/pvr/addons/PVRClients.h.org	2013-10-27 02:28:52.000000000 -0400
++++ ./xbmc/pvr/addons/PVRClients.h	2013-10-27 02:41:47.000000000 -0400
+@@ -561,6 +561,7 @@
+     bool HandlesInputStream(int iClientId) const;
+ 
+     bool GetPlayingClient(PVR_CLIENT &client) const;
++    bool SeekTime(int);
+ 
+   private:
+     /*!

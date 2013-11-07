@@ -52,7 +52,7 @@
 +        {
 +          int64_t seek_amount = (int64_t)(msg.GetTime() - GetTime());
 +          //int64_t current_pts = DVD_TIME_TO_MSEC(m_dvdPlayerVideo.GetCurrentPts());
-+          time = (DVD_TIME_TO_MSEC(m_dvdPlayerVideo.GetCurrentPts()) + seek_amount + GetTime());
++          time = (DVD_TIME_TO_MSEC(m_dvdPlayerVideo.GetCurrentPts()) + seek_amount);
 +          printf("hi, I'm here, time: %d, seek_amt: %" PRId64" -- %0.2f\n", time, seek_amount, m_dvdPlayerVideo.GetCurrentPts());
 +          printf("----- ****** demuxer seek to: %d, pts: %0.2f -- %0.2f %0.2f\n", time, m_dvdPlayerVideo.GetCurrentPts(), m_State.time_offset, m_offset_pts);
 +        }

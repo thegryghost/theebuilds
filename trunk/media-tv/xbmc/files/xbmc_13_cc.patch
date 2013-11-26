@@ -1,0 +1,1475 @@
+--- xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.h.org	2013-11-25 11:41:25.000000000 -0500
++++ xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.h	2013-11-25 11:43:33.000000000 -0500
+@@ -57,6 +57,7 @@
+   virtual void Reset();
+   bool GetPictureCommon(DVDVideoPicture* pDvdVideoPicture);
+   virtual bool GetPicture(DVDVideoPicture* pDvdVideoPicture);
++  virtual bool GetUserData(DVDVideoUserData* pDvdVideoUserData);
+   virtual void SetDropState(bool bDrop);
+   virtual unsigned int SetFilters(unsigned int filters);
+   virtual const char* GetName() { return m_name.c_str(); }; // m_name is never changed after open
+@@ -127,4 +128,7 @@
+   double m_dts;
+   bool   m_started;
+   std::vector<PixelFormat> m_formats;
++
++  uint8_t *m_userdata;
++  int m_userdata_sz;
+ };
+--- xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.cpp.org	2013-11-25 11:41:17.000000000 -0500
++++ xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecFFmpeg.cpp	2013-11-25 11:57:15.000000000 -0500
+@@ -168,6 +168,9 @@
+   m_iLastKeyframe = 0;
+   m_dts = DVD_NOPTS_VALUE;
+   m_started = false;
++
++  m_userdata_sz = 0;
++  m_userdata = NULL;
+ }
+ 
+ CDVDVideoCodecFFmpeg::~CDVDVideoCodecFFmpeg()
+@@ -443,7 +446,7 @@
+ int CDVDVideoCodecFFmpeg::Decode(uint8_t* pData, int iSize, double dts, double pts)
+ {
+   int iGotPicture = 0, len = 0;
+-
++  int iGotUserdata = 0;
+   if (!m_pCodecContext)
+     return VC_ERROR;
+ 
+@@ -510,6 +513,43 @@
+   if(m_iLastKeyframe > 300)
+     m_iLastKeyframe = 300;
+ 
++  if(m_pCodecContext->codec_id == AV_CODEC_ID_MPEG2VIDEO)
++  {
++    int start=0, end=0;
++    int z;
++    for(z = 0; z < iSize-12; z++)
++    {
++      if(pData[z] == 0x00 && pData[z+1] == 0x00 && pData[z+2] == 0x01)
++      {
++        if(!start && pData[z+3] == 0xB2 && pData[z+4] == 0x47 && pData[z+5] == 0x41 && pData[z+6] == 0x39 && pData[z+7] == 0x34)
++        {
++          start = z+4;
++        }
++        else if (start)
++        {
++          end = z-1;
++          break;
++        }
++      }
++    }
++
++    if (start && end)
++    {
++      if (m_userdata)
++      {
++        CLog::Log(LOGDEBUG, "m_userdata already used?!?!\n");
++        free(m_userdata);
++        m_userdata = NULL;
++        m_userdata_sz = 0;
++      }
++
++      iGotUserdata = 1;
++      m_userdata_sz = end - start;
++      m_userdata = (uint8_t*)calloc(1, m_userdata_sz);
++      memcpy(m_userdata, pData + start, m_userdata_sz);
++    }
++  }
++
+   /* h264 doesn't always have keyframes + won't output before first keyframe anyway */
+   if(m_pCodecContext->codec_id == AV_CODEC_ID_H264
+   || m_pCodecContext->codec_id == AV_CODEC_ID_SVQ3)
+@@ -554,6 +594,8 @@
+   if(result & VC_FLUSHED)
+     Reset();
+ 
++  if (iGotUserdata)
++    result |= VC_USERDATA;
+   return result;
+ }
+ 
+@@ -928,3 +970,18 @@
+   else
+     return 0;
+ }
++
++bool CDVDVideoCodecFFmpeg::GetUserData(DVDVideoUserData* pDvdVideoUserData)
++{
++
++  if (pDvdVideoUserData && m_userdata && m_userdata_sz)
++  {
++    pDvdVideoUserData->data = m_userdata;
++    pDvdVideoUserData->size = m_userdata_sz;
++    m_userdata = NULL;
++    m_userdata_sz = 0;
++    return true;
++  }
++  return false;
++}
++
+--- xbmc/cores/dvdplayer/DVDCodecs/Overlay/DVDOverlayCodecCC.cpp.org	2013-11-25 11:42:29.000000000 -0500
++++ xbmc/cores/dvdplayer/DVDCodecs/Overlay/DVDOverlayCodecCC.cpp	2013-11-25 16:01:01.000000000 -0500
+@@ -21,115 +21,848 @@
+ #include "DVDOverlayCodecCC.h"
+ #include "DVDOverlayText.h"
+ #include "DVDClock.h"
++#include "utils/log.h"
+ 
+-extern "C" {
+-#include "libspucc/cc_decoder.h"
++CDVDOverlayCodecCCBuffer::CDVDOverlayCodecCCBuffer()
++{
++//  CLog::Log(LOGDEBUG, "CDVDOverlayCodecCCBuffer::CDVDOverlayCodecCCBuffer new!\n");
++  Reset();
++}
++
++CDVDOverlayCodecCCBuffer::~CDVDOverlayCodecCCBuffer()
++{
++//  CLog::Log(LOGDEBUG, "CDVDOverlayCodecCCBuffer::CDVDOverlayCodecCCBuffer destory!\n");
++}
++
++void CDVDOverlayCodecCCBuffer::Reset()
++{
++//  CLog::Log(LOGDEBUG, "CDVDOverlayCodecCCBuffer::Reset\n");
++  mode = 0;
++  row_count = 0;
++  EraseNonDisp();
++  EraseDisp();
+ }
++
++void CDVDOverlayCodecCCBuffer::PrintDisp(void)
++{
++  if (mode == 0)
++    return;
++
++//   printf("DisplayMem (mode: 0x%x) (%d):\n", mode, CC_MAX_ROWS);
++  CLog::Log(LOGDEBUG, "DisplayMem (mode: 0x%x) (%d):\n", mode, CC_MAX_ROWS);
++  for(int i=0; i < CC_MAX_ROWS; i++)
++  {
++//    printf("[%d] [%d] %s\n", i, (int)strlen((char*)display_buffer[i]), (char*)display_buffer[i]);
++    CLog::Log(LOGDEBUG, "[%d] %s\n", (int)strlen((char*)display_buffer[i]), (char*)display_buffer[i]);
++  }
++}
++
++void CDVDOverlayCodecCCBuffer::PrintNonDisp(void)
++{
++  if (mode == CC_608_COMMAND_RCL)
++  {
++    CLog::Log(LOGDEBUG, "NonDisplayMem (mode: 0x%x) (%d):\n", mode, CC_MAX_ROWS);
++    for(int i=0; i < CC_MAX_ROWS; i++)
++    {
++//      printf("[%d] [%d] %s\n", i, (int)strlen((char*)nondisplay_buffer[i]), (char*)nondisplay_buffer[i]);
++      CLog::Log(LOGDEBUG, "[%d] %s\n", (int)strlen((char*)nondisplay_buffer[i]), (char*)nondisplay_buffer[i]);
++    }
++  }
++  else
++    CLog::Log(LOGDEBUG, "NonDisplayMem -- NOT IN POPON MODE\n");
++}
++
++void CDVDOverlayCodecCCBuffer::EraseNonDisp(void)
++{
++  nondisp_column = 0;
++  nondisp_row = 0;
++  memset(&nondisplay_buffer, 0, CC_MAX_ROWS * CC_MAX_LINE_CHARS);
++}
++
++void CDVDOverlayCodecCCBuffer::EraseDisp(void)
++{
++  disp_row = 0;
++  disp_column = 0;
++  memset(&display_buffer, 0, CC_MAX_ROWS * CC_MAX_LINE_CHARS);
++}
++
++void CDVDOverlayCodecCCBuffer::SwapDispNonDisp(void)
++{
++  uint8_t tmp[CC_MAX_ROWS][CC_MAX_LINE_CHARS];
++  memcpy(&tmp, &display_buffer, CC_MAX_ROWS * CC_MAX_LINE_CHARS);
++  memcpy(&display_buffer, &nondisplay_buffer, CC_MAX_ROWS * CC_MAX_LINE_CHARS);
++  memcpy(&nondisplay_buffer, &tmp, CC_MAX_ROWS * CC_MAX_LINE_CHARS);
++
++  tmp[0][0] = disp_row;
++  disp_row = nondisp_row;
++  nondisp_row = tmp[0][0];
++
++  tmp[0][0] = disp_column;
++  disp_column = nondisp_column;
++  nondisp_column = tmp[0][0];
++}
++
++void CDVDOverlayCodecCCBuffer::ShiftDispUp(void)
++{
++  if (row_start && mode >= CC_608_COMMAND_RU2 && mode <= CC_608_COMMAND_RU4)
++  {
++    int i;
++    uint8_t rows = row_start - row_count;
++    CLog::Log(LOGDEBUG, "ShiftDispUp, row start: %d, row count: %d (%d)\n", row_start, row_count, rows);
++
++    for(i = rows + 2; i <= row_start; i++)
++    {
++      CLog::Log(LOGDEBUG, "Shifting %d to %d\n", i, i-1);
++      memcpy(&display_buffer[i-1], &display_buffer[i], CC_MAX_LINE_CHARS);
++    }
++    memset(&display_buffer[row_start], 0, CC_MAX_LINE_CHARS);
++
++//    CLog::Log(LOGDEBUG, "ShiftDispUp\n");
++/*
++    for(int i = row_count - 2; i >= 0; i--)
++    {
++//      CLog::Log(LOGDEBUG, "Shifting %d to %d\n", i, i+1);
++      memcpy(&display_buffer[i+1], &display_buffer[i], CC_MAX_LINE_CHARS);
++    }
++    memset(&display_buffer[0], 0, CC_MAX_LINE_CHARS);
++*/
++  }
++}
++
++char * CDVDOverlayCodecCCBuffer::GetDisplayString()
++{
++  if (mode == 0)
++   return NULL;
++  char * ret = new char[CC_MAX_ROWS * (CC_MAX_LINE_CHARS+10)]();
++ 
++  if (ret)
++  {
++    int i, j, k = 0;
++/*
++    for(i=0; i < 26; i++)
++    {
++      ret[k++] = 65+i;
++      ret[k++] = '[';
++      ret[k++] = 'C';
++      ret[k++] = 'R';
++      ret[k++] = ']';
++    }
++*/
++
++    for(i=0; i < CC_MAX_ROWS; i++)
++    {
++      for(j=0; j < CC_MAX_LINE_CHARS; j++)
++      {
++        if (display_buffer[i][j] != 0x00)
++        {
++          ret[k++] = display_buffer[i][j];
++        }
++        else
++        {
++//          ret[k++] = ' ';
++          if (j == 0)
++            ret[k++] = ' ';
++          break;
++        }
++      }
++//      ret[k++] = '.';
++      ret[k++] = '[';
++      ret[k++] = 'C';
++      ret[k++] = 'R';
++      ret[k++] = ']';
++    }
++  }
++  return ret;
++}
++
++void CDVDOverlayCodecCCBuffer::AddChar(uint8_t c)
++{
++  if (mode >= CC_608_COMMAND_RU2 && mode <= CC_608_COMMAND_RU4)
++  {
++    if (c == '\n')
++    {
++//      CLog::Log(LOGDEBUG, "------ Adding CR, shift\n");
++      ShiftDispUp();
++      disp_column = 0;
++      disp_row = 0;
++    }
++    else
++    {
++//      CLog::Log(LOGDEBUG, "-- ROLLUP: %d %d\n", disp_row, disp_column);
++//      printf("-- ROLLUP: %d %d\n", disp_row, disp_column);
++      if (disp_column + 1 < CC_MAX_LINE_CHARS)
++        display_buffer[disp_row][disp_column++] = c;
++    }
++  }
++  else if (mode == CC_608_COMMAND_RCL)
++  {
++//      printf("-- RCL: %d %d (%c)\n", nondisp_row, nondisp_column, c);
++    if (nondisp_column + 1 < CC_MAX_LINE_CHARS)
++      nondisplay_buffer[nondisp_row][nondisp_column++] = c;
++  }
++}
++
++
++void CDVDOverlayCodecCCBuffer::SetMode(uint8_t m)
++{
++  if (mode && m && mode == m)
++    return;
++
++  if (mode && mode != m)
++  {
++    CLog::Log(LOGDEBUG, "Switching modes from 0x%x to 0x%x\n", mode, m);
++    Reset();
++  }
++
++  mode = m;
++  switch(mode)
++  {
++    case CC_608_COMMAND_RCL:
++//      CLog::Log(LOGDEBUG, "Setting CC Mode to Popon\n");
++      row_count = 4;
++    break;
++
++    case CC_608_COMMAND_RU2:
++    case CC_608_COMMAND_RU3:
++    case CC_608_COMMAND_RU4:
++      row_count = (mode - 0x23);
++//      row_start = 15;
++//      CLog::Log(LOGDEBUG, "Setting CC Mode to Rollup (row count: %d)\n", row_count);
++    break;
++    default:
++      mode = row_count = 0xFF;
++    break;
++  }
++}
++
++// -----------
++
+ CDVDOverlayCodecCC::CDVDOverlayCodecCC() : CDVDOverlayCodec("Closed Caption")
+ {
++  CLog::Log(LOGDEBUG, "CDVDOverlayCodecCC::CDVDOverlayCodecCC  -- constructor\n");
+   m_pCurrentOverlay = NULL;
++  m_DTVPacket_List = NULL;
++  m_DecodeTimeDiff = ((1.0 * DVD_TIME_BASE)/3);
++//  m_DecodeTimeDiff = ((1.0 * DVD_TIME_BASE)/2.5); // Half a second
++//  m_DecodeTimeDiff = ((1.0 * DVD_TIME_BASE)/1.0); // Half a second
++  memset(&m_DTVPacket_Last, 0, sizeof(m_DTVPacket_Last));
++
++  m_pCCTextBuffer = new CDVDOverlayCodecCCBuffer;
+   Reset();
+ }
+ 
+ CDVDOverlayCodecCC::~CDVDOverlayCodecCC()
+ {
++  CLog::Log(LOGDEBUG, "CDVDOverlayCodecCC::CDVDOverlayCodecCC  -- deconstructor\n");
+ }
+-static cc_decoder_t* m_cc_decoder = NULL;
++
+ bool CDVDOverlayCodecCC::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options)
+ {
+   Reset();
+-  cc_decoder_init();
+-  m_cc_decoder = cc_decoder_open();
+   return true;
+ }
+ 
+ void CDVDOverlayCodecCC::Dispose()
+ {
+   Flush();
+-  if (m_cc_decoder) cc_decoder_close(m_cc_decoder);
+-  m_cc_decoder = NULL;
+-}
+-/*
+-int CDVDOverlayCodecCC::DecodeFieldData(uint8_t* pData, int iSize)
+-{
+ }
+-*/
+ 
+ int CDVDOverlayCodecCC::Decode(DemuxPacket *pPacket)
+ {
+   if (!pPacket)
+     return OC_ERROR;
+-
++  bool update_overlay = true;
++  int ret = OC_BUFFER;
+   uint8_t *pData = pPacket->pData;
+   int      iSize = pPacket->iSize;
++  double   pts = pPacket->pts;
++
++  uint8_t  cc1 = pData[0] & CC_BITFILTER;
++  uint8_t  cc2 = pData[1] & CC_BITFILTER;
+ 
+-  // minimum amount of data is even more for cc
+-  decode_cc(m_cc_decoder, pData, iSize);
++  if (cc1 == 0 && cc2 == 0) // No CC data
++    return OC_BUFFER;
+ 
+-  if (iSize >= 2)
++  if ((cc1 >= 0x01 && cc1 <= 0x0E) || (cc1 == 0x0F)) // XDS Data, don't care
++    return OC_BUFFER;
++
++  CC_DTV_PACKET *p = new CC_DTV_PACKET();
++  if (p)
+   {
+-    Flush();
+-    m_pCurrentOverlay = new CDVDOverlayText();
++    p->pts = pPacket->pts;
++    p->dts = pPacket->dts;
++    p->frameno = (uint64_t)pPacket->duration;
++    p->cc1 = cc1;
++    p->cc2 = cc2;
++
++    AddDTVPacket(p);
++    update_overlay = ProcessDTVPackets();
++  }
+ 
+-    cc_buffer_t* data = &m_cc_decoder->on_buf->channel[0];
+-    for (int r = 0; r < CC_ROWS; r++)
++//  m_pCCTextBuffer->PrintDisp();
++  if (update_overlay)
++  {
++    char *cc_text = m_pCCTextBuffer->GetDisplayString();
++
++    if (cc_text)
+     {
+-      if (data->rows[r].num_chars > 0)
++//      CLog::Log(LOGDEBUG, "[%d] CC_TXT:\n%s\n",(int)strlen(cc_text), cc_text);
++      if (strcmp(m_LastCCText, cc_text) != 0)
+       {
+-        char row_text[CC_COLUMNS + 1];
+-        row_text[0] = 0;
+-        for (int c = 0; c < data->rows[r].num_chars; c++)
+-        {
+-          row_text[c] = data->rows[r].cells[c].c;
+-        }
+-        row_text[data->rows[r].num_chars] = '\n';
+-        row_text[data->rows[r].num_chars + 1] = 0;
+-        CDVDOverlayText::CElementText* pText = new CDVDOverlayText::CElementText(row_text);
+-        m_pCurrentOverlay->AddElement(pText);
++//        strncpy(m_LastCCText, cc_text, CC_LAST_BIG_SIZE-1);
++        strcpy(m_LastCCText, cc_text);
++        Flush();
++        m_pCurrentOverlay = new CDVDOverlayText();
++        m_pCurrentOverlay->AddElement(new CDVDOverlayText::CElementText(cc_text));
++        ret = OC_OVERLAY;
+       }
++      else
++      {
++//        CLog::Log(LOGDEBUG, "\n\n----- NO UPDATEST: %s %s\n\n", m_LastCCText, cc_text);
++      }
++      delete[] cc_text;
+     }
++  }
++  return ret;
++}
++
++void CDVDOverlayCodecCC::Reset()
++{
++  CC_DTV_PACKET *del = NULL, *tmp = NULL;
++//  CLog::Log(LOGDEBUG, "CDVDOverlayCodecCC::Reset\n");
++  memset(&m_LastCCText, 0, CC_LAST_BIG_SIZE);
++  m_pCCTextBuffer->Reset();
++
++  tmp = m_DTVPacket_List;
++  while(tmp)
++  {
++    del = tmp;
++    tmp = tmp->next;
++    delete del;
++  }
++  m_DTVPacket_List = NULL;
++
++  Flush();
++  m_CurrentDTS = 0;
++  memset(&m_DTVPacket_Last, 0, sizeof(m_DTVPacket_Last));
++}
++
++void CDVDOverlayCodecCC::Flush()
++{
++  if(m_pCurrentOverlay)
++    SAFE_RELEASE(m_pCurrentOverlay);
++  m_pCurrentOverlay = NULL;
++}
+ 
+-    return OC_OVERLAY;
++CDVDOverlay* CDVDOverlayCodecCC::GetOverlay()
++{
++  if(m_pCurrentOverlay)
++  {
++    CDVDOverlay* overlay = m_pCurrentOverlay;
++    m_pCurrentOverlay = NULL;
++    return overlay;
++  }
++  return NULL;
++}
+ 
+-    /*
++uint64_t CDVDOverlayCodecCC::AddDTVPacket(CC_DTV_PACKET *pkt)
++{
++ if (pkt && pkt->frameno)
++ {
++    CC_DTV_PACKET *p = pkt;
++    p->next = NULL;
++//    CLog::Log(LOGDEBUG, "\tFrameno: %" PRId64" [0x%02x 0x%02x] [pts: %0.2f, dts: %0.2f]\n", pkt->frameno, pkt->cc1, pkt->cc2, round((pkt->pts/DVD_TIME_BASE)*(30000.0/1001.0)), round((pkt->dts/DVD_TIME_BASE)*(30000.0/1001.0)));
+ 
+-    m_pCurrentOverlay->iPTSStartTime = pts;
+-    m_pCurrentOverlay->iPTSStopTime = 0LL;
++    if (!m_DTVPacket_List || p->frameno < m_DTVPacket_List->frameno)
++    {
++       if (m_DTVPacket_List)
++         p->next = m_DTVPacket_List;
++       m_DTVPacket_List = p;
++    }
++    else
++    {
++      CC_DTV_PACKET *tmp = m_DTVPacket_List;
++      while(tmp->next)
++      {
++        if (p->frameno >= tmp->frameno && p->frameno < tmp->next->frameno)
++        {
++          p->next = tmp->next;
++          break;
++        }
++        tmp = tmp->next;
++      }
+ 
+-    char test[64];
+-    sprintf(test, "cc data : %"PRId64, pts);
+-    CDVDOverlayText::CElementText* pText = new CDVDOverlayText::CElementText(test);
+-    m_pCurrentOverlay->AddElement(pText);
+-    return OC_OVERLAY;*/
++      tmp->next = p;
++      m_CurrentDTS = p->dts;
++      return p->frameno;
++    }
+   }
+-  return OC_BUFFER;
++
++  return 0;
+ }
+ 
+-void CDVDOverlayCodecCC::Reset()
++void CDVDOverlayCodecCC::Handle608Command(CC_DTV_PACKET *dtv_pkt)
+ {
+-  Flush();
++  if (dtv_pkt)
++  {
++//    CLog::Log(LOGDEBUG, "CDVDOverlayCodecCC::Handle608Command: 0x%x 0x%x [%" PRId64"] [pts: %0.2f, dts: %0.2f, ref: %0.2f]\n", dtv_pkt->cc1, dtv_pkt->cc2, dtv_pkt->frameno, dtv_pkt->pts, dtv_pkt->dts, m_CurrentDTS);
++    if (dtv_pkt->cc1 == CC_608_CHANNEL1)
++    {
++      switch(dtv_pkt->cc2)
++      {
++        case CC_608_COMMAND_RCL:
++  //        CLog::Log(LOGDEBUG, "\tRCL/Popon CC\n");
++          m_pCCTextBuffer->SetMode(dtv_pkt->cc2);
++        break;
++
++        case CC_608_COMMAND_BS:
++//          CLog::Log(LOGDEBUG, "\tBS\n");
++        break;
++
++        case CC_608_COMMAND_AOF:
++          //CLog::Log(LOGDEBUG, "\tAOF\n");
++        break;
++
++        case CC_608_COMMAND_AON:
++        //  CLog::Log(LOGDEBUG, "\tAON\n");
++        break;
++
++        case CC_608_COMMAND_DER: //Alarm Off
++      //    CLog::Log(LOGDEBUG, "\tDER\n");
++        break;
++
++        case CC_608_COMMAND_RU2: //Rollup, 2
++        case CC_608_COMMAND_RU3: //Rollup, 3
++        case CC_608_COMMAND_RU4: //Rollup, 4
++//          CLog::Log(LOGDEBUG, "\tRU%d\n", dtv_pkt->cc2-0x23);
++          m_pCCTextBuffer->SetMode(dtv_pkt->cc2);
++        break;
++
++        case CC_608_COMMAND_FON: //FON
++  //        CLog::Log(LOGDEBUG, "\tFON\n");
++        break;
++
++        case CC_608_COMMAND_RDC: //RDC
++//          CLog::Log(LOGDEBUG, "\tRDC\n");
++        break;
++
++        case CC_608_COMMAND_TR: //TR
++//          CLog::Log(LOGDEBUG, "\tTR\n");
++        break;
++
++        case CC_608_COMMAND_RTD: //RTD
++//          CLog::Log(LOGDEBUG, "\tRTD\n");
++        break;
++
++        case CC_608_COMMAND_EDM: //EDM
++//          CLog::Log(LOGDEBUG, "\tEDM\n");
++          m_pCCTextBuffer->EraseDisp();
++        break;
++
++        case CC_608_COMMAND_CR: //Carriage Return
++//          CLog::Log(LOGDEBUG, "\tCR\n");
++          m_pCCTextBuffer->AddChar('\n');
++//          m_pCCTextBuffer->PrintDisp();
++        break;
++
++        case CC_608_COMMAND_ENM: //ENDM
++//          CLog::Log(LOGDEBUG, "\tENDM\n");
++          m_pCCTextBuffer->EraseNonDisp();
++        break;
++
++        case CC_608_COMMAND_EOC: //EOC
++  //        CLog::Log(LOGDEBUG, "\tEOC/SWAP\n");
++          m_pCCTextBuffer->SwapDispNonDisp();
++        break;
++
++        default:
++          CLog::Log(LOGDEBUG, "Unhandled CC_608_CHANNEL1 command\n");
++        break;
++      }
++    }
++    else if (dtv_pkt->cc1 == CC_608_CHANNEL1T)
++    {
++      switch(dtv_pkt->cc2)
++      {
++        case CC_608_COMMAND_TAB1: //Taboffset
++        case CC_608_COMMAND_TAB2:
++        case CC_608_COMMAND_TAB3:
++//          CLog::Log(LOGDEBUG, "\tTO%d\n", dtv_pkt->cc2-0x20);
++          for(int i=0; i < dtv_pkt->cc2-0x20; i++)
++            m_pCCTextBuffer->AddChar(' ');
++        break;
++
++        default:
++          CLog::Log(LOGDEBUG, "Unhandled CC_608_CHANNEL1 (TAB) command\n");
++        break;
++      }
++    }
++  }
+ }
+ 
+-void CDVDOverlayCodecCC::Flush()
++void CDVDOverlayCodecCC::Handle608Pac(CC_DTV_PACKET *dtv_pkt)
+ {
+-  if (m_pCurrentOverlay)
++  if (dtv_pkt)
+   {
+-    // end time is not always known and may be 0.
+-    // In that case the overlay container does not remove the overlay.
+-    // We set it here to be sure
+-    if (m_pCurrentOverlay->iPTSStopTime == 0LL)
++    uint8_t cc1 = dtv_pkt->cc1;
++    uint8_t cc2 = dtv_pkt->cc2;
++
++    int color = 0, font = 0, indent = 0;
++    int row = CC_608_ROWDATA[((cc1<<1)&14)|((cc2>>5)&1)];
++
++//    CLog::Log(LOGDEBUG, "CDVDOverlayCodecCC::Handle608Pac, row: %d\n", row);
++    if (cc2 >= 0x40 && cc2 <= 0x5f)
+     {
+-      m_pCurrentOverlay->iPTSStopTime = m_pCurrentOverlay->iPTSStartTime + 1;
++      cc2 -= 0x40;
+     }
+-    m_pCurrentOverlay->Release();
+-    m_pCurrentOverlay = NULL;
++    else if (cc2 >= 0x60 && cc2 <= 0x7f)
++    {
++      cc2 -= 0x60;
++    }
++    else
++    {
++      CLog::Log(LOGDEBUG, "NOT A PAC!!!!!!!\n");
++      return;
++    }
++
++    indent = CC_608_PAC_ATTR[cc2][2];
++    color = CC_608_PAC_ATTR[cc2][0];
++    font = CC_608_PAC_ATTR[cc2][1];
++
++    switch (color)
++    {
++        case CC_608_COLOR_GREEN:
++        break;
++
++        case CC_608_COLOR_BLUE:
++        break;
++
++        case CC_608_COLOR_CYAN:
++        break;
++
++        case CC_608_COLOR_RED:
++        break;
++
++        case CC_608_COLOR_YELLOW:
++        break;
++
++        case CC_608_COLOR_MAGENTA:
++        break;
++
++        case CC_608_COLOR_WHITE:
++        default:
++        break;
++    }
++
++    switch (font)
++    {
++        case CC_608_FONT_UNDERLINED:
++        break;
++
++        case CC_608_FONT_ITALICS:
++        break;
++
++        case CC_608_FONT_UNDERLINED_ITALICS:
++        break;
++
++        case CC_608_FONT_REGULAR:
++        default:
++        break;
++    }
++
++    uint8_t _mode = m_pCCTextBuffer->GetMode();
++    if (_mode == CC_608_COMMAND_RCL)
++    {
++      m_pCCTextBuffer->SetNRow(row-1);
++      m_pCCTextBuffer->SetNColumn(0);
++    }
++    else if (_mode >= CC_608_COMMAND_RU2 && _mode <= CC_608_COMMAND_RU4)
++    {
++      m_pCCTextBuffer->SetDRow(row-1);
++      m_pCCTextBuffer->SetDColumn(0);
++//      CLog::Log(LOGDEBUG, "--- 608 PAC [row: %d, color: %s, font: %s, indent: %d]\n", row, CC_608_COLOR_STR[color], CC_608_FONT_STR[font], indent);
++    }
++
++    m_pCCTextBuffer->SetRowStart(row-1);
++    for(int i=0; i < indent; i++)
++      m_pCCTextBuffer->AddChar(' ');
++
++//    CLog::Log(LOGDEBUG, "--- 608 PAC [mode: 0x%x (row start: %d), row: %d, color: %s, font: %s, indent: %d]\n", _mode, m_pCCTextBuffer->GetRowStart(), row, CC_608_COLOR_STR[color], CC_608_FONT_STR[font], indent);
++//    printf("--- 608 PAC [mode: 0x%x (row start: %d), row: %d, color: %s, font: %s, indent: %d]\n", _mode, m_pCCTextBuffer->GetRowStart(), row, CC_608_COLOR_STR[color], CC_608_FONT_STR[font], indent);
+   }
+ }
+ 
+-CDVDOverlay* CDVDOverlayCodecCC::GetOverlay()
++void CDVDOverlayCodecCC::Handle608Text(CC_DTV_PACKET *dtv_pkt)
+ {
+-  CDVDOverlay* overlay = m_pCurrentOverlay;
+-  m_pCurrentOverlay = NULL;
+-  return overlay;
++  if (dtv_pkt)
++  {
++    if (dtv_pkt->cc1 >= 0x20)
++      m_pCCTextBuffer->AddChar(dtv_pkt->cc1);
++
++    if (dtv_pkt->cc2 >= 0x20)
++      m_pCCTextBuffer->AddChar(dtv_pkt->cc2);
++
++//    CLog::Log(LOGDEBUG, "CDVDOverlayCodecCC::Handle608Text: 0x%x 0x%x [%c %c] [%" PRId64"] [pts: %0.2f, dts: %0.2f, ref: %0.2f]\n", dtv_pkt->cc1, dtv_pkt->cc2, dtv_pkt->cc1, dtv_pkt->cc2, dtv_pkt->frameno, dtv_pkt->pts, dtv_pkt->dts, m_CurrentDTS);
++  }
++}
++
++bool CDVDOverlayCodecCC::ProcessDTVPackets()
++{
++  bool ret = true;
++  CC_DTV_PACKET *tmp = m_DTVPacket_List, *last_processed = NULL;
++  if (!m_DTVPacket_List)
++    return false;
++
++//  CLog::Log(LOGDEBUG, "CDVDOverlayCodecCC::ProcessDTVPackets -- START\n");
++
++  uint8_t cc1 = 0, cc2 = 0;
++
++  while (tmp)
++  {
++    if (m_CurrentDTS - tmp->pts < m_DecodeTimeDiff)
++    {
++//      CLog::Log(LOGDEBUG, "Need to wait\n");
++//      ret = false;
++      break;
++    }
++
++    last_processed = tmp;
++    cc1 = tmp->cc1;
++    cc2 = tmp->cc2;
++
++    if (cc1 >= 0x10 && cc1 < 0x1F) // 608 Command
++    {
++      if (cc1 >= 0x18 && cc1 <= 0x1F)
++        cc1 -= 8;
++
++//      CLog::Log(LOGDEBUG, "[%" PRId64"] Last CC1: 0x%x (now: 0x%x),", m_DTVPacket_Last.frameno, m_DTVPacket_Last.cc1, cc1);
++  //    CLog::Log(LOGDEBUG, "Last CC2: 0x%x (now: 0x%x)\n", m_DTVPacket_Last.cc2, cc2);
++ 
++
++      if ((m_DTVPacket_Last.cc1 && m_DTVPacket_Last.cc1 == cc1) && (m_DTVPacket_Last.cc2 && m_DTVPacket_Last.cc2 == cc2))
++      {
++//        if (tmp->frameno - m_DTVPacket_Last.frameno < 2)
++        {
++          // Skip duplicate commands
++          tmp = tmp->next;
++          continue;
++        }
++      }
++
++      m_DTVPacket_Last.cc1 = cc1;
++      m_DTVPacket_Last.cc2 = cc2;
++      m_DTVPacket_Last.frameno = tmp->frameno;
++
++      switch (cc1)
++      {
++        case 0x10: //PAC
++          if (cc2 >= 0x40 && cc2 <=0x5f)
++          {
++            Handle608Pac(tmp);
++//          CLog::Log(LOGDEBUG, "** PAC: 0x%02X\n", cc1);
++          }
++          else
++            CLog::Log(LOGDEBUG, "** UNHANDLED (0x%x): 0x%02x 0x%02X\n", cc1, cc1, cc2);
++        break;
++
++        case 0x11: // Text Attr
++          if (cc2 >= 0x20 && cc2 <= 0x2f)
++          {
++//          CLog::Log(LOGDEBUG, "** TEXT ATTR: 0x%02X 0x%02X\n", cc1, cc2);
++//          _caption_handle_608_text_attr(cc1, cc2);
++          }
++          else if (cc2>=0x30 && cc2<=0x3f)
++          {
++            uint8_t c = CC_608_EXT_CHARS[cc2 - 0x30];
++            CLog::Log(LOGDEBUG, "** Special Char: [cc2: 0x%02X] [0x%x -- %c]\n", cc2, c, (char)c);
++            m_pCCTextBuffer->AddChar(c);
++
++/*
++//          CLog::Log(LOGDEBUG, "** HANDLE DOUBLE (to screen): [0x%02X 0x%02X]\n", cc1, cc2);
++            switch (cc2)
++            {
++              case 0x30:
++                //Registered mark symbol
++              break;
++
++              case 0x31:
++                //Degree Sign
++              break;
++
++              case 0x32:
++                // 1/2 sign
++              break;
++
++              case 0x33:
++                //Inverse Query
++              break;
++
++              case 0x34:
++                //Trademark Symbol
++              break;
++              case 0x35:
++                //Cents Sign
++              break;
++              case 0x36:
++                //Pounds Sterling
++              break;
++              case 0x37:
++                //Music Note
++                CLog::Log(LOGDEBUG, "[%" PRId64"] Music Note\n", tmp->frameno);
++              break;
++              case 0x38:
++                //Lower-case 'a' with a grave account
++              break;
++
++              case 0x39:
++                //Transparent Space
++              break;
++              case 0x3A:
++                //Lower-case 'e' with a grave account
++              break;
++              case 0x3B:
++                //Lower-case 'a' with circumflex
++              break;
++              case 0x3C:
++                //Lower-case 'e' with circumflex
++              break;
++              case 0x3D:
++                //Lower-case 'i' with circumflex
++              break;
++              case 0x3E:
++                //Lower-case 'o' with circumflex
++              break;
++              case 0x3F:
++                //Lower-case 'u' with circumflex
++              break;
++            }
++*/
++/*
++            if (cc2 == 0x87)
++            {
++              CLog::Log(LOGDEBUG, "[%" PRId64"] Extended Char (double): Music Note\n", tmp->frameno);
++            }
++            else
++            {
++              CLog::Log(LOGDEBUG, "Double Char [%c] [0x%02X] org: [%c] [0x%02X]\n", c, c, cc2, cc2);
++            }
++*/
++          }
++          else if (cc2 >= 0x40 && cc2 <= 0x7f)
++          {
++            Handle608Pac(tmp);
++//          CLog::Log(LOGDEBUG, "** PAC: 0x%02X\n", cc1);
++          }
++          else
++            CLog::Log(LOGDEBUG, "** UNHANDLED (0x%x): 0x%02x 0x%02X\n", cc1, cc1, cc2);
++        break;
++
++        case 0x12: // Extended
++        case 0x13: //
++          if (cc2>=0x20 && cc2<=0x3f)
++          {
++            CLog::Log(LOGDEBUG, "** HANDLE EXTENDED (to screen): 0x%02X 0x%02X\n", cc1, cc2);
++          }
++          else if (cc2 >= 0x40 && cc2 <= 0x7f)
++          {
++            Handle608Pac(tmp);
++//          CLog::Log(LOGDEBUG, "** PAC: 0x%02X\n", cc1);
++          }
++          else
++            CLog::Log(LOGDEBUG, "** UNHANDLED (0x%x): 0x%02x 0x%02X\n", cc1, cc1, cc2);
++        break;
++
++        case CC_608_CHANNEL1: // Command
++//        case CC_608_CHANNEL3: //
++          if (cc2 >= 0x20 && cc2 <= 0x2f)
++          {
++//            CLog::Log(LOGDEBUG, "** CMD: 0x%02X\n", cc1);
++            Handle608Command(tmp);
++          }
++          else if (cc2 >= 0x40 && cc2 <= 0x7f)
++          {
++  //          CLog::Log(LOGDEBUG, "** PAC: 0x%02X\n", cc1);
++            Handle608Pac(tmp);
++          }
++          else
++            CLog::Log(LOGDEBUG, "** UNHANDLED (0x%x): 0x%02x 0x%02X\n", cc1, cc1, cc2);
++
++        break;
++
++        case 0x16: // PAC?
++          if (cc2 >= 0x40 && cc2 <= 0x7f)
++          {
++            Handle608Pac(tmp);
++//          CLog::Log(LOGDEBUG, "** PAC: 0x%02X\n", cc1);
++          }
++          else
++            CLog::Log(LOGDEBUG, "** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);
++        break;
++
++        case 0x17: // Command
++          if (cc2>=0x21 && cc2<=0x22)
++          {
++    //        CLog::Log(LOGDEBUG, "COMMAND2: 0x%02X 0x%02x\n", cc1, cc2);
++            Handle608Command(tmp);
++          }
++          else if (cc2>=0x2e && cc2<=0x2f)
++          {
++            CLog::Log(LOGDEBUG, "** TEXT ATTR: 0x%02X\n", cc2);
++          }
++          else if (cc2>=0x40 && cc2<=0x7f)
++          {
++            Handle608Pac(tmp);
++//          CLog::Log(LOGDEBUG, "** PAC: 0x%02X\n", cc1);
++          }
++          else if (cc2 == 0x21 || cc2 == 0x22 || cc2 == 0x23) // Taboffset
++          {
++            int q;
++          }
++          else
++            CLog::Log(LOGDEBUG, "** UNHANDLED: 0x%02x 0x%02X\n", cc1, cc2);
++        break;
++
++        default: //
++        break;
++      }
++    }
++    else if (cc1 >= 0x20) // Text
++    {
++      Handle608Text(tmp);
++//      m_pCCTextBuffer->PrintNonDisp();
++//      m_pCCTextBuffer->PrintDisp();
++    }
++
++
++    tmp = tmp->next;
++//    CLog::Log(LOGDEBUG, "\tFrameno: %" PRId64" [0x%02x (%c) 0x%02x (%c)]\n", tmp->frameno, tmp->cc1, p1, tmp->cc2, p2);
++  }
++
++  if (last_processed)
++  {
++    CC_DTV_PACKET *del = NULL;
++    tmp = m_DTVPacket_List;
++    while(tmp && tmp != last_processed)
++    {
++      del = tmp;
++      tmp = tmp->next;
++      delete del;
++    }
++
++    if (tmp)
++    {
++      m_DTVPacket_List = tmp->next;
++      delete tmp;
++    }
++    else
++    {
++      m_DTVPacket_List = NULL;
++    }
++    ret = true;
++  }
++  else
++    ret = false;
+ 
++//  CLog::Log(LOGDEBUG, "CDVDOverlayCodecCC::ProcessDTVPackets -- END\n");
++  return ret;
+ }
+--- xbmc/cores/dvdplayer/DVDCodecs/Overlay/DVDOverlayCodecCC.h.org	2013-11-25 11:42:36.000000000 -0500
++++ xbmc/cores/dvdplayer/DVDCodecs/Overlay/DVDOverlayCodecCC.h	2013-11-25 15:48:37.000000000 -0500
+@@ -22,20 +22,253 @@
+ 
+ #include "DVDOverlayCodec.h"
+ 
+-class CDVDOverlayText;
++#define CC_MAX_LINE_CHARS               64
++#define CC_MAX_ROWS                     15
++#define CC_BITFILTER                    0x7F
++#define CC_LAST_BIG_SIZE				9600
++
++static int CC_608_ROWDATA[] = {11,-1,1,2,3,4,12,13,14,15,5,6,7,8,9,10};
++static char CC_608_EXT_CHARS[] = {0xAE, 0xB0, 0xBD, 0xBF, 0x00, 0xA2, 0xA3, 0xB6,
++                                  0xE0, 0x20, 0xE8, 0xE2, 0xEE, 0xF4, 0xFB};
++// Command = 0x14
++#define CC_608_COMMAND_RCL              0x20 // Resume Caption Loading
++#define CC_608_COMMAND_BS               0x21 // Backspace
++#define CC_608_COMMAND_AOF              0x22 // Alarm Off
++#define CC_608_COMMAND_AON              0x23 // Alarm On
++#define CC_608_COMMAND_DER              0x24 // Delete to End of Row
++#define CC_608_COMMAND_RU2              0x25 // CC Rollup, 2 Lines
++#define CC_608_COMMAND_RU3              0x26 // CC Rollup, 3 Lines
++#define CC_608_COMMAND_RU4              0x27 // CC Rollup, 4 Lines
++#define CC_608_COMMAND_FON              0x28 // Flash On
++#define CC_608_COMMAND_RDC              0x29 // Resume Direct Captioning
++#define CC_608_COMMAND_TR               0x2A // Text Restart
++#define CC_608_COMMAND_RTD              0x2B // Resume Text Display
++#define CC_608_COMMAND_EDM              0x2C // Erase Display Memory
++#define CC_608_COMMAND_CR               0x2D // Carriage Return
++#define CC_608_COMMAND_ENM              0x2E // Erase Non-Display Memory
++#define CC_608_COMMAND_EOC              0x2F // Swap EDM/NEDM
++
++// Command = 0x17
++#define CC_608_COMMAND_TAB1             0x21 // Taboffset 1
++#define CC_608_COMMAND_TAB2             0x22 // Taboffset 2
++#define CC_608_COMMAND_TAB3             0x23 // Taboffset 3
++
++#define CC_608_CHANNEL1                 0x14
++#define CC_608_CHANNEL1T                0x17
++#define CC_608_CHANNEL2                 0x1C
++#define CC_608_CHANNEL3                 0x15
++#define CC_608_CHANNEL4                 0x1D
++
++#define CC_608_CHANNEL1_TXT_ATTR        0x11
++
++
++
++static const char *CC_608_CHANNEL_STR[] =
++{
++  "Channel 1",
++  "Channel 2",
++  "Channel 3",
++  "Channel 4",
++};
++
++
++#define CC_608_MODE_POPUP                0x00
++#define CC_608_MODE_ROLL2                0x01
++#define CC_608_MODE_ROLL3                0x02
++#define CC_608_MODE_ROLL4                0x03
++#define CC_608_MODE_TEXT                 0x04
++
++static const char *CC_608_ROLLUP_STR[] =
++{
++    "Popup",
++    "Rollup - 2 Lines",
++    "Rollup - 3 Lines",
++    "Rollup - 4 Lines",
++    "Text",
++};
+ 
++
++#define CC_608_COLOR_WHITE               0x00
++#define CC_608_COLOR_GREEN               0x01
++#define CC_608_COLOR_BLUE                0x02
++#define CC_608_COLOR_CYAN                0x03
++#define CC_608_COLOR_RED                 0x04
++#define CC_608_COLOR_YELLOW              0x05
++#define CC_608_COLOR_MAGENTA             0x06
++#define CC_608_COLOR_USERDEF             0x07
++
++static const char *CC_608_COLOR_STR[] =
++{
++    "White",
++    "Green",
++    "Blue",
++    "Cyan",
++    "Red",
++    "Yellow",
++    "Magenta",
++    "User Defined",
++};
++
++#define CC_608_FONT_REGULAR                 0x00
++#define CC_608_FONT_ITALICS                 0x01
++#define CC_608_FONT_UNDERLINED              0x02
++#define CC_608_FONT_UNDERLINED_ITALICS      0x03
++
++static const uint8_t CC_608_PAC_ATTR[][3]= // Color, font, ident
++{
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               0},  // 0x40 || 0x60 
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            0},  // 0x41 || 0x61
++    {CC_608_COLOR_GREEN,     CC_608_FONT_REGULAR,               0},  // 0x42 || 0x62
++    {CC_608_COLOR_GREEN,     CC_608_FONT_UNDERLINED,            0},  // 0x43 || 0x63
++    {CC_608_COLOR_BLUE,      CC_608_FONT_REGULAR,               0},  // 0x44 || 0x64
++    {CC_608_COLOR_BLUE,      CC_608_FONT_UNDERLINED,            0},  // 0x45 || 0x65
++    {CC_608_COLOR_CYAN,      CC_608_FONT_REGULAR,               0},  // 0x46 || 0x66
++    {CC_608_COLOR_CYAN,      CC_608_FONT_UNDERLINED,            0},  // 0x47 || 0x67
++    {CC_608_COLOR_RED,       CC_608_FONT_REGULAR,               0},  // 0x48 || 0x68
++    {CC_608_COLOR_RED,       CC_608_FONT_UNDERLINED,            0},  // 0x49 || 0x69
++    {CC_608_COLOR_YELLOW,    CC_608_FONT_REGULAR,               0},  // 0x4a || 0x6a
++    {CC_608_COLOR_YELLOW,    CC_608_FONT_UNDERLINED,            0},  // 0x4b || 0x6b
++    {CC_608_COLOR_MAGENTA,   CC_608_FONT_REGULAR,               0},  // 0x4c || 0x6c
++    {CC_608_COLOR_MAGENTA,   CC_608_FONT_UNDERLINED,            0},  // 0x4d || 0x6d
++    {CC_608_COLOR_WHITE,     CC_608_FONT_ITALICS,               0},  // 0x4e || 0x6e
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED_ITALICS,    0},  // 0x4f || 0x6f
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               0},  // 0x50 || 0x70
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            0},  // 0x51 || 0x71
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               4},  // 0x52 || 0x72
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            4},  // 0x53 || 0x73
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               8},  // 0x54 || 0x74
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            8},  // 0x55 || 0x75
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               12}, // 0x56 || 0x76
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            12}, // 0x57 || 0x77
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               16}, // 0x58 || 0x78
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            16}, // 0x59 || 0x79
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               20}, // 0x5a || 0x7a
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            20}, // 0x5b || 0x7b
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               24}, // 0x5c || 0x7c
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            24}, // 0x5d || 0x7d
++    {CC_608_COLOR_WHITE,     CC_608_FONT_REGULAR,               28}, // 0x5e || 0x7e
++    {CC_608_COLOR_WHITE,     CC_608_FONT_UNDERLINED,            28}  // 0x5f || 0x7f
++};
++
++static const char *CC_608_FONT_STR[] =
++{
++    "Regular",
++    "Italics",
++    "Underline",
++    "Underline + Italics"
++};
++
++static const char *CC_608_COMMAND_STR[] =
++{
++    "Unknown",
++    "Erase Display Memory",
++    "Resume Caption Loading",
++    "End of Caption",
++    "Tab Offset 1",
++    "Tab Offset 2",
++    "Tab Offset 3",
++    "Rollup (2 Lines)",
++    "Rollup (3 Lines)",
++    "Rollup (4 Lines)",
++    "Carriage Return",
++    "Erase Non-Display Memory",
++    "Backspace",
++    "Resume Display Text",
++    "Alarm Off",
++    "Alarm On",
++    "--- ** Paint On",
++};
++
++
++class CDVDOverlayCodecCCBuffer
++{
++public:
++
++  CDVDOverlayCodecCCBuffer();
++  ~CDVDOverlayCodecCCBuffer();
++
++  void Reset();
++  void AddChar(uint8_t);
++  void SetMode(uint8_t);
++  void SwapDispNonDisp();
++  void EraseNonDisp();
++  void EraseDisp();
++
++  void SetNRow(uint8_t row) {nondisp_row = row;};
++  void SetNColumn(uint8_t col) {nondisp_column = col;};
++
++  void SetDRow(uint8_t row) {disp_row = row;};
++  void SetDColumn(uint8_t col) {disp_column = col;};
++
++
++  void SetRowStart(uint8_t row) {row_start = row;};
++
++  void PrintNonDisp();
++  void PrintDisp();
++  char *GetDisplayString();
++  uint8_t GetMode() { return mode;};
++  uint8_t GetRowStart() { return row_start;};
++private:
++
++  uint8_t mode; // Popon or Rollup2/3/4
++  uint8_t row_count;
++
++  uint8_t row_start;
++
++  uint8_t disp_row;
++  uint8_t disp_column;
++
++  uint8_t nondisp_column;
++  uint8_t nondisp_row;
++
++  uint8_t display_buffer[CC_MAX_ROWS][CC_MAX_LINE_CHARS];
++  uint8_t nondisplay_buffer[CC_MAX_ROWS][CC_MAX_LINE_CHARS];
++  void ShiftDispUp();
++};
++
++struct cc_dtv_pkt
++{
++  double pts;
++  double dts;
++  double fps;
++
++  uint64_t frameno;
++  uint8_t cc1;
++  uint8_t cc2;
++  struct cc_dtv_pkt * next;
++};
++typedef struct cc_dtv_pkt CC_DTV_PACKET;
++
++class CDVDOverlayText;
+ class CDVDOverlayCodecCC : public CDVDOverlayCodec
+ {
+ public:
+   CDVDOverlayCodecCC();
+-  virtual ~CDVDOverlayCodecCC();
++  ~CDVDOverlayCodecCC();
+   virtual bool Open(CDVDStreamInfo &hints, CDVDCodecOptions &options);
+   virtual void Dispose();
+   virtual int Decode(DemuxPacket *pPacket);
+   virtual void Reset();
+   virtual void Flush();
+   virtual CDVDOverlay* GetOverlay();
++//  uint64_t AddDTVPacket(double pts, double dts, uint64_t frameno, uint8_t cc1, uint8_t cc2);
++  uint64_t AddDTVPacket(CC_DTV_PACKET *pkt);
++  bool ProcessDTVPackets();
+ 
+ private:
++  char m_LastCCText[CC_LAST_BIG_SIZE];
++  double m_DecodeTimeDiff;
++  double m_CurrentDTS;
++//  uint8_t m_CCType;
++
++  CDVDOverlayCodecCCBuffer *m_pCCTextBuffer;
++
++  void Handle608Command(CC_DTV_PACKET *dtv_pkt);
++  void Handle608Pac(CC_DTV_PACKET *dtv_pkt);
++  void Handle608Text(CC_DTV_PACKET *dtv_pkt);
++  CC_DTV_PACKET m_DTVPacket_Last;
++  CC_DTV_PACKET *m_DTVPacket_List;
++
+   CDVDOverlayText* m_pCurrentOverlay;
+ };
++
+--- xbmc/cores/dvdplayer/DVDPlayerVideo.cpp.org	2013-11-25 11:41:46.000000000 -0500
++++ xbmc/cores/dvdplayer/DVDPlayerVideo.cpp	2013-11-25 12:14:28.000000000 -0500
+@@ -427,6 +427,10 @@
+     {
+       if(m_pVideoCodec)
+         m_pVideoCodec->Reset();
++
++      if (m_pOverlayCodecCC)
++        m_pOverlayCodecCC->Reset();
++
+       picture.iFlags &= ~DVP_FLAG_ALLOCATED;
+       m_packets.clear();
+       m_started = false;
+@@ -435,6 +439,10 @@
+     {
+       if(m_pVideoCodec)
+         m_pVideoCodec->Reset();
++
++      if (m_pOverlayCodecCC)
++        m_pOverlayCodecCC->Reset();
++
+       picture.iFlags &= ~DVP_FLAG_ALLOCATED;
+       m_packets.clear();
+ 
+@@ -591,6 +599,9 @@
+           }
+ 
+           m_pVideoCodec->Reset();
++          if (m_pOverlayCodecCC)
++            m_pOverlayCodecCC->Reset();
++
+           m_packets.clear();
+           picture.iFlags &= ~DVP_FLAG_ALLOCATED;
+           g_renderManager.DiscardBuffer();
+@@ -721,10 +732,12 @@
+           {
+             CLog::Log(LOGWARNING, "Decoder Error getting videoPicture.");
+             m_pVideoCodec->Reset();
++            if (m_pOverlayCodecCC)
++              m_pOverlayCodecCC->Reset();
++
+           }
+         }
+ 
+-        /*
+         if (iDecoderState & VC_USERDATA)
+         {
+           // found some userdata while decoding a frame
+@@ -732,10 +745,9 @@
+           DVDVideoUserData videoUserData;
+           if (m_pVideoCodec->GetUserData(&videoUserData))
+           {
+-            ProcessVideoUserData(&videoUserData, pts);
++            ProcessVideoUserData(&videoUserData, pPacket->pts, pPacket->dts);
+           }
+         }
+-        */
+ 
+         // if the decoder needs more data, we just break this loop
+         // and try to get more data from the videoQueue
+@@ -766,20 +778,32 @@
+   CLog::Log(LOGNOTICE, "thread end: video_thread");
+ }
+ 
+-void CDVDPlayerVideo::ProcessVideoUserData(DVDVideoUserData* pVideoUserData, double pts)
++void CDVDPlayerVideo::ProcessVideoUserData(DVDVideoUserData* pVideoUserData, double pts, double dts)
+ {
+   // check userdata type
+   uint8_t* data = pVideoUserData->data;
+   int size = pVideoUserData->size;
+ 
+-  if (size >= 2)
++  if (size < 6)
++    return;
++
++  double _pts = pts/DVD_TIME_BASE;
++  uint64_t p_frameno = round(_pts * m_fFrameRate);
++
++  if (data[0] == 0x47 && data[1] == 0x41 && data[2] == 0x39 && data[3] == 0x34)
+   {
+-    if (data[0] == 'C' && data[1] == 'C')
++    int p_index = 7;
++    uint8_t cc_count = 0;
++    uint8_t process_cc = 0;
++    uint8_t marker_bits = 0, valid = 0, type = 0, cc1 = 0, cc2 = 0;
++    DemuxPacket packet;
++
++    if (data[4] == 0x03)
+     {
+-      data += 2;
+-      size -= 2;
++      cc_count = data[5] & 0x1F;
++
++//      CLog::Log(LOGDEBUG, "CDVDPlayerVideo::ProcessVideoUserData -- cc_count: %d, process: %d\n", cc_count, process_cc);
+ 
+-      // closed captioning
+       if (!m_pOverlayCodecCC)
+       {
+         m_pOverlayCodecCC = new CDVDOverlayCodecCC();
+@@ -792,28 +816,71 @@
+         }
+       }
+ 
+-      if (m_pOverlayCodecCC)
+-      {
+-        DemuxPacket packet;
+-        packet.pData = data;
+-        packet.iSize = size;
+-        packet.pts = DVD_NOPTS_VALUE;
+-        packet.dts = DVD_NOPTS_VALUE;
+-        m_pOverlayCodecCC->Decode(&packet);
++      if (!m_pOverlayCodecCC)
++        cc_count = 0;
+ 
+-        CDVDOverlay* overlay;
+-        while((overlay = m_pOverlayCodecCC->GetOverlay()) != NULL)
+-        {
+-          overlay->iPTSStartTime += pts;
+-          if(overlay->iPTSStopTime != 0.0)
+-            overlay->iPTSStopTime += pts;
++      for(int i=0; i < cc_count; i++)
++      {
++         marker_bits = (data[p_index] & 0xF8) >> 3;
++         valid = (data[p_index] & 0x4) >> 2;
++         type = (data[p_index] & 0x3);
++         cc1 = 0;
++         cc2 = 0;
++
++         if (valid)
++         {
++           memset(&packet, 0, sizeof(DemuxPacket));
++           switch(type)
++           {
++             case 0: // 608 CC Data (NTSC Field 1)
++               if (data[p_index+1] != 0x80)
++               {
++                 cc1 = data[p_index+1];
++                 cc2 = data[p_index+2];
++                 packet.iSize = 2;
++			     packet.pts = pts;
++			     packet.dts = dts;
++			     packet.duration = p_frameno * 1.0;
++//                 CLog::Log(LOGDEBUG, "[%d] Type: 0x%x, CC1: 0x%x, CC2: 0x%x (p: %" PRId64", d: %0.2f)\n",  i, type, cc1, cc2, p_frameno, packet.duration);
++//                 CLog::Log(LOGDEBUG, "[%d] Type: 0x%x, CC1: 0x%x, CC2: 0x%x (p: %" PRId64")\n",  i, type, cc1, cc2, p_frameno);
++               }
++             break;
++
++             case 1: // 608 CC Data (NTSC Field 2)
++             break;
++
++             case 2: // DTV Data Packet
++             break;
++
++             case 3: // DTV Start Packet
++             break;
++           }
++
++           if (packet.iSize)
++           {
++             uint8_t _cc[2];
++             packet.pData = (uint8_t*)&_cc;
++             _cc[0] = cc1;
++             _cc[1] = cc2;
++             m_pOverlayCodecCC->Decode(&packet);
++           }
++         }
++         p_index += 3;
++      }
+ 
+-          m_pOverlayContainer->Add(overlay);
+-          overlay->Release();
+-        }
++      CDVDOverlay* overlay;
++      while((overlay = m_pOverlayCodecCC->GetOverlay()) != NULL)
++      {
++        overlay->iPTSStartTime += pts;
++        if(overlay->iPTSStopTime != 0.0)
++           overlay->iPTSStopTime += pts;
++        m_pOverlayContainer->Add(overlay);
++        overlay->Release();
+       }
+     }
+   }
++  if (data)
++   free(data);
+ }
+ 
+ bool CDVDPlayerVideo::InitializedOutputDevice()
+--- xbmc/cores/dvdplayer/DVDPlayerVideo.h.org	2013-11-25 11:41:56.000000000 -0500
++++ xbmc/cores/dvdplayer/DVDPlayerVideo.h	2013-11-25 11:44:05.000000000 -0500
+@@ -113,7 +113,7 @@
+ #ifdef HAS_VIDEO_PLAYBACK
+   void ProcessOverlays(DVDVideoPicture* pSource, double pts);
+ #endif
+-  void ProcessVideoUserData(DVDVideoUserData* pVideoUserData, double pts);
++  void ProcessVideoUserData(DVDVideoUserData* pVideoUserData, double pts, double dts);
+ 
+   CDVDMessageQueue m_messageQueue;
+   CDVDMessageQueue& m_messageParent;

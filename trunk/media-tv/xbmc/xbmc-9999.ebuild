@@ -155,6 +155,7 @@ src_prepare() {
 #	epatch "${FILESDIR}"/${PN}-9999-nomythtv.patch
 	epatch "${FILESDIR}"/${PN}-9999-no-arm-flags.patch #400617
 	epatch "${FILESDIR}"/xbmc_pvr_seek_by_pts_13.patch
+	epatch "${FILESDIR}"/xbmc_13_cc.patch
 	# The mythtv patch touches configure.ac, so force a regen
 	rm -f configure
 

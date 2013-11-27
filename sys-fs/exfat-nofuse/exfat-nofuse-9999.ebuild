@@ -22,6 +22,6 @@ BUILD_TARGETS="all"
 MODULE_NAMES="exfat(misc:${S})"
 
 src_compile(){
-	BUILD_PARAMS="KDIR=${KV_OUT_DIR} M=${S}"
+	BUILD_PARAMS="-f Makefile.module KDIR=${KV_OUT_DIR} M=${S}"
 	linux-mod_src_compile
 }

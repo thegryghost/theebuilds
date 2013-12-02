@@ -1,6 +1,6 @@
 # Copyright 1999-2013 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
-# $Header: /var/cvsroot/gentoo-x86/gnome-base/gvfs/gvfs-1.16.1.ebuild,v 1.4 2013/05/11 22:03:26 ssuominen Exp $
+# $Header: /var/cvsroot/gentoo-x86/gnome-base/gvfs/gvfs-1.16.4.ebuild,v 1.2 2013/11/30 19:12:26 pacho Exp $
 
 EAPI="5"
 GCONF_DEBUG="no"
@@ -8,16 +8,15 @@ GNOME2_LA_PUNT="yes"
 
 inherit autotools bash-completion-r1 eutils gnome2
 
-DESCRIPTION="GNOME Virtual Filesystem Layer"
-HOMEPAGE="http://www.gnome.org"
+DESCRIPTION="Virtual filesystem implementation for gio"
+HOMEPAGE="https://git.gnome.org/browse/gvfs"
 
 LICENSE="LGPL-2+"
 SLOT="0"
 
-KEYWORDS="~alpha ~amd64 ~arm ~ia64 ~mips ~ppc ~ppc64 ~sh ~sparc ~x86 ~amd64-fbsd ~x86-fbsd ~x86-interix ~amd64-linux ~arm-linux ~x86-linux ~sparc-solaris ~x86-solaris"
+KEYWORDS="~alpha amd64 ~arm ~ia64 ~mips ~ppc ~ppc64 ~sh ~sparc ~x86 ~amd64-fbsd ~x86-fbsd ~x86-interix ~amd64-linux ~arm-linux ~x86-linux ~sparc-solaris ~x86-solaris"
 
-IUSE="afp archive avahi bluetooth bluray cdda doc fuse gdu gnome-keyring gnome-online-accounts gphoto2 gtk +http mtp ios samba systemd +udev udisks"
-REQUIRED_USE="systemd? ( udisks )"
+IUSE="afp archive avahi bluetooth bluray cdda fuse gdu gnome-keyring gnome-online-accounts gphoto2 gtk +http mtp ios samba systemd test +udev udisks"
 
 # Can use libgphoto-2.5.0 as well. Automagic detection.
 RDEPEND="
@@ -42,12 +41,12 @@ RDEPEND="
 	gnome-keyring? ( app-crypt/libsecret )
 	gphoto2? ( >=media-libs/libgphoto2-2.4.7:= )
 	gtk? ( >=x11-libs/gtk+-3.0:3 )
-	http? ( || ( >=net-libs/libsoup-2.42:2.4 >=net-libs/libsoup-gnome-2.34.0 ) )
+	http? ( >=net-libs/libsoup-gnome-2.34.0:2.4 )
 	ios? (
-		>=app-pda/libimobiledevice-1.1.0:=
+		>=app-pda/libimobiledevice-1.1.5:=
 		>=app-pda/libplist-1:= )
 	mtp? ( >=media-libs/libmtp-1.1.5 )
-	samba? ( >=net-fs/samba-3.4.6[smbclient] )
+	samba? ( || ( >=net-fs/samba-3.4.6[smbclient] >=net-fs/samba-4.0.0[client] ) )
 	systemd? ( sys-apps/systemd )
 	udev? (
 		cdda? ( || ( dev-libs/libcdio-paranoia <dev-libs/libcdio-0.90[-minimal] ) )
@@ -61,15 +60,31 @@ DEPEND="${RDEPEND}
 	virtual/pkgconfig
 	dev-util/gdbus-codegen
 	dev-util/gtk-doc-am
-	doc? ( >=dev-util/gtk-doc-1 )
+	test? (
+		>=dev-python/twisted-core-12.3.0
+		net-analyzer/netcat )
 	!udev? ( >=dev-libs/libgcrypt-1.2.2 )
 "
 # libgcrypt.m4, provided by libgcrypt, needed for eautoreconf, bug #399043
+# test dependencies needed per https://bugzilla.gnome.org/700162
 
-REQUIRED_USE="cdda? ( udev )"
+# Tests with multiple failures, this is being handled upstream at:
+# https://bugzilla.gnome.org/700162
+RESTRICT="test"
+
+REQUIRED_USE="
+	cdda? ( udev )
+	udisks? ( udev )
+	systemd? ( udisks )
+"
 
 src_prepare() {
 	DOCS="AUTHORS ChangeLog NEWS MAINTAINERS README TODO" # ChangeLog.pre-1.2 README.commits
+
+	epatch ${FILESDIR}/mtp_1.patch
+	epatch ${FILESDIR}/mtp_2.patch
+	epatch ${FILESDIR}/mtp_3.patch
+	epatch ${FILESDIR}/mtp_4.patch
 
 	if ! use udev; then
 		sed -e 's/gvfsd-burn/ /' \
@@ -79,10 +94,7 @@ src_prepare() {
 
 		eautoreconf
 	fi
-	epatch ${FILESDIR}/mtp_1.patch
-	epatch ${FILESDIR}/mtp_2.patch
-	epatch ${FILESDIR}/mtp_3.patch
-	epatch ${FILESDIR}/mtp_4.patch
+
 	gnome2_src_prepare
 }
 

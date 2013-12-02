@@ -28,7 +28,7 @@ index 9b58f2b..b047e0b 100644
  }
  
  
-+#if HAVE_LIBMTP_1_1_6
++#if 1
 +uint16_t zero_get_func (void* params,
 +                        void* priv,
 +                        uint32_t wantlen,
@@ -373,7 +373,7 @@ index 9b58f2b..b047e0b 100644
    backend_class->seek_on_read = do_seek_on_read;
    backend_class->read = do_read;
    backend_class->close_read = do_close_read;
-+#if HAVE_LIBMTP_1_1_6
++#if 1
 +  backend_class->create = do_create;
 +  backend_class->append_to = do_append_to;
 +  backend_class->replace = do_replace;

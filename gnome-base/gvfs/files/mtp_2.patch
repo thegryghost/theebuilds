@@ -51,7 +51,7 @@ index 71fb732..9b58f2b 100644
  }
  
  
-+#if HAVE_LIBMTP_1_1_6
++#if 1
 +static void
 +do_open_for_read (GVfsBackend *backend,
 +                  GVfsJobOpenForRead *job,
@@ -144,7 +144,7 @@ index 71fb732..9b58f2b 100644
    backend_class->set_display_name = do_set_display_name;
    backend_class->create_dir_monitor = do_create_dir_monitor;
    backend_class->create_file_monitor = do_create_file_monitor;
-+#if HAVE_LIBMTP_1_1_6
++#if 1
 +  backend_class->open_for_read = do_open_for_read;
 +#endif
  #if HAVE_LIBMTP_1_1_5

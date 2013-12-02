@@ -242,7 +242,7 @@ index b047e0b..212aff6 100644
        } else {
          return NULL;
        }
-+#if HAVE_LIBMTP_1_1_6
++#if 1
 +    case LIBMTP_EVENT_OBJECT_REMOVED:
 +      backend = g_weak_ref_get (event_ref);
 +      if (backend && !g_atomic_int_get (&backend->unmount_started)) {

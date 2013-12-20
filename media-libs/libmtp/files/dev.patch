@@ -9,3 +9,17 @@
    // Reported by anonymous Sourceforge user
    { "Google Inc (for Asus)", 0x18d1, "TF201 Transformer", 0x4d00,
        DEVICE_FLAGS_ANDROID_BUGS },
+@@ -2189,6 +2189,13 @@
+       DEVICE_FLAGS_ANDROID_BUGS },
+ 
+   /*
++   * Kyocera
++   */
++  { "Kyocera", 0x0482, "Rise", 0x0571,
++      DEVICE_FLAGS_ANDROID_BUGS },
++  { "Kyocera", 0x0482, "Hydro", 0x0573,
++      DEVICE_FLAGS_ANDROID_BUGS },
++  /*
+    * Hisense
+    */
+   // Reported by Anonymous SourceForge user

@@ -1,0 +1,22 @@
+commit eced31eeef657d8c45dd375719211a32a99e7ec5
+Author: wsnipex <wsnipex@a1.net>
+Date:   Sun Oct 27 10:48:13 2013 +0100
+
+    [configure] fix llvm-config-3.[34] detection
+
+Index: mesa/configure.ac
+===================================================================
+--- mesa.orig/configure.ac	2013-11-09 14:47:48.478050149 +0100
++++ mesa/configure.ac	2013-11-09 14:51:42.308425369 +0100
+@@ -1539,9 +1539,9 @@
+ fi
+ if test "x$enable_gallium_llvm" = xyes; then
+     if test "x$llvm_prefix" != x; then
+-        AC_PATH_PROG([LLVM_CONFIG], [llvm-config], [no], ["$llvm_prefix/bin"])
++        AC_PATH_PROGS([LLVM_CONFIG], [llvm-config llvm-config-3.4 llvm-config-3.3], [no], ["$llvm_prefix/bin"])
+     else
+-        AC_PATH_PROG([LLVM_CONFIG], [llvm-config], [no])
++        AC_PATH_PROGS([LLVM_CONFIG], [llvm-config llvm-config-3.4 llvm-config-3.3], [no])
+     fi
+ 
+     if test "x$LLVM_CONFIG" != xno; then

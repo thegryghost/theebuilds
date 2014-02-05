@@ -150,6 +150,7 @@ src_prepare() {
 	epatch "${FILESDIR}"/${PN}-9999-nomythtv.patch
 	epatch "${FILESDIR}"/${PN}-9999-no-arm-flags.patch #400617
 	epatch "${FILESDIR}"/xbmc_pvr_seek_by_pts.patch
+	epatch "${FILESDIR}"/xbmc_12.2_cc.patch
 	# Backported fixes
 	EPATCH_MULTI_MSG="Applying patches backported from master..." \
 		EPATCH_SUFFIX="patch" \

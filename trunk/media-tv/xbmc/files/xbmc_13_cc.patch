@@ -204,11 +204,11 @@
 +  {
 +    int i;
 +    uint8_t rows = row_start - row_count;
-+    CLog::Log(LOGDEBUG, "ShiftDispUp, row start: %d, row count: %d (%d)\n", row_start, row_count, rows);
++    //CLog::Log(LOGDEBUG, "ShiftDispUp, row start: %d, row count: %d (%d)\n", row_start, row_count, rows);
 +
 +    for(i = rows + 2; i <= row_start; i++)
 +    {
-+      CLog::Log(LOGDEBUG, "Shifting %d to %d\n", i, i-1);
++      //CLog::Log(LOGDEBUG, "Shifting %d to %d\n", i, i-1);
 +      memcpy(&display_buffer[i-1], &display_buffer[i], CC_MAX_LINE_CHARS);
 +    }
 +    memset(&display_buffer[row_start], 0, CC_MAX_LINE_CHARS);
@@ -824,7 +824,7 @@
 +          else if (cc2>=0x30 && cc2<=0x3f)
 +          {
 +            uint8_t c = CC_608_EXT_CHARS[cc2 - 0x30];
-+            CLog::Log(LOGDEBUG, "** Special Char: [cc2: 0x%02X] [0x%x -- %c]\n", cc2, c, (char)c);
++            //CLog::Log(LOGDEBUG, "** Special Char: [cc2: 0x%02X] [0x%x -- %c]\n", cc2, c, (char)c);
 +            m_pCCTextBuffer->AddChar(c);
 +
 +/*
@@ -911,15 +911,15 @@
 +        case 0x13: //
 +          if (cc2>=0x20 && cc2<=0x3f)
 +          {
-+            CLog::Log(LOGDEBUG, "** HANDLE EXTENDED (to screen): 0x%02X 0x%02X\n", cc1, cc2);
++            //CLog::Log(LOGDEBUG, "** HANDLE EXTENDED (to screen): 0x%02X 0x%02X\n", cc1, cc2);
 +          }
 +          else if (cc2 >= 0x40 && cc2 <= 0x7f)
 +          {
 +            Handle608Pac(tmp);
 +//          CLog::Log(LOGDEBUG, "** PAC: 0x%02X\n", cc1);
 +          }
-+          else
-+            CLog::Log(LOGDEBUG, "** UNHANDLED (0x%x): 0x%02x 0x%02X\n", cc1, cc1, cc2);
++          //else
++          //  CLog::Log(LOGDEBUG, "** UNHANDLED (0x%x): 0x%02x 0x%02X\n", cc1, cc1, cc2);
 +        break;
 +
 +        case CC_608_CHANNEL1: // Command

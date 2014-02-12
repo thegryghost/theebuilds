@@ -14,6 +14,7 @@ inherit eutils python-single-r1 multiprocessing autotools
 case ${PV} in
 9999)
 	EGIT_REPO_URI="git://github.com/xbmc/xbmc.git"
+	#EGIT_COMMIT="ad815563a3837bbd9ea73c3645af55ec56cacb9a"
 	inherit git-2
 	SRC_URI="!java? ( mirror://gentoo/${P}-20130413-generated-addons.tar.xz )"
 	;;
@@ -153,9 +154,9 @@ src_unpack() {
 
 src_prepare() {
 #	epatch "${FILESDIR}"/${PN}-9999-nomythtv.patch
-	epatch "${FILESDIR}"/${PN}-9999-no-arm-flags.patch #400617
-	epatch "${FILESDIR}"/xbmc_pvr_seek_by_pts_13.patch
-	epatch "${FILESDIR}"/xbmc_13_cc.patch
+	#epatch "${FILESDIR}"/${PN}-9999-no-arm-flags.patch #400617
+	#epatch "${FILESDIR}"/xbmc_pvr_seek_by_pts_13.patch
+	#epatch "${FILESDIR}"/xbmc_13_cc.patch
 	# The mythtv patch touches configure.ac, so force a regen
 	rm -f configure
 

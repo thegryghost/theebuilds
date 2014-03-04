@@ -9,7 +9,8 @@ inherit linux-info linux-mod git-2
 DESCRIPTION="A kernel module that enables you to call ACPI methods"
 HOMEPAGE="https://github.com/rxrz/exfat-nofuse.git"
 
-EGIT_REPO_URI="git://github.com/rxrz/exfat-nofuse.git"
+#EGIT_REPO_URI="git://github.com/rxrz/exfat-nofuse.git"
+EGIT_REPO_URI="git://github.com/dorimanx/exfat-nofuse"
 
 LICENSE="GPL-2"
 SLOT="0"
@@ -17,11 +18,11 @@ KEYWORDS=""
 IUSE=""
 
 CONFIG_CHECK="!USER_NS"
-BUILD_TARGETS="all"
+#BUILD_TARGETS="all"
 #MODULE_NAMES="exfat_fs(misc:${S}) exfat_core(misc:${S})"
 MODULE_NAMES="exfat(misc:${S})"
 
 src_compile(){
-	BUILD_PARAMS="-f Makefile.module KDIR=${KV_OUT_DIR} M=${S}"
+	#BUILD_PARAMS="-f Makefile.module KDIR=${KV_OUT_DIR} M=${S}"
 	linux-mod_src_compile
 }

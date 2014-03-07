@@ -1,0 +1,106 @@
+--- ./xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h.org	2014-02-06 05:06:31.509097293 +0000
++++ ./xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h	2014-02-06 06:15:32.675234227 +0000
+@@ -45,6 +45,7 @@
+   virtual int  GetDataSize(void);
+   virtual double GetTimeSize(void);
+   virtual const char* GetName(void) { return (const char*)m_pFormatName; }
++  virtual bool GetUserData(DVDVideoUserData* pDvdVideoUserData);
+ 
+ protected:
+   void            FrameQueuePop(void);
+@@ -68,4 +69,7 @@
+ 
+   CBitstreamParser *m_bitparser;
+   CBitstreamConverter *m_bitstream;
++
++  uint8_t *m_userdata;
++  int m_userdata_sz;
+ };
+--- ./xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp.org	2014-02-06 05:06:25.594097098 +0000
++++ ./xbmc/cores/dvdplayer/DVDCodecs/Video/DVDVideoCodecAmlogic.cpp	2014-02-06 05:24:40.799133312 +0000
+@@ -50,6 +50,8 @@
+   m_bitstream(NULL)
+ {
+   pthread_mutex_init(&m_queue_mutex, NULL);
++  m_userdata_sz = 0;
++  m_userdata = NULL;
+ }
+ 
+ CDVDVideoCodecAmlogic::~CDVDVideoCodecAmlogic()
+@@ -212,6 +214,8 @@
+ {
+   // Handle Input, add demuxer packet to input queue, we must accept it or
+   // it will be discarded as DVDPlayerVideo has no concept of "try again".
++  int ret = 0;
++  int iGotUserdata = 0;
+   if (pData)
+   {
+     if (m_bitstream)
+@@ -239,7 +243,48 @@
+   if (m_hints.ptsinvalid)
+     pts = DVD_NOPTS_VALUE;
+ 
+-  return m_Codec->Decode(pData, iSize, dts, pts);
++  if (m_hints.codec == CODEC_ID_MPEG2VIDEO || m_hints.codec == CODEC_ID_MPEG2VIDEO_XVMC)
++  {
++    int start=0, end=0;
++    int z;
++    for(z = 0; z < iSize-12; z++)
++    {
++      if(pData[z] == 0x00 && pData[z+1] == 0x00 && pData[z+2] == 0x01)
++      {
++        if(!start && pData[z+3] == 0xB2 && pData[z+4] == 0x47 && pData[z+5] == 0x41 && pData[z+6] == 0x39 && pData[z+7] == 0x34)
++        {
++          start = z+4;
++        }
++        else if (start)
++        {
++          end = z-1;
++          break;
++        }
++      }
++    }
++
++    if (start && end)
++    {
++      if (m_userdata)
++      {
++        CLog::Log(LOGDEBUG, "m_userdata already used?!?!\n");
++        free(m_userdata);
++        m_userdata = NULL;
++        m_userdata_sz = 0;
++      }
++
++      iGotUserdata = 1;
++      m_userdata_sz = end - start;
++      m_userdata = (uint8_t*)calloc(1, m_userdata_sz);
++      memcpy(m_userdata, pData + start, m_userdata_sz);
++    }
++  }
++
++  ret = m_Codec->Decode(pData, iSize, dts, pts);
++  if (iGotUserdata)
++    ret |= VC_USERDATA;
++
++  return ret;
+ }
+ 
+ void CDVDVideoCodecAmlogic::Reset(void)
+@@ -516,3 +561,17 @@
+     FrameQueuePop();
+   }
+ }
++
++
++bool CDVDVideoCodecAmlogic::GetUserData(DVDVideoUserData* pDvdVideoUserData)
++{
++  if (pDvdVideoUserData && m_userdata && m_userdata_sz)
++  {
++    pDvdVideoUserData->data = m_userdata;
++    pDvdVideoUserData->size = m_userdata_sz;
++    m_userdata = NULL;
++    m_userdata_sz = 0;
++    return true;
++  }
++  return false;
++}

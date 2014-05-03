@@ -1,8 +1,8 @@
 # Copyright 1999-2013 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
-# $Header: /var/cvsroot/gentoo-x86/media-tv/xbmc/xbmc-12.2-r1.ebuild,v 1.5 2013/07/06 12:12:03 scarabeus Exp $
+# $Header: /var/cvsroot/gentoo-x86/media-tv/xbmc/xbmc-12.3.ebuild,v 1.2 2013/12/31 19:18:32 vapier Exp $
 
-EAPI=5
+EAPI="5"
 
 # Does not work with py3 here
 # It might work with py:2.5 but I didn't test that
@@ -17,20 +17,17 @@ case ${PV} in
 9999)
 	EGIT_REPO_URI="git://github.com/xbmc/xbmc.git"
 	inherit git-2
-	SRC_URI="!java? ( mirror://gentoo/${P}-20121224-generated-addons.tar.xz )"
 	;;
 *_alpha*|*_beta*|*_rc*)
-	MY_PV="Frodo_${PV#*_}"
+	MY_PV="Gotham_${PV#*_}"
 	MY_P="${PN}-${MY_PV}"
-	SRC_URI="https://github.com/xbmc/xbmc/archive/${MY_PV}.tar.gz -> ${P}.tar.gz
-		!java? ( mirror://gentoo/${P}-generated-addons.tar.xz )"
-	KEYWORDS="amd64 x86"
+	SRC_URI="https://github.com/xbmc/xbmc/archive/${MY_PV}.tar.gz -> ${P}.tar.gz"
+	KEYWORDS="~amd64 ~x86"
 	;;
 *)
 	MY_P=${P/_/-*_}
-	SRC_URI="http://mirrors.xbmc.org/releases/source/${MY_P}.tar.gz
-		mirror://gentoo/${PN}_backports-12-${BACKPORTS_VERSION}.tar.bz2"
-	KEYWORDS="amd64 x86"
+	SRC_URI="http://mirrors.xbmc.org/releases/source/${MY_P}.tar.gz"
+	KEYWORDS="~amd64 ~x86"
 	;;
 esac
 
@@ -39,7 +36,7 @@ HOMEPAGE="http://xbmc.org/"
 
 LICENSE="GPL-2"
 SLOT="0"
-IUSE="airplay alsa altivec avahi bluetooth bluray caps cec css debug gles goom java joystick midi mysql neon nfs +opengl profile +projectm pulseaudio +pvr +rsxs rtmp +samba +sdl sse sse2 sftp udev upnp +usb vaapi vdpau webserver +X +xrandr external-ffmpeg"
+IUSE="airplay alsa altivec avahi bluetooth bluray caps cec css debug gles goom java joystick midi mysql neon nfs +opengl profile +projectm pulseaudio pvr +rsxs rtmp +samba +sdl sse sse2 sftp udev upnp +usb vaapi vdpau webserver +X +xrandr -external-ffmpeg"
 REQUIRED_USE="
 	pvr? ( mysql )
 	rsxs? ( X )
@@ -92,13 +89,13 @@ COMMON_DEPEND="${PYTHON_DEPS}
 	media-libs/tiff
 	pulseaudio? ( media-sound/pulseaudio )
 	media-sound/wavpack
-	|| ( media-libs/libpostproc media-video/ffmpeg )
+	|| ( media-libs/libpostproc media-video/ffmpeg:0 )
 	>=virtual/ffmpeg-0.6[encode]
 	rtmp? ( media-video/rtmpdump )
 	avahi? ( net-dns/avahi )
 	nfs? ( net-fs/libnfs )
 	webserver? ( net-libs/libmicrohttpd[messages] )
-	sftp? ( net-libs/libssh )
+	sftp? ( net-libs/libssh[sftp] )
 	net-misc/curl
 	samba? ( >=net-fs/samba-3.4.6[smbclient] )
 	bluetooth? ( net-wireless/bluez )
@@ -147,14 +144,12 @@ src_unpack() {
 }
 
 src_prepare() {
-	epatch "${FILESDIR}"/${PN}-9999-nomythtv.patch
-	epatch "${FILESDIR}"/${PN}-9999-no-arm-flags.patch #400617
-	epatch "${FILESDIR}"/xbmc_pvr_seek_by_pts.patch
-	epatch "${FILESDIR}"/xbmc_12.2_cc.patch
-	# Backported fixes
-	EPATCH_MULTI_MSG="Applying patches backported from master..." \
-		EPATCH_SUFFIX="patch" \
-		epatch "${WORKDIR}/${PN}_backports"
+	#epatch "${FILESDIR}"/${PN}-12.1-nomythtv.patch
+	#epatch "${FILESDIR}"/${PN}-9999-no-arm-flags.patch #400617
+	#epatch "${FILESDIR}"/${PN}-12.3-no-sse2.patch #475266
+	#epatch "${FILESDIR}"/xbmc_pvr_seek_by_pts_12.3.patch
+	#epatch "${FILESDIR}"/xbmc_12.2_cc.patch
+
 	# The mythtv patch touches configure.ac, so force a regen
 	rm -f configure
 
@@ -196,7 +191,7 @@ src_prepare() {
 	epatch_user #293109
 
 	# Tweak autotool timestamps to avoid regeneration
-	find . -type f -print0 | xargs -0 touch -r configure
+	find . -type f -exec touch -r configure {} +
 }
 
 src_configure() {

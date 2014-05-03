@@ -16,7 +16,7 @@ case ${PV} in
 	EGIT_REPO_URI="git://github.com/xbmc/xbmc.git"
 	#EGIT_COMMIT="ad815563a3837bbd9ea73c3645af55ec56cacb9a"
 	inherit git-2
-	SRC_URI="!java? ( mirror://gentoo/${P}-20130413-generated-addons.tar.xz )"
+	#SRC_URI="!java? ( mirror://gentoo/${P}-20130413-generated-addons.tar.xz )"
 	;;
 *_alpha*|*_beta*|*_rc*)
 	MY_PV="Frodo_${PV#*_}"

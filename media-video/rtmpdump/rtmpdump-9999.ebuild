@@ -46,9 +46,11 @@ pkg_setup() {
 src_unpack() {
 	if [[ ${PV} == *9999* ]]; then
 		git-2_src_unpack
+		cd "${WORKDIR}/rtmpdump-9999"
 	else
 		unpack ${A}
 	fi
+	epatch ${FILESDIR}/ksv-patch.diff
 }
 
 src_prepare() {

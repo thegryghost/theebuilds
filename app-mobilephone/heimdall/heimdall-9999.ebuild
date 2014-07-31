@@ -21,7 +21,7 @@ KEYWORDS="~x86 ~amd64"
 IUSE="qt4"
 
 RDEPEND="qt4? ( dev-qt/qtcore dev-qt/qtgui )
-		 >dev-libs/libusbx-1.0"
+		 >dev-libs/libusb-1.0"
 
 DEPEND="$RDEPEND
 		dev-util/pkgconfig"

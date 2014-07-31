@@ -50,7 +50,7 @@ src_unpack() {
 	else
 		unpack ${A}
 	fi
-	epatch ${FILESDIR}/ksv-patch.diff
+	#epatch ${FILESDIR}/ksv-patch.diff
 }
 
 src_prepare() {

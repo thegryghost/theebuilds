@@ -19,12 +19,12 @@ case ${PV} in
 	#SRC_URI="!java? ( mirror://gentoo/${P}-20130413-generated-addons.tar.xz )"
 	;;
 *_alpha*|*_beta*|*_rc*)
-	RESTRICT="nomirror"
-	RELNAME="Gotham"
-	MY_PV="${PV/_beta/b}-${RELNAME}"
+	MY_PV="${CODENAME}_${PV#*_}"
 	MY_P="${PN}-${MY_PV}"
-	SRC_URI="https://codeload.github.com/xbmc/xbmc/zip/${MY_PV} -> ${P}.zip"
+	SRC_URI="https://github.com/xbmc/xbmc/archive/${MY_PV}.tar.gz -> ${P}.tar.gz
+		!java? ( mirror://gentoo/${P}-generated-addons.tar.xz )"
 	KEYWORDS="~amd64 ~x86"
+	S=${WORKDIR}/${MY_P}
 	;;
 *|*_p*)
 	MY_PV=${PV/_p/_r}
@@ -149,8 +149,6 @@ DEPEND="${COMMON_DEPEND}
 # Force java for latest git version to avoid having to hand maintain the
 # generated addons package.  #488118
 [[ ${PV} == "9999" ]] && DEPEND+=" virtual/jre"
-
-S="${WORKDIR}/${MY_P}"
 
 pkg_setup() {
 	python-single-r1_pkg_setup

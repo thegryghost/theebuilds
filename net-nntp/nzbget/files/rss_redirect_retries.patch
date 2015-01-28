@@ -1,0 +1,10 @@
+--- daemon/connect/WebDownloader.cpp.org	2015-01-27 20:48:19.938699477 -0800
++++ daemon/connect/WebDownloader.cpp	2015-01-27 20:48:59.824497314 -0800
+@@ -156,6 +156,7 @@
+ 				Status = adFailed;
+ 				break;
+ 			}
++			continue;
+ 		}
+ 
+ 		if (Status != adConnectError)

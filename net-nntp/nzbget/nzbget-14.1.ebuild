@@ -51,6 +51,7 @@ src_prepare() {
 
 	sed -i "/^dist_doc_DATA/d" Makefile.am || die
 	epatch "${FILESDIR}"/url_space_encode.patch
+	epatch "${FILESDIR}"/rss_redirect_retries.patch
 
 	eautoreconf
 }

@@ -1,0 +1,31 @@
+--- daemon/connect/WebDownloader.cpp.org	2014-10-11 00:24:08.005389260 -0700
++++ daemon/connect/WebDownloader.cpp	2014-10-11 00:26:56.495833883 -0700
+@@ -289,8 +289,27 @@
+ {
+ 	char tmp[1024];
+ 
++	char tmp2[1024] = {0};
++	char *tmp3 = (char*)pUrl->GetResource();
++    int i, k = 0;
++
++    for(i=0; i < strlen(tmp3); i++)
++    {
++        if (tmp3[i] == ' ')
++        {
++            tmp2[k++] = '%';
++            tmp2[k++] = '2';
++            tmp2[k++] = '0';
++        }
++        else
++        {
++            tmp2[k++] = tmp3[i];
++        }
++    }
++
+ 	// retrieve file
+-	snprintf(tmp, 1024, "GET %s HTTP/1.0\r\n", pUrl->GetResource());
++	//snprintf(tmp, 1024, "GET %s HTTP/1.0\r\n", pUrl->GetResource());
++	snprintf(tmp, 1024, "GET %s HTTP/1.0\r\n", tmp2);
+ 	tmp[1024-1] = '\0';
+ 	m_pConnection->WriteLine(tmp);
+ 

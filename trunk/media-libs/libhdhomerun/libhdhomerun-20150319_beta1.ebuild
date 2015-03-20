@@ -20,7 +20,12 @@ SLOT="0"
 KEYWORDS="~amd64"
 IUSE="+gui"
 
-DEPEND=""
+DEPEND="gui? (
+			x11-libs/gtk+:2
+			media-libs/fontconfig
+			media-libs/freetype
+			x11-libs/gdk-pixbuf
+			)"
 RDEPEND="${DEPEND}"
 
 S="${WORKDIR}/${PN}"

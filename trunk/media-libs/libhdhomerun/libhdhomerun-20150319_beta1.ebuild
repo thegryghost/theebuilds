@@ -4,31 +4,58 @@
 
 EAPI=5
 
-inherit eutils
+inherit eutils versionator
 
 DESCRIPTION="SiliconDust HDHomeRun Utilties"
 HOMEPAGE="http://www.silicondust.com/support/hdhomerun/downloads/linux/"
-SRC_URI="http://download.silicondust.com/hdhomerun/${PN}_${PV}.tgz"
+
+GUI_PN="hdhomerun_config_gui"
+
+MY_PV="$(delete_version_separator _)"
+SRC_URI="http://download.silicondust.com/hdhomerun/${PN}_${MY_PV}.tgz
+         http://download.silicondust.com/hdhomerun/${GUI_PN}_${MY_PV}.tgz"
 
 LICENSE="LGPL-3+"
 SLOT="0"
 KEYWORDS="~amd64"
-IUSE=""
+IUSE="+gui"
 
 DEPEND=""
 RDEPEND="${DEPEND}"
 
 S="${WORKDIR}/${PN}"
+S_GUI="${WORKDIR}/$GUI_PN"
 
 src_prepare() {
 	epatch "${FILESDIR}/dont-strip.patch"
+	if use gui; then
+		unpack ${GUI_PN}_${MY_PV}.tgz
+	fi
 }
 
 src_configure() {
-	:
+	if use gui; then
+		cd $S_GUI
+		econf
+	else
+		:
+	fi
+
+}
+
+src_compile() {
+	emake
+	if use gui; then
+		cd "$S_GUI/src"
+		emake
+	fi
 }
 
 src_install() {
+	if use gui; then
+		dobin "$S_GUI/src/$GUI_PN"
+	fi
+
 	dobin hdhomerun_config
 	dolib libhdhomerun.so
 

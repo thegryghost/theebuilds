@@ -33,6 +33,7 @@ S_GUI="${WORKDIR}/$GUI_PN"
 
 src_prepare() {
 	epatch "${FILESDIR}/dont-strip.patch"
+	epatch "${FILESDIR}/lineup_auth.patch"
 	if use gui; then
 		unpack ${GUI_PN}_${MY_PV}.tgz
 	fi

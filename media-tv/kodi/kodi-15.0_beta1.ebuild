@@ -10,25 +10,26 @@ PYTHON_COMPAT=( python{2_6,2_7} )
 PYTHON_REQ_USE="sqlite"
 
 inherit eutils python-single-r1 multiprocessing autotools
-
-CODENAME="Helix"
+CODENAME="Isengard"
 case ${PV} in
 9999)
 	EGIT_REPO_URI="git://github.com/xbmc/xbmc.git"
 	inherit git-2
 	;;
 *_alpha*|*_beta*|*_rc*)
-	MY_PV="${CODENAME}_${PV#*_}"
-	MY_P="${PN}-${MY_PV}"
-	SRC_URI="https://github.com/xbmc/xbmc/archive/${MY_PV}.tar.gz -> ${P}.tar.gz"
+	MY_PV=${PV/_alpha/a}
+	MY_PV=${MY_PV/_beta/b}
+	MY_P="${PN}${MY_PV}"
+	#MY_P="${PN}${MY_PV}"
+	SRC_URI="https://github.com/xbmc/xbmc/archive/${MY_PV}-${CODENAME}.tar.gz -> ${P}.tar.gz"
 	KEYWORDS="~amd64 ~x86"
-	S=${WORKDIR}/${MY_P}
+	S=${WORKDIR}/xbmc-${MY_PV}-${CODENAME}
 	;;
 *|*_p*)
 	MY_PV=${PV/_p/_r}
 	MY_P="${PN}-${MY_PV}"
-	SRC_URI="http://mirrors.kodi.tv/releases/source/${MY_PV}-${CODENAME}.tar.gz -> ${P}.tar.gz
-		http://mirrors.kodi.tv/releases/source/${MY_P}-generated-addons.tar.xz"
+#	SRC_URI="http://mirrors.kodi.tv/releases/source/${MY_PV}-${CODENAME}.tar.gz -> ${P}.tar.gz"
+	SRC_URI="https://github.com/xbmc/xbmc/archive/${MY_PV}-${CODENAME}.tar.gz -> ${P}.tar.gz"
 	KEYWORDS="~amd64 ~x86"
 
 	S=${WORKDIR}/xbmc-${PV}-${CODENAME}
@@ -148,9 +149,9 @@ src_unpack() {
 }
 
 src_prepare() {
-	epatch "${FILESDIR}"/${PN}-9999-nomythtv.patch
-	epatch "${FILESDIR}"/${PN}-9999-no-arm-flags.patch #400617
-	epatch "${FILESDIR}"/${PN}-14.0-dvddemux-ffmpeg.patch #526992#36
+	#epatch "${FILESDIR}"/${PN}-9999-nomythtv.patch
+	#epatch "${FILESDIR}"/${PN}-9999-no-arm-flags.patch #400617
+	#epatch "${FILESDIR}"/${PN}-14.0-dvddemux-ffmpeg.patch #526992#36
 	# The mythtv patch touches configure.ac, so force a regen
 	rm -f configure
 
@@ -183,6 +184,18 @@ src_prepare() {
 		xbmc/linux/*.cpp || die
 
 	epatch_user #293109
+
+	case ${PV} in
+	*|*_p*)
+		S=${WORKDIR}/xbmc-${MY_PV}-${CODENAME}
+		cd $S/tools/depends/native/JsonSchemaBuilder/src
+		./autogen.sh
+		./configure
+		make
+		cd ..
+		make
+		;;
+	esac
 
 	# Tweak autotool timestamps to avoid regeneration
 	find . -type f -exec touch -r configure {} +

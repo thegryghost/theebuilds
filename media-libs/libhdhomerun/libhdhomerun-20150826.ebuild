@@ -32,8 +32,7 @@ S="${WORKDIR}/${PN}"
 S_GUI="${WORKDIR}/$GUI_PN"
 
 src_prepare() {
-	#epatch "${FILESDIR}/dont-strip.patch"
-	#epatch "${FILESDIR}/lineup_auth.patch"
+	epatch "${FILESDIR}/dont-strip.patch"
 	if use gui; then
 		unpack ${GUI_PN}_${MY_PV}.tgz
 	fi
@@ -51,6 +50,9 @@ src_configure() {
 
 src_compile() {
 	emake
+	mv libhdhomerun.so libhdhomerun.so.${MY_PV}
+	ln -s libhdhomerun.so.${MY_PV} libhdhomerun.so
+
 	if use gui; then
 		cd "$S_GUI/src"
 		emake
@@ -64,6 +66,7 @@ src_install() {
 
 	dobin hdhomerun_config
 	dolib libhdhomerun.so
+	dolib libhdhomerun.so.${MY_PV}
 
 	insinto /usr/include/hdhomerun
 	doins *.h

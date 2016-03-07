@@ -1,28 +1,28 @@
-# Copyright 1999-2013 Gentoo Foundation
+# Copyright 1999-2015 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
-# $Header: $
+# $Id$
 
 EAPI=5
 
-inherit linux-info linux-mod git-2
+inherit git-r3 linux-mod
 
-DESCRIPTION="A kernel module that enables you to call ACPI methods"
-HOMEPAGE="https://github.com/rxrz/exfat-nofuse.git"
+DESCRIPTION="Non-fuse kernel driver for exFat and VFat file systems"
+HOMEPAGE="https://github.com/dorimanx/exfat-nofuse"
+EGIT_REPO_URI="git://github.com/dorimanx/exfat-nofuse.git"
 
-#EGIT_REPO_URI="git://github.com/rxrz/exfat-nofuse.git"
-EGIT_REPO_URI="git://github.com/dorimanx/exfat-nofuse"
-
-LICENSE="GPL-2"
+LICENSE="GPL-2+"
 SLOT="0"
 KEYWORDS=""
 IUSE=""
 
-CONFIG_CHECK="!USER_NS"
-#BUILD_TARGETS="all"
-#MODULE_NAMES="exfat_fs(misc:${S}) exfat_core(misc:${S})"
-MODULE_NAMES="exfat(misc:${S})"
+MODULE_NAMES="exfat(kernel/fs:${S})"
+BUILD_TARGETS="all"
+
+src_prepare(){
+	sed -i -e "/^KREL/d" Makefile || die
+}
 
 src_compile(){
-	#BUILD_PARAMS="-f Makefile.module KDIR=${KV_OUT_DIR} M=${S}"
+	BUILD_PARAMS="KDIR=${KV_OUT_DIR} M=${S}"
 	linux-mod_src_compile
 }

@@ -1,9 +1,10 @@
 # Copyright 1999-2006 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI="4"
+EAPI="6"
 
-inherit eutils versionator linux-mod
+inherit eutils versionator linux-mod user
+#inherit autotools eutils flag-o-matic user
 
 DESCRIPTION="Ceton InfiniTV Linux Drivers"
 HOMEPAGE="http://www.cetoncorp.com/infinitv/support/linux.php"
@@ -25,12 +26,13 @@ pkg_setup() {
 }
 
 src_prepare() {
+	default
 	cd "${S}"
-	rm Module.symvers
 	sed -e 's:KERNEL_VERSION \:=:#KERNEL_VERSION \:=:g' -i Makefile
 	sed -e 's:KERNEL_DIR\t\:= :#KERNEL_DIR\t\:= :g' -i Makefile
 	sed -e 's:ifdef CROSS_COMPILE:ifdef USE_CROSS_COMPILE:g' -i Makefile
 	sed -e 's:-DUSE_INTERNAL=0:-DUSE_INTERNAL=0 -Wno-error=date-time:g' -i Makefile
+	epatch ${FILESDIR}/jiffies_47.diff
 }
 
 src_install() {

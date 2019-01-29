@@ -33,6 +33,7 @@ src_prepare() {
 	sed -e 's:ifdef CROSS_COMPILE:ifdef USE_CROSS_COMPILE:g' -i Makefile
 	sed -e 's:-DUSE_INTERNAL=0:-DUSE_INTERNAL=0 -Wno-error=date-time:g' -i Makefile
 	epatch ${FILESDIR}/jiffies_47.diff
+	epatch ${FILESDIR}/aaddaf5edd0c1b99e4d6761e0283fab5c7a8e0f5.patch
 }
 
 src_install() {

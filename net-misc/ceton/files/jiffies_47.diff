@@ -1,0 +1,16 @@
+diff --git a/ctn91xx_net.c b/ctn91xx_net.c
+index 7b4c4c4..5b9bbf0 100644
+--- ceton_infinitv_linux_driver/ctn91xx_net.c.old
++++ ceton_infinitv_linux_driver/ctn91xx_net.c
+@@ -227,8 +227,11 @@
+ #if PRINT_TRAFFIC
+         sdump_buffer( skb->data, skb->len, "tx");
+ #endif
+-
+-        ndev->trans_start = jiffies;
++		#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,7,0)
++			netif_trans_update(ndev);
++		#else
++        	ndev->trans_start = jiffies;
++		#endif
+         ctn91xx_write8( 1, msg_base, MSG_BUFFER_MSG_AVAIL );

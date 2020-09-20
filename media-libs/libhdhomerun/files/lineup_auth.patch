@@ -1,0 +1,55 @@
+--- hdhomerun_discover.c.old	2015-03-21 16:25:44.927661943 -0400
++++ hdhomerun_discover.c	2015-03-21 17:43:16.904786519 -0400
+@@ -288,6 +288,28 @@
+ 			result->tuner_count = hdhomerun_pkt_read_u8(rx_pkt);
+ 			break;
+ 
++		case HDHOMERUN_TAG_LINEUP_URL:
++			if (len > 0) {
++				size_t i=0;
++				memset(result->lineup_url, 0, sizeof(result->lineup_url));
++				for(i=0; i < len; i++)
++					result->lineup_url[i] = hdhomerun_pkt_read_u8(rx_pkt);
++			}
++			break;
++
++		case HDHOMERUN_TAG_STORAGE_URL:
++			break;
++
++		case HDHOMERUN_TAG_DEVICE_AUTH:
++			if (len > 0) {
++				size_t i=0;
++				memset(result->device_auth, 0, sizeof(result->device_auth));
++				result->device_auth_size = len;
++				for(i=0; i < len; i++)
++					result->device_auth[i] = hdhomerun_pkt_read_u8(rx_pkt);
++			}
++			break;
++
+ 		default:
+ 			break;
+ 		}
+--- hdhomerun_discover.h.old	2015-03-21 16:35:19.444677328 -0400
++++ hdhomerun_discover.h	2015-03-21 17:42:44.072785640 -0400
+@@ -26,6 +26,9 @@
+ 	uint32_t device_type;
+ 	uint32_t device_id;
+ 	uint8_t tuner_count;
++	size_t device_auth_size;
++	uint8_t device_auth[64];
++	uint8_t lineup_url[256];
+ };
+ 
+ /*
+--- hdhomerun_pkt.h.old	2015-03-21 16:24:26.070659831 -0400
++++ hdhomerun_pkt.h	2015-03-21 17:20:16.843749562 -0400
+@@ -127,6 +127,9 @@
+ #define HDHOMERUN_TAG_GETSET_LOCKKEY 0x15
+ #define HDHOMERUN_TAG_ERROR_MESSAGE 0x05
+ #define HDHOMERUN_TAG_TUNER_COUNT 0x10
++#define HDHOMERUN_TAG_LINEUP_URL 0x27
++#define HDHOMERUN_TAG_STORAGE_URL 0x28
++#define HDHOMERUN_TAG_DEVICE_AUTH 0x29
+ 
+ #define HDHOMERUN_DEVICE_TYPE_WILDCARD 0xFFFFFFFF
+ #define HDHOMERUN_DEVICE_TYPE_TUNER 0x00000001

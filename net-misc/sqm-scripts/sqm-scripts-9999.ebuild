@@ -4,21 +4,19 @@
 
 EAPI=5
 
-inherit eutils git-2
+inherit eutils git-r3
 
 DESCRIPTION="sqm-scripts traffic shaper"
 HOMEPAGE="https://github.com/tohojo/sqm-scripts"
-EGIT_COMMIT="v1.1.3"
+EGIT_COMMIT="HEAD"
 EGIT_REPO_URI="https://github.com/tohojo/sqm-scripts.git"
 
 LICENSE="GPL-3"
 SLOT="0"
-KEYWORDS="~x86 ~amd64"
+KEYWORDS=""
 IUSE=""
 
 DEPEND=""
-
-
 RDEPEND="${DEPEND}"
 
 src_install() {

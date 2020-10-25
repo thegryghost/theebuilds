@@ -5,14 +5,24 @@
 command="/usr/bin/sqm"
 
 start() {
-	ebegin "Starting sqm.."
-	${command} start ${INTERFACE}
-	eend $? "Failed to start sqm"
+	if [ "${SVCNAME}" = "sqm" ]; then
+		eerror "You are not supposed to run this script directly. Create a symlink"
+		eerror
+		eerror "  cd /etc/init.d"
+		eerror "  ln -s sqm sqm.eth0"
+		eerror
+		return 1
+	fi
+
+	IFACE=${SVCNAME#*.}
+	ebegin "Starting sqm on $IFACE"
+	${command} start ${IFACE}
+	eend $? "Failed to start sqm on $IFACE"
 }
 
-
 stop() {
-	ebegin "Stopping sqm.."
-	${command} stop
-	eend $? "Failed to stop sqm"
+	IFACE=${SVCNAME#*.}
+	ebegin "Stopping sqm on $IFACE"
+	${command} stop $IFACE
+	eend $? "Failed to stop sqm on $IFACE"
 }

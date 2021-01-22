@@ -1,0 +1,13 @@
+diff --git a/hid-elan.c b/hid-elan.c
+index d8fca5b..e61e012 100644
+--- a/hid-elan.c
++++ b/hid-elan.c
+@@ -20,7 +20,7 @@ MODULE_DESCRIPTION("Elan1200 TouchPad");
+ #define INPUT_MODE_TOUCHPAD 0x03
+ #define LATENCY_MODE_NORMAL 0x00
+ #define USB_VENDOR_ID_ELANTECH 0x04f3
+-#define USB_DEVICE_ID_ELAN1200_I2C_TOUCHPAD 0x3022
++#define USB_DEVICE_ID_ELAN1200_I2C_TOUCHPAD 0x30BA
+ 
+ struct slot {
+ 	struct input_mt_pos coords;

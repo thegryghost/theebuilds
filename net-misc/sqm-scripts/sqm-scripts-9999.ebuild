@@ -1,26 +1,23 @@
-# Copyright 1999-2015 Gentoo Foundation
-# Distributed under the terms of the GNU General Public License v2
-# $Header: $
+# Copyright 2020 Leorize
+#
+# Licensed under the ISC license. For more information, please refer to the
+# "license" file, included in this distribution.
 
-EAPI=5
+EAPI=7
 
-inherit eutils git-r3
+inherit git-r3 systemd
 
-DESCRIPTION="sqm-scripts traffic shaper"
+DESCRIPTION="The sqm-scripts traffic shaper from the CeroWrt project."
 HOMEPAGE="https://github.com/tohojo/sqm-scripts"
-EGIT_COMMIT="HEAD"
-EGIT_REPO_URI="https://github.com/tohojo/sqm-scripts.git"
-
-LICENSE="GPL-3"
-SLOT="0"
 KEYWORDS=""
+SLOT=0
+LICENSE="GPL-2"
 IUSE=""
+EGIT_REPO_URI="$HOMEPAGE"
 
-DEPEND=""
-RDEPEND="${DEPEND}"
+RDEPEND="sys-apps/iproute2"
 
 src_install() {
-	emake install PLATFORM=linux DESTDIR=$D
-	rm -rf $D/usr/lib/systemd $D/usr/lib/tmpfiles.d
-	newinitd "${FILESDIR}"/sqm sqm
+  emake install DESTDIR="$ED" PREFIX="/usr" \
+    UNITDIR="$(systemd_get_systemunitdir)"
 }

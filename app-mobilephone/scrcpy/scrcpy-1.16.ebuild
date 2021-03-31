@@ -6,6 +6,7 @@ EAPI=6
 inherit meson ninja-utils git-r3
 
 EGIT_REPO_URI="https://github.com/Genymobile/scrcpy.git"
+EGIT_BRANCH="adbkeyboard"
 
 if [[ ${PV} = 9999* ]]; then
 	MY_SERVER_PV="1.3"

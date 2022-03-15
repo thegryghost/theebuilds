@@ -18,6 +18,6 @@ EGIT_REPO_URI="$HOMEPAGE"
 RDEPEND="sys-apps/iproute2"
 
 src_install() {
-  emake install DESTDIR="$ED" PREFIX="/usr" \
-    UNITDIR="$(systemd_get_systemunitdir)"
+	emake install DESTDIR="$ED" PREFIX="/usr" \
+	UNITDIR="$(systemd_get_systemunitdir)"
 }

@@ -25,28 +25,29 @@ SIRIT_SHA="a39596358a3a5488c06554c0c15184a6af71e433"
 XBYAK_SHA="c306b8e5786eeeb87b8925a8af5c3bf057ff5a90"
 SIRIT_SPIRV_HEADERS_SHA="a3fdfe81465d57efc97cfd28ac6c8190fb31a6c8"
 
+#        https://github.com/benhoyt/inih/archive/${INIH_SHA}.tar.gz -> ${PN}-inih-${INIH_SHA:0:7}.tar.gz
+#        https://github.com/libusb/libusb/archive/${LIBUSB_SHA}.tar.gz -> ${PN}-libusb-${LIBUSB_SHA:0:7}.tar.gz
+#        https://github.com/xiph/opus/archive/${OPUS_SHA}.tar.gz -> ${PN}-opus-${OPUS_SHA:0:7}.tar.gz
 SRC_URI="https://github.com/yuzu-emu/yuzu-mainline/archive/${MY_PV}.tar.gz -> ${P}.tar.gz
-        https://github.com/libsdl-org/SDL/archive/${SDL_SHA}.tar.gz -> ${PN}-SDL-${SDL_SHA:0:7}.tar.gz
         https://github.com/KhronosGroup/Vulkan-Headers/archive/${VULKAN_HEADERS_SHA}.tar.gz -> ${PN}-Vulkan-Headers-${VULKAN_HEADERS_SHA:0:7}.tar.gz
         https://github.com/yhirose/cpp-httplib/archive/${CPP_HTTPLIB_SHA}.tar.gz -> ${PN}-cpp-httplib-${CPP_HTTPLIB_SHA:0:7}.tar.gz
         https://github.com/kinetiknz/cubeb/archive/${CUBEB_SHA}.tar.gz -> ${PN}-cubeb-${CUBEB_SHA:0:7}.tar.gz
         https://github.com/discord/discord-rpc/archive/${DISCORD_RPC_SHA}.tar.gz -> ${PN}-discord-rpc-${DISCORD_RPC_SHA:0:7}.tar.gz
         https://github.com/MerryMage/dynarmic/archive/${DYNARMIC_SHA}.tar.gz -> ${PN}-dynarmic-${DYNARMIC_SHA:0:7}.tar.gz
-        https://github.com/benhoyt/inih/archive/${INIH_SHA}.tar.gz -> ${PN}-inih-${INIH_SHA:0:7}.tar.gz
         https://github.com/citra-emu/ext-libressl-portable/archive/${LIBRESSL_SHA}.tar.gz -> ${PN}-libressl-${LIBRESSL_SHA:0:7}.tar.gz
-        https://github.com/libusb/libusb/archive/${LIBUSB_SHA}.tar.gz -> ${PN}-libusb-${LIBUSB_SHA:0:7}.tar.gz
         https://github.com/yuzu-emu/mbedtls/archive/${MBEDTLS_SHA}.tar.gz -> ${PN}-mbedtls-${MBEDTLS_SHA:0:7}.tar.gz
-        https://github.com/xiph/opus/archive/${OPUS_SHA}.tar.gz -> ${PN}-opus-${OPUS_SHA:0:7}.tar.gz
         https://github.com/ReinUsesLisp/sirit/archive/${SIRIT_SHA}.tar.gz -> ${PN}-sirit-${SIRIT_SHA:0:7}.tar.gz
         https://github.com/herumi/xbyak/archive/${XBYAK_SHA}.tar.gz -> ${PN}-xbyak-${XBYAK_SHA:0:7}.tar.gz
 	https://github.com/KhronosGroup/SPIRV-Headers/archive/${SIRIT_SPIRV_HEADERS_SHA}.tar.gz -> ${PN}-sirit-spirv-headers-${SIRIT_SPIRV_HEADERS_SHA:0:7}.tar.gz
+        https://github.com/libsdl-org/SDL/archive/${SDL_SHA}.tar.gz -> ${PN}-SDL-${SDL_SHA:0:7}.tar.gz
+
 "
 LICENSE="BSD GPL-2 GPL-2+ LGPL-2.1"
 SLOT="0"
 KEYWORDS="~amd64 ~x86"
-IUSE="+compat-list +cubeb +web-service"
+IUSE="+compat-list +cubeb +web-service -discord"
 
-#	cubeb? ( dev-libs/cubeb )
+#>=media-libs/libsdl2-2.0.18:=[sound,video,joystick,haptic,threads]
 
 DEPEND=">=app-arch/lz4-1.8
 	>=app-arch/zstd-1.5
@@ -58,15 +59,16 @@ DEPEND=">=app-arch/lz4-1.8
 	dev-qt/qtcore
 	dev-qt/qtgui
 	dev-qt/qtwidgets
-	media-libs/libsdl2
 	>=media-libs/opus-1.3
 	media-video/ffmpeg
 	>=sys-libs/zlib-1.2
 	>=dev-cpp/nlohmann_json-3.8
 	virtual/libusb:="
+
 RDEPEND="${DEPEND}
 	app-arch/zstd
 	media-libs/vulkan-loader"
+
 BDEPEND="dev-cpp/catch
 	dev-cpp/nlohmann_json
 	dev-util/vulkan-headers"
@@ -74,15 +76,8 @@ BDEPEND="dev-cpp/catch
 S="${WORKDIR}/${PN}-mainline-${MY_PV}"
 
 
-#PATCHES=(
-#	"${FILESDIR}/${PN}-0001-Allow-use-of-system-Opus-and-inih.patch"
-#	"${FILESDIR}/${PN}-0003-fix-INIReader.h-includes.patch"
-#	"${FILESDIR}/${PN}-0004-minimalise-finding-Boost-components.patch"
-#	"${FILESDIR}/${PN}-0006-Allow-system-cubeb.patch"
-#)
-
 PATCHES=(
-	"${FILESDIR}/${PN}-0001-Allow-use-of-system-Opus-and-inih.patch"
+	"${FILESDIR}/${PN}-0001-inih-SDLfix.patch"
 	"${FILESDIR}/${PN}-0003-fix-INIReader.h-includes.patch"
 	"${FILESDIR}/cmake_no_conan.patch"
 )
@@ -97,46 +92,38 @@ src_prepare() {
 	mv "${WORKDIR}/ext-libressl-portable-${LIBRESSL_SHA}" "${S}/externals/libressl" || die
 	mv "${WORKDIR}/mbedtls-${MBEDTLS_SHA}" "${S}/externals/mbedtls" || die
 	mv "${WORKDIR}/SDL-${SDL_SHA}" "${S}/externals/SDL" || die
+
 	rm -rf "${WORKDIR}/sirit-${SIRIT_SHA}/externals/SPIRV-Headers"
 	mv "${WORKDIR}/SPIRV-Headers-${SIRIT_SPIRV_HEADERS_SHA}" "${WORKDIR}/sirit-${SIRIT_SHA}/externals/SPIRV-Headers" || die
+
 	mv "${WORKDIR}/sirit-${SIRIT_SHA}" "${S}/externals/sirit" || die
 	mv "${WORKDIR}/Vulkan-Headers-${VULKAN_HEADERS_SHA}" "${S}/externals/Vulkan-Headers" || die
 	mv "${WORKDIR}/xbyak-${XBYAK_SHA}" "${S}/externals/xbyak" || die
-	rm -rf "${S}/externals/opus" || die
-	mv "${WORKDIR}/opus-${OPUS_SHA}" "${S}/externals/opus" || die
-#	mv "${WORKDIR}/-${}" "${S}/externals/" || die
-#	mv "${WORKDIR}/-${}" "${S}/externals/" || die
-#	mv "${WORKDIR}/-${}" "${S}/externals/" || die
 
-#	sed -e 's/find_package(Boost .*/find_package(Boost 1.71 COMPONENTS context REQUIRED)/' -i src/common/CMakeLists.txt || die
-
-#	rmdir "${WORKDIR}/sirit-${SIRIT_SHA}/externals/SPIRV-Headers" || die
-#	rmdir "${S}/externals/"{dynarmic,sirit,mbedtls} || die
 	cmake_src_prepare
 }
 
 src_configure() {
 	local mycmakeargs=(
-		-DBUILD_FULLNAME=""
 		-DBUILD_FULLNAME="${MY_PV}"
 		-DBUILD_SHARED_LIBS=OFF
 		-DENABLE_COMPATIBILITY_LIST_DOWNLOAD=$(usex compat-list)
-#		-DENABLE_CUBEB=$(usex cubeb)
-		-DENABLE_CUBEB=OFF
-		-DENABLE_WEB_SERVICE=OFF
+		-DENABLE_CUBEB=$(usex cubeb)
+		-DYUZU_USE_EXTERNAL_SDL2=ON
+		-DENABLE_WEB_SERVICE=$(usex web-service)
 		-DGIT_BRANCH="${PN}"
 		-DGIT_DESC="${PV}"
 		-DGIT_REV="${PV}"
-		-DUSE_DISCORD_PRESENCE=OFF
-#		-DUSE_SYSTEM_CUBEB=$(usex cubeb)
+		-DUSE_DISCORD_PRESENCE=$(usex discord)
 		-DUSE_SYSTEM_INIH=ON
 		-DUSE_SYSTEM_OPUS=ON
 		-DYUZU_USE_BUNDLED_OPUS=OFF
-		-DYUZU_ENABLE_COMPATIBILITY_REPORTING=ON
 		-DYUZU_USE_BUNDLED_BOOST=OFF
 		-DYUZU_USE_QT_WEB_ENGINE=OFF
-		-DUSE_SANITIZERS=NO
-		-DBUILD_TESTS=NO
+		-DYUZU_ENABLE_COMPATIBILITY_REPORTING=ON
 	)
+#		-DENABLE_CUBEB=OFF
+#		-DUSE_SANITIZERS=NO
+#		-DBUILD_TESTS=NO
 	cmake_src_configure
 }

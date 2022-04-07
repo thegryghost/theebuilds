@@ -1,0 +1,219 @@
+diff --git a/es-app/src/ApiSystem.cpp b/es-app/src/ApiSystem.cpp
+index 241f72fa..717a6803 100644
+--- a/es-app/src/ApiSystem.cpp
++++ b/es-app/src/ApiSystem.cpp
+@@ -28,7 +28,7 @@
+ #include <algorithm>
+ #include <fstream>
+ #include <SDL.h>
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ 
+ #if WIN32
+ #include <Windows.h>
+diff --git a/es-app/src/CollectionSystemManager.cpp b/es-app/src/CollectionSystemManager.cpp
+index d727ade8..11284310 100644
+--- a/es-app/src/CollectionSystemManager.cpp
++++ b/es-app/src/CollectionSystemManager.cpp
+@@ -13,7 +13,7 @@
+ #include "SystemData.h"
+ #include "ThemeData.h"
+ #include "LocaleES.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include <fstream>
+ #include "Gamelist.h"
+ #include "FileSorts.h"
+diff --git a/es-app/src/CustomFeatures.h b/es-app/src/CustomFeatures.h
+index a01559c2..fa6a3914 100644
+--- a/es-app/src/CustomFeatures.h
++++ b/es-app/src/CustomFeatures.h
+@@ -8,7 +8,7 @@
+ #include <string>
+ #include <vector>
+ #include <map>
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ 
+ #include "utils/VectorEx.h"
+ 
+diff --git a/es-app/src/FileFilterIndex.cpp b/es-app/src/FileFilterIndex.cpp
+index 17fc4d36..2ecdd069 100644
+--- a/es-app/src/FileFilterIndex.cpp
++++ b/es-app/src/FileFilterIndex.cpp
+@@ -7,7 +7,7 @@
+ #include "Settings.h"
+ #include "LocaleES.h"
+ 
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ 
+ #include "SystemData.h"
+ #include "FileData.h"
+diff --git a/es-app/src/Gamelist.cpp b/es-app/src/Gamelist.cpp
+index 5711d8ae..ad7f90ce 100644
+--- a/es-app/src/Gamelist.cpp
++++ b/es-app/src/Gamelist.cpp
+@@ -7,7 +7,7 @@
+ #include "Log.h"
+ #include "Settings.h"
+ #include "SystemData.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include "Genres.h"
+ #include "Paths.h"
+ 
+diff --git a/es-app/src/Genres.cpp b/es-app/src/Genres.cpp
+index ebeeabb4..3e208600 100644
+--- a/es-app/src/Genres.cpp
++++ b/es-app/src/Genres.cpp
+@@ -4,7 +4,7 @@
+ #include "utils/FileSystemUtil.h"
+ #include "utils/StringUtil.h"
+ #include "Log.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include <string.h>
+ 
+ #include "SystemConf.h"
+diff --git a/es-app/src/MetaData.cpp b/es-app/src/MetaData.cpp
+index fad812ad..63009731 100644
+--- a/es-app/src/MetaData.cpp
++++ b/es-app/src/MetaData.cpp
+@@ -3,7 +3,7 @@
+ #include "utils/FileSystemUtil.h"
+ #include "utils/StringUtil.h"
+ #include "Log.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include "SystemData.h"
+ #include "LocaleES.h"
+ #include "Settings.h"
+diff --git a/es-app/src/SystemData.h b/es-app/src/SystemData.h
+index 67357f0a..0a42f7ba 100644
+--- a/es-app/src/SystemData.h
++++ b/es-app/src/SystemData.h
+@@ -9,7 +9,7 @@
+ #include <vector>
+ #include <map>
+ #include <set>
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include <unordered_map>
+ #include <unordered_set>
+ #include "FileFilterIndex.h"
+diff --git a/es-app/src/scrapers/ScreenScraper.cpp b/es-app/src/scrapers/ScreenScraper.cpp
+index f679c5d6..b8d728e2 100644
+--- a/es-app/src/scrapers/ScreenScraper.cpp
++++ b/es-app/src/scrapers/ScreenScraper.cpp
+@@ -7,7 +7,7 @@
+ #include "PlatformId.h"
+ #include "Settings.h"
+ #include "SystemData.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include "SystemConf.h"
+ #include "LangParser.h"
+ #include "ApiSystem.h"
+diff --git a/es-core/src/InputConfig.cpp b/es-core/src/InputConfig.cpp
+index 8f592ed9..dd675998 100644
+--- a/es-core/src/InputConfig.cpp
++++ b/es-core/src/InputConfig.cpp
+@@ -1,7 +1,7 @@
+ #include "InputConfig.h"
+ 
+ #include "Log.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include "Settings.h"
+ 
+ 
+diff --git a/es-core/src/InputManager.cpp b/es-core/src/InputManager.cpp
+index 11d3d1a7..d66ea20a 100644
+--- a/es-core/src/InputManager.cpp
++++ b/es-core/src/InputManager.cpp
+@@ -6,7 +6,7 @@
+ #include "platform.h"
+ #include "Scripting.h"
+ #include "Window.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include <SDL.h>
+ #include <iostream>
+ #include <assert.h>
+diff --git a/es-core/src/InputManager.h b/es-core/src/InputManager.h
+index 964c5d9d..b6813d3a 100644
+--- a/es-core/src/InputManager.h
++++ b/es-core/src/InputManager.h
+@@ -4,7 +4,7 @@
+ 
+ #include <SDL_joystick.h>
+ #include <map>
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include <utils/Delegate.h>
+ 
+ class InputConfig;
+diff --git a/es-core/src/MameNames.cpp b/es-core/src/MameNames.cpp
+index 67b6988e..cfb22760 100644
+--- a/es-core/src/MameNames.cpp
++++ b/es-core/src/MameNames.cpp
+@@ -3,7 +3,7 @@
+ #include "resources/ResourceManager.h"
+ #include "utils/FileSystemUtil.h"
+ #include "Log.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include <string.h>
+ 
+ MameNames* MameNames::sInstance = nullptr;
+diff --git a/es-core/src/Settings.cpp b/es-core/src/Settings.cpp
+index e83b4862..0063d57d 100644
+--- a/es-core/src/Settings.cpp
++++ b/es-core/src/Settings.cpp
+@@ -4,7 +4,7 @@
+ #include "Log.h"
+ #include "Scripting.h"
+ #include "platform.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include <algorithm>
+ #include <vector>
+ #include "utils/StringUtil.h"
+diff --git a/es-core/src/ThemeData.h b/es-core/src/ThemeData.h
+index 0ace0a07..533610e9 100644
+--- a/es-core/src/ThemeData.h
++++ b/es-core/src/ThemeData.h
+@@ -11,7 +11,7 @@
+ #include <memory>
+ #include <sstream>
+ #include <vector>
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ 
+ namespace pugi { class xml_node; }
+ 
+diff --git a/es-core/src/anim/ThemeStoryboard.h b/es-core/src/anim/ThemeStoryboard.h
+index c43a0ecb..8dccd88f 100644
+--- a/es-core/src/anim/ThemeStoryboard.h
++++ b/es-core/src/anim/ThemeStoryboard.h
+@@ -1,7 +1,7 @@
+ #pragma once
+ 
+ #include "ThemeAnimation.h"
+-#include <pugixml/src/pugixml.hpp>
++#include <pugixml.hpp>
+ #include <vector>
+ 
+ class ThemeStoryboard
+diff --git a/external/CMakeLists.txt b/external/CMakeLists.txt
+index 5a1b0782..1d97e8cb 100644
+--- a/external/CMakeLists.txt
++++ b/external/CMakeLists.txt
+@@ -2,6 +2,5 @@
+ # package managers are included with the project (in the 'external' folder)
+ 
+ add_subdirectory("nanosvg")
+-add_subdirectory("pugixml")
+ add_subdirectory("id3v2lib")
+ add_subdirectory("libcheevos")

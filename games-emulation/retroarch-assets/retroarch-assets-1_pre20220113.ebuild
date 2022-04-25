@@ -23,7 +23,7 @@ fi
 LICENSE="CC-BY-4.0"
 SLOT="0"
 
-IUSE="materialui ozone rgui xmb"
+IUSE="+materialui +ozone +rgui +xmb"
 
 RDEPEND="
 	materialui? ( !!<games-emulation/retroarch-1.7.8 )

@@ -24,6 +24,8 @@ DEPEND="
 	net-misc/curl
 	media-video/vlc
 	dev-libs/pugixml
+	app-text/xmlstarlet
+	!games-emulation/emulationstation-de
 "
 
 PATCHES=( "${FILESDIR}/${P}-include-fix.patch" )

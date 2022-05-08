@@ -14,6 +14,7 @@ SLOT="0"
 KEYWORDS="amd64 x86"
 
 S="${WORKDIR}/emulationstation-de-v${PV}"
+IUSE="-oldcfg"
 
 DEPEND="
 	dev-cpp/eigen:3
@@ -28,24 +29,15 @@ DEPEND="
 	app-text/xmlstarlet
 	!games-emulation/emulationstation
 "
-
-PATCHES=( "${FILESDIR}/switch_hotkey.patch" "${FILESDIR}/joystick.patch" )
 DOCS=( README.md THEMES.md CREDITS.md USERGUIDE.md )
 
-#src_install() {
-#	mkdir -p "${D}/usr/share/emulationstation"
-#	cp -r "${S}/resources" "${D}/usr/share/emulationstation"
-#	exeinto /usr/bin
-#	doexe emulationstation
-#	doicon "${FILESDIR}/emulationstation.png"
-#	domenu "${FILESDIR}/emulationstation.desktop"
-#}
-
-#pkg_preinst() {
-#	if ! has_version "=${CATEGORY}/${PN}-${PVR}"; then
-#		first_install="1"
-#	fi
-#}
+src_prepare() {
+	eapply "${FILESDIR}/switch_hotkey.patch" 
+	if use oldcfg; then
+		eapply "${FILESDIR}/joystick.patch"
+	fi
+	eapply_user
+}
 
 pkg_postinst() {
 	ewarn ""

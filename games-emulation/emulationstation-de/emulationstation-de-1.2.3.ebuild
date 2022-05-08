@@ -37,6 +37,7 @@ src_prepare() {
 		eapply "${FILESDIR}/joystick.patch"
 	fi
 	eapply_user
+	cmake_src_prepare
 }
 
 pkg_postinst() {

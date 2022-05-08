@@ -29,7 +29,7 @@ DEPEND="
 	!games-emulation/emulationstation
 "
 
-PATCHES=( "${FILESDIR}/switch_hotkey.patch" )
+PATCHES=( "${FILESDIR}/switch_hotkey.patch" "${FILESDIR}/joystick.patch" )
 DOCS=( README.md THEMES.md CREDITS.md USERGUIDE.md )
 
 #src_install() {

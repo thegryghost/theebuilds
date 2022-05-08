@@ -1,0 +1,48 @@
+diff --git a/src/core/core.h b/src/core/core.h
+index d1d9e84d6..2dcfb24fd 100644
+--- a/src/core/core.h
++++ b/src/core/core.h
+@@ -305,11 +305,9 @@ public:
+ 
+     void LoadState(u32 slot);
+ 
+-#ifdef __LIBRETRO__
+     std::vector<u8> SaveStateBuffer() const;
+ 
+     bool LoadStateBuffer(std::vector<u8> buffer);
+-#endif
+ 
+ private:
+     /**
+diff --git a/src/core/hle/service/cfg/cfg.cpp b/src/core/hle/service/cfg/cfg.cpp
+index 92bdd3cba..34274aca3 100644
+--- a/src/core/hle/service/cfg/cfg.cpp
++++ b/src/core/hle/service/cfg/cfg.cpp
+@@ -651,7 +651,7 @@ static std::tuple<u32 /*region*/, SystemLanguage> AdjustLanguageInfoBlock(
+ 
+ void Module::SetPreferredRegionCodes(const std::vector<u32>& region_codes) {
+     // Apply language set in core options first
+-    SetSystemLanguage(LibRetro::settings.language_value);
++    SetSystemLanguage(Service::CFG::LANGUAGE_EN);
+ 
+     const SystemLanguage current_language = GetSystemLanguage();
+     auto [region, adjusted_language] = AdjustLanguageInfoBlock(region_codes, current_language);
+diff --git a/src/core/savestate.cpp b/src/core/savestate.cpp
+index d996582fb..4e2cab760 100644
+--- a/src/core/savestate.cpp
++++ b/src/core/savestate.cpp
+@@ -162,7 +162,6 @@ void System::LoadState(u32 slot) {
+     ia&* this;
+ }
+ 
+-#ifdef __LIBRETRO__
+ std::vector<u8> System::SaveStateBuffer() const {
+     std::ostringstream sstream{std::ios_base::binary};
+     // Serialize
+@@ -230,6 +229,5 @@ bool System::LoadStateBuffer(std::vector<u8> buffer) {
+ 
+     return true;
+ }
+-#endif
+ 
+ } // namespace Core

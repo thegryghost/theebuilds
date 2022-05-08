@@ -1,0 +1,11 @@
+--- a/CMakeLists.txt  2022-04-08 23:02:51.245421324 -0400
++++ b/CMakeLists.txt      2022-04-08 23:03:01.211824947 -0400
+@@ -63,7 +63,7 @@
+         endif()
+     endforeach()
+ endfunction()
+-check_submodules_present()
++#check_submodules_present()
+
+ configure_file(${PROJECT_SOURCE_DIR}/dist/compatibility_list/compatibility_list.qrc
+                ${PROJECT_BINARY_DIR}/dist/compatibility_list/compatibility_list.qrc

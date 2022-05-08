@@ -1,0 +1,9 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 12f6b2ede..3ecd9f5bc 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -20,4 +20,3 @@ endif()
+ if (ENABLE_WEB_SERVICE)
+     add_subdirectory(web_service)
+ endif()
+-add_subdirectory(dedicated_room)

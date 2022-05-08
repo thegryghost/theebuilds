@@ -1,0 +1,16 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 341ed5c4e..b3c1c2a3c 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -120,11 +120,6 @@ endif()
+ if (ENABLE_LIBRETRO)
+     add_subdirectory(citra_libretro)
+ endif()
+-if (ANDROID)
+-    add_subdirectory(android/app/src/main/cpp)
+-else()
+-    add_subdirectory(dedicated_room)
+-endif()
+ 
+ if (ENABLE_WEB_SERVICE)
+     add_subdirectory(web_service)

@@ -1,0 +1,150 @@
+--- ./es-app/src/guis/GuiMenu.cpp.org	2022-04-03 01:47:49.296366860 -0400
++++ ./es-app/src/guis/GuiMenu.cpp	2022-04-03 02:08:52.216301799 -0400
+@@ -722,6 +722,7 @@
+     input_controller_type->add("PLAYSTATION 4", "ps4", selectedPlayer == "ps4");
+     input_controller_type->add("PLAYSTATION 5", "ps5", selectedPlayer == "ps5");
+     input_controller_type->add("SNES", "snes", selectedPlayer == "snes");
++    input_controller_type->add("SWITCH", "switch", selectedPlayer == "switch");
+     // If there are no objects returned, then there must be a manually modified entry in the
+     // configuration file. Simply set the controller type to "xbox" in this case.
+     if (input_controller_type->getSelectedObjects().size() == 0)
+--- ./es-app/src/views/UIModeController.cpp.org	2022-04-03 01:48:56.730408440 -0400
++++ ./es-app/src/views/UIModeController.cpp	2022-04-03 02:09:17.056563734 -0400
+@@ -139,9 +139,15 @@
+         std::string symbolX;
+         std::string symbolY;
+ 
+-        if (controllerType == "snes") {
+-            symbolA = "B";
+-            symbolB = "A";
++        if (controllerType == "switch") {
++            symbolA = "A";
++            symbolB = "B";
++            symbolX = "Y";
++            symbolY = "X";
++	}
++        else if (controllerType == "snes") {
++            symbolA = "A";
++            symbolB = "B";
+             symbolX = "Y";
+             symbolY = "X";
+         }
+--- ./es-core/src/components/HelpComponent.cpp.org	2022-04-03 01:50:20.731290711 -0400
++++ ./es-core/src/components/HelpComponent.cpp	2022-04-03 02:10:41.400786437 -0400
+@@ -57,7 +57,27 @@
+                                                                    mStyle.mCustomButtons.button_rt;
+ 
+     // These graphics files are custom per controller type.
+-    if (controllerType == "snes") {
++    if (controllerType == "switch") {
++        sIconPathMap["a"] = mStyle.mCustomButtons.button_a_SNES.empty() ?
++                                ":/graphics/help/button_a_SNES.svg" :
++                                mStyle.mCustomButtons.button_a_SNES;
++        sIconPathMap["b"] = mStyle.mCustomButtons.button_b_SNES.empty() ?
++                                ":/graphics/help/button_b_SNES.svg" :
++                                mStyle.mCustomButtons.button_b_SNES;
++        sIconPathMap["x"] = mStyle.mCustomButtons.button_x_SNES.empty() ?
++                                ":/graphics/help/button_x_SNES.svg" :
++                                mStyle.mCustomButtons.button_x_SNES;
++        sIconPathMap["y"] = mStyle.mCustomButtons.button_y_SNES.empty() ?
++                                ":/graphics/help/button_y_SNES.svg" :
++                                mStyle.mCustomButtons.button_y_SNES;
++        sIconPathMap["plus"] = mStyle.mCustomButtons.button_start_SNES.empty() ?
++                                    ":/graphics/help/button_start_SNES.svg" :
++                                    mStyle.mCustomButtons.button_start_SNES;
++        sIconPathMap["minus"] = mStyle.mCustomButtons.button_back_SNES.empty() ?
++                                   ":/graphics/help/button_back_SNES.svg" :
++                                   mStyle.mCustomButtons.button_back_SNES;
++    }
++    else if (controllerType == "snes") {
+         sIconPathMap["a"] = mStyle.mCustomButtons.button_a_SNES.empty() ?
+                                 ":/graphics/help/button_a_SNES.svg" :
+                                 mStyle.mCustomButtons.button_a_SNES;
+--- ./es-core/src/guis/GuiInputConfig.cpp.org	2022-04-03 01:34:30.657980277 -0400
++++ ./es-core/src/guis/GuiInputConfig.cpp	2022-04-03 03:21:06.388713560 -0400
+@@ -24,7 +24,7 @@
+     std::string icon;
+ };
+ 
+-static const int inputCount = 24;
++static const int inputCount = 25;
+ static InputConfigStructure sGuiInputConfigList[inputCount];
+ 
+ GuiInputConfig::GuiInputConfig(Window* window,
+@@ -180,9 +180,29 @@
+         delete this;
+     };
+ 
+-    buttons.push_back(
+-        std::make_shared<ButtonComponent>(mWindow, "OK", "ok", [okFunction] { okFunction(); }));
+-
++    buttons.push_back(std::make_shared<ButtonComponent>(mWindow, "OK", "ok", [this, okFunction] {
++    // check if the hotkey enable button is set. if not prompt the user to use select or nothing.
++        Input input;
++        if (!mTargetConfig->getInputByName("HotKeyEnable", &input)) {
++            mWindow->pushGui(new GuiMsgBox(mWindow,  HelpStyle(),
++                "YOU DIDN'T CHOOSE A HOTKEY ENABLE BUTTON. THIS IS REQUIRED FOR EXITING GAMES WITH A CONTROLLER. DO YOU WANT TO USE THE SELECT BUTTON DEFAULT ? PLEASE ANSWER YES TO USE SELECT OR NO TO NOT SET A HOTKEY ENABLE BUTTON.",
++                "YES", [this, okFunction] {
++                    Input input;
++                    mTargetConfig->getInputByName("Back", &input);
++                    mTargetConfig->mapInput("HotKeyEnable", input);
++                    okFunction();
++                },
++                "NO", [this, okFunction] {
++                    // for a disabled hotkey enable button, set to a key with id 0,
++                    // so the input configuration script can be backwards compatible.
++                    mTargetConfig->mapInput("HotKeyEnable", Input(DEVICE_KEYBOARD, TYPE_KEY, 0, 1, true));
++                    okFunction();
++                }
++            ));
++        } else {
++            okFunction();
++        }
++    }));
+     mButtonGrid = makeButtonGrid(mWindow, buttons);
+     mGrid.setEntry(mButtonGrid, glm::ivec2{0, 6}, true, false);
+ 
+@@ -209,8 +229,16 @@
+     if (controllerType == "snes") {
+         sGuiInputConfigList[4] = {"Back",  false, "SELECT",    ":/graphics/help/button_back_SNES.svg"};
+         sGuiInputConfigList[5] = {"Start", false, "START",     ":/graphics/help/button_start_SNES.svg"};
+-        sGuiInputConfigList[6] = {"A",     false, "B",         ":/graphics/help/mbuttons_a_SNES.svg"};
+-        sGuiInputConfigList[7] = {"B",     false, "A",         ":/graphics/help/mbuttons_b_SNES.svg"};
++        sGuiInputConfigList[6] = {"A",     false, "A",         ":/graphics/help/mbuttons_b_SNES.svg"};
++        sGuiInputConfigList[7] = {"B",     false, "B",         ":/graphics/help/mbuttons_a_SNES.svg"};
++        sGuiInputConfigList[8] = {"X",     true,  "Y",         ":/graphics/help/mbuttons_x_SNES.svg"};
++        sGuiInputConfigList[9] = {"Y",     true,  "X",         ":/graphics/help/mbuttons_y_SNES.svg"};
++    }
++    else if (controllerType == "switch") {
++        sGuiInputConfigList[4] = {"Back",  false, "MINUS",    ":/graphics/help/button_back_SNES.svg"};
++        sGuiInputConfigList[5] = {"Start", false, "PLUS",     ":/graphics/help/button_start_SNES.svg"};
++        sGuiInputConfigList[6] = {"A",     false, "A",         ":/graphics/help/mbuttons_b_SNES.svg"};
++        sGuiInputConfigList[7] = {"B",     false, "B",         ":/graphics/help/mbuttons_a_SNES.svg"};
+         sGuiInputConfigList[8] = {"X",     true,  "Y",         ":/graphics/help/mbuttons_x_SNES.svg"};
+         sGuiInputConfigList[9] = {"Y",     true,  "X",         ":/graphics/help/mbuttons_y_SNES.svg"};
+     }
+@@ -262,6 +290,7 @@
+     sGuiInputConfigList[21] = {"RightThumbstickLeft",  true, "RIGHT THUMBSTICK LEFT",  ":/graphics/help/thumbstick_left.svg"};
+     sGuiInputConfigList[22] = {"RightThumbstickRight", true, "RIGHT THUMBSTICK RIGHT", ":/graphics/help/thumbstick_right.svg"};
+     sGuiInputConfigList[23] = {"RightThumbstickClick", true, "RIGHT THUMBSTICK CLICK", ":/graphics/help/thumbstick_click.svg"};
++    sGuiInputConfigList[24] = {"HotKeyEnable",         true, "HOTKEY ENABLE",          ":/graphics/help/button_hotkey.svg" };
+     // clang-format on
+ }
+ 
+--- ./resources/systems/unix/es_find_rules.xml.org	2022-04-05 00:43:36.138504238 -0400
++++ ./resources/systems/unix/es_find_rules.xml	2022-04-05 00:43:48.608634305 -0400
+@@ -74,6 +74,7 @@
+         <!-- Nintendo 3DS emulator Citra -->
+         <rule type="systempath">
+             <entry>citra</entry>
++            <entry>citra-qt</entry>
+             <entry>citra-emu.citra-nightly</entry>
+             <entry>org.citra_emu.citra</entry>
+         </rule>
+@@ -238,4 +239,4 @@
+             <entry>~/bin/yuzu.AppImage</entry>
+         </rule>
+     </emulator>
+-</ruleList>
+\ No newline at end of file
++</ruleList>

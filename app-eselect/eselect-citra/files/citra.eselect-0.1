@@ -1,0 +1,12 @@
+# Copyright 1999-2015 Gentoo Foundation
+# Distributed under the terms of the GNU General Public License v2
+
+DESCRIPTION="Manage Citra (nightly, canary, bin) implementation"
+MAINTAINER=""
+VERSION="0.1"
+
+SYMLINK_PATH=/usr/bin/citra-qt
+SYMLINK_TARGETS=( citra-qt-nightly citra-qt-nightly-bin )
+SYMLINK_DESCRIPTION='Citra'
+
+inherit bin-symlink

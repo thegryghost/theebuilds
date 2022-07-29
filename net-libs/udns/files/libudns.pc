@@ -1,0 +1,11 @@
+prefix=/usr
+exec_prefix=/usr
+libdir=/usr/lib64
+includedir=/usr/include
+
+Name: udns
+Version: 0.4
+Description: DNS resolver library for both synchronous and asynchronous DNS queries
+URL: http://www.corpit.ru/mjt/udns.html
+Libs: -L${libdir} -ludns
+Cflags: -I${includedir}

@@ -1,0 +1,12 @@
+# Copyright 1999-2015 Gentoo Foundation
+# Distributed under the terms of the GNU General Public License v2
+
+DESCRIPTION="Manage Yuzu (mainline, pineapple-EA, bins) implementation"
+MAINTAINER=""
+VERSION="0.1"
+
+SYMLINK_PATH=/usr/bin/yuzu
+SYMLINK_TARGETS=( yuzu-mainline yuzu-ea-pineapple yuzu-bin yuzu-ea-pineapple-bin )
+SYMLINK_DESCRIPTION='Yuzu binary'
+
+inherit bin-symlink

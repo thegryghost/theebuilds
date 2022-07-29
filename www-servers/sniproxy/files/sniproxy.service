@@ -1,0 +1,15 @@
+[Unit]
+Description=Transparent TLS proxy
+Documentation=
+After=syslog.target
+After=network.target
+
+[Service]
+PrivateTmp=true
+Type=forking
+PIDFile=/var/run/sniproxy.pid
+ExecStart=/usr/sbin/sniproxy -c /etc/sniproxy/sniproxy.conf
+ExecReload=/bin/kill -HUP $MAINPID
+
+[Install]
+WantedBy=multi-user.target

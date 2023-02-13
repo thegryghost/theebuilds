@@ -35,7 +35,7 @@ DOCS=( README.md THEMES.md CREDITS.md USERGUIDE.md )
 src_prepare() {
 	eapply "${FILESDIR}/switch_hotkey_1.2.5.patch" 
 	if use oldcfg; then
-		eapply "${FILESDIR}/joystick.patch"
+		eapply "${FILESDIR}/joystick_1.2.5.patch"
 	fi
 	eapply_user
 	cmake_src_prepare

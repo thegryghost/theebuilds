@@ -73,7 +73,7 @@ index 998cafdf1..554ae655e 100644
  #include "common/threadsafe_queue.h"
  #include "core/frontend/input.h"
  #include "input_common/sdl/sdl_impl.h"
-+#include "core/settings.h"
++#include "common/settings.h"
 +
 +int batocera_hotkey_exit = 0;
 +int batocera_hotkey_start_number = -1;

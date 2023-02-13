@@ -7,7 +7,8 @@ inherit cmake desktop
 
 DESCRIPTION="EmulationStation Desktop Edition"
 HOMEPAGE="https://es-de.org/"
-SRC_URI="https://gitlab.com/leonstyhre/emulationstation-de/-/archive/v${PV}/emulationstation-de-v${PV}.tar.bz2"
+#SRC_URI="https://gitlab.com/leonstyhre/emulationstation-de/-/archive/v${PV}/emulationstation-de-v${PV}.tar.bz2"
+SRC_URI="https://gitlab.com/es-de/emulationstation-de/-/archive/v${PV}/emulationstation-de-v${PV}.tar.bz2"
 
 LICENSE="emulationstation"
 SLOT="0"

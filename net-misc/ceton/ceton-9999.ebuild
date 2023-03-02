@@ -23,6 +23,7 @@ pkg_setup() {
 
 src_prepare() {
 	default
+	eapply ${FILESDIR}/13.diff
         cd "${S}"
         sed -e 's:KERNEL_VERSION \:=:#KERNEL_VERSION \:=:g' -i Makefile
         sed -e 's:KERNEL_DIR\t\:= :#KERNEL_DIR\t\:= :g' -i Makefile

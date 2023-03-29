@@ -1,0 +1,272 @@
+diff --git a/src/audio_core/renderer/adsp/audio_renderer.cpp b/src/audio_core/renderer/adsp/audio_renderer.cpp
+index 78c15629bb4e..0e437e7799bc 100644
+--- a/src/audio_core/renderer/adsp/audio_renderer.cpp
++++ b/src/audio_core/renderer/adsp/audio_renderer.cpp
+@@ -135,7 +135,7 @@ void AudioRenderer::ThreadFunc() {
+     static constexpr char name[]{"AudioRenderer"};
+     MicroProfileOnThreadCreate(name);
+     Common::SetCurrentThreadName(name);
+-    Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
++    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+     if (mailbox->ADSPWaitMessage() != RenderMessage::AudioRenderer_InitializeOK) {
+         LOG_ERROR(Service_Audio,
+                   "ADSP Audio Renderer -- Failed to receive initialize message from host!");
+diff --git a/src/common/steady_clock.cpp b/src/common/steady_clock.cpp
+index 0d5908aa794e..7828591960fe 100644
+--- a/src/common/steady_clock.cpp
++++ b/src/common/steady_clock.cpp
+@@ -23,6 +23,19 @@ static s64 WindowsQueryPerformanceCounter() {
+     QueryPerformanceCounter(&counter);
+     return counter.QuadPart;
+ }
++
++static s64 GetSystemTimeNS() {
++    // GetSystemTimePreciseAsFileTime returns the file time in 100ns units.
++    static constexpr s64 Multiplier = 100;
++    // Convert Windows epoch to Unix epoch.
++    static constexpr s64 WindowsEpochToUnixEpochNS = 0x19DB1DED53E8000LL;
++
++    FILETIME filetime;
++    GetSystemTimePreciseAsFileTime(&filetime);
++    return Multiplier * ((static_cast<s64>(filetime.dwHighDateTime) << 32) +
++                         static_cast<s64>(filetime.dwLowDateTime)) -
++           WindowsEpochToUnixEpochNS;
++}
+ #endif
+ 
+ SteadyClock::time_point SteadyClock::Now() noexcept {
+@@ -53,4 +66,16 @@ SteadyClock::time_point SteadyClock::Now() noexcept {
+ #endif
+ }
+ 
++RealTimeClock::time_point RealTimeClock::Now() noexcept {
++#if defined(_WIN32)
++    return time_point{duration{GetSystemTimeNS()}};
++#elif defined(__APPLE__)
++    return time_point{duration{clock_gettime_nsec_np(CLOCK_REALTIME)}};
++#else
++    timespec ts;
++    clock_gettime(CLOCK_REALTIME, &ts);
++    return time_point{std::chrono::seconds{ts.tv_sec} + std::chrono::nanoseconds{ts.tv_nsec}};
++#endif
++}
++
+ }; // namespace Common
+diff --git a/src/common/steady_clock.h b/src/common/steady_clock.h
+index 9497cf865dcc..dbd0e2513139 100644
+--- a/src/common/steady_clock.h
++++ b/src/common/steady_clock.h
+@@ -20,4 +20,15 @@ struct SteadyClock {
+     [[nodiscard]] static time_point Now() noexcept;
+ };
+ 
++struct RealTimeClock {
++    using rep = s64;
++    using period = std::nano;
++    using duration = std::chrono::nanoseconds;
++    using time_point = std::chrono::time_point<RealTimeClock>;
++
++    static constexpr bool is_steady = false;
++
++    [[nodiscard]] static time_point Now() noexcept;
++};
++
+ } // namespace Common
+diff --git a/src/common/x64/native_clock.cpp b/src/common/x64/native_clock.cpp
+index bc1a973b0694..76c66e7eeda2 100644
+--- a/src/common/x64/native_clock.cpp
++++ b/src/common/x64/native_clock.cpp
+@@ -53,11 +53,11 @@ u64 EstimateRDTSCFrequency() {
+     FencedRDTSC();
+ 
+     // Get the current time.
+-    const auto start_time = Common::SteadyClock::Now();
++    const auto start_time = Common::RealTimeClock::Now();
+     const u64 tsc_start = FencedRDTSC();
+     // Wait for 250 milliseconds.
+     std::this_thread::sleep_for(std::chrono::milliseconds{250});
+-    const auto end_time = Common::SteadyClock::Now();
++    const auto end_time = Common::RealTimeClock::Now();
+     const u64 tsc_end = FencedRDTSC();
+     // Calculate differences.
+     const u64 timer_diff = static_cast<u64>(
+@@ -72,13 +72,29 @@ NativeClock::NativeClock(u64 emulated_cpu_frequency_, u64 emulated_clock_frequen
+                          u64 rtsc_frequency_)
+     : WallClock(emulated_cpu_frequency_, emulated_clock_frequency_, true), rtsc_frequency{
+                                                                                rtsc_frequency_} {
++    // Thread to re-adjust the RDTSC frequency after 10 seconds has elapsed.
++    time_sync_thread = std::jthread{[this](std::stop_token token) {
++        // Get the current time.
++        const auto start_time = Common::RealTimeClock::Now();
++        const u64 tsc_start = FencedRDTSC();
++        // Wait for 10 seconds.
++        if (!Common::StoppableTimedWait(token, std::chrono::seconds{10})) {
++            return;
++        }
++        const auto end_time = Common::RealTimeClock::Now();
++        const u64 tsc_end = FencedRDTSC();
++        // Calculate differences.
++        const u64 timer_diff = static_cast<u64>(
++            std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time).count());
++        const u64 tsc_diff = tsc_end - tsc_start;
++        const u64 tsc_freq = MultiplyAndDivide64(tsc_diff, 1000000000ULL, timer_diff);
++        rtsc_frequency = tsc_freq;
++        CalculateAndSetFactors();
++    }};
++
+     time_point.inner.last_measure = FencedRDTSC();
+     time_point.inner.accumulated_ticks = 0U;
+-    ns_rtsc_factor = GetFixedPoint64Factor(NS_RATIO, rtsc_frequency);
+-    us_rtsc_factor = GetFixedPoint64Factor(US_RATIO, rtsc_frequency);
+-    ms_rtsc_factor = GetFixedPoint64Factor(MS_RATIO, rtsc_frequency);
+-    clock_rtsc_factor = GetFixedPoint64Factor(emulated_clock_frequency, rtsc_frequency);
+-    cpu_rtsc_factor = GetFixedPoint64Factor(emulated_cpu_frequency, rtsc_frequency);
++    CalculateAndSetFactors();
+ }
+ 
+ u64 NativeClock::GetRTSC() {
+@@ -138,6 +154,14 @@ u64 NativeClock::GetCPUCycles() {
+     return MultiplyHigh(rtsc_value, cpu_rtsc_factor);
+ }
+ 
++void NativeClock::CalculateAndSetFactors() {
++    ns_rtsc_factor = GetFixedPoint64Factor(NS_RATIO, rtsc_frequency);
++    us_rtsc_factor = GetFixedPoint64Factor(US_RATIO, rtsc_frequency);
++    ms_rtsc_factor = GetFixedPoint64Factor(MS_RATIO, rtsc_frequency);
++    clock_rtsc_factor = GetFixedPoint64Factor(emulated_clock_frequency, rtsc_frequency);
++    cpu_rtsc_factor = GetFixedPoint64Factor(emulated_cpu_frequency, rtsc_frequency);
++}
++
+ } // namespace X64
+ 
+ } // namespace Common
+diff --git a/src/common/x64/native_clock.h b/src/common/x64/native_clock.h
+index 38ae7a46259e..03ca291d8009 100644
+--- a/src/common/x64/native_clock.h
++++ b/src/common/x64/native_clock.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include "common/polyfill_thread.h"
+ #include "common/wall_clock.h"
+ 
+ namespace Common {
+@@ -28,6 +29,8 @@ class NativeClock final : public WallClock {
+ private:
+     u64 GetRTSC();
+ 
++    void CalculateAndSetFactors();
++
+     union alignas(16) TimePoint {
+         TimePoint() : pack{} {}
+         u128 pack{};
+@@ -47,6 +50,8 @@ class NativeClock final : public WallClock {
+     u64 ms_rtsc_factor{};
+ 
+     u64 rtsc_frequency;
++
++    std::jthread time_sync_thread;
+ };
+ } // namespace X64
+ 
+diff --git a/src/core/core_timing.cpp b/src/core/core_timing.cpp
+index 742cfb996727..cd4df45228c1 100644
+--- a/src/core/core_timing.cpp
++++ b/src/core/core_timing.cpp
+@@ -53,7 +53,7 @@ void CoreTiming::ThreadEntry(CoreTiming& instance) {
+     static constexpr char name[] = "HostTiming";
+     MicroProfileOnThreadCreate(name);
+     Common::SetCurrentThreadName(name);
+-    Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
++    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+     instance.on_thread_init();
+     instance.ThreadLoop();
+     MicroProfileOnThreadExit();
+diff --git a/src/core/cpu_manager.cpp b/src/core/cpu_manager.cpp
+index 04a11f444794..980bb97f9567 100644
+--- a/src/core/cpu_manager.cpp
++++ b/src/core/cpu_manager.cpp
+@@ -192,7 +192,7 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
+     }
+     MicroProfileOnThreadCreate(name.c_str());
+     Common::SetCurrentThreadName(name.c_str());
+-    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
++    Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+     auto& data = core_data[core];
+     data.host_context = Common::Fiber::ThreadToFiber();
+ 
+diff --git a/src/core/hle/service/hid/controllers/stubbed.cpp b/src/core/hle/service/hid/controllers/stubbed.cpp
+index df9ee0c3f454..9e2f3ab2129d 100644
+--- a/src/core/hle/service/hid/controllers/stubbed.cpp
++++ b/src/core/hle/service/hid/controllers/stubbed.cpp
+@@ -26,7 +26,7 @@ void Controller_Stubbed::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+     }
+ 
+     CommonHeader header{};
+-    header.timestamp = core_timing.GetCPUTicks();
++    header.timestamp = core_timing.GetGlobalTimeNs().count();
+     header.total_entry_count = 17;
+     header.entry_count = 0;
+     header.last_entry_index = 0;
+diff --git a/src/core/hle/service/hid/controllers/touchscreen.cpp b/src/core/hle/service/hid/controllers/touchscreen.cpp
+index d90a4e732de3..3ef91df4bc53 100644
+--- a/src/core/hle/service/hid/controllers/touchscreen.cpp
++++ b/src/core/hle/service/hid/controllers/touchscreen.cpp
+@@ -32,7 +32,7 @@ void Controller_Touchscreen::OnInit() {}
+ void Controller_Touchscreen::OnRelease() {}
+ 
+ void Controller_Touchscreen::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+-    shared_memory->touch_screen_lifo.timestamp = core_timing.GetCPUTicks();
++    shared_memory->touch_screen_lifo.timestamp = core_timing.GetGlobalTimeNs().count();
+ 
+     if (!IsControllerActivated()) {
+         shared_memory->touch_screen_lifo.buffer_count = 0;
+@@ -85,7 +85,7 @@ void Controller_Touchscreen::OnUpdate(const Core::Timing::CoreTiming& core_timin
+     const auto active_fingers_count =
+         static_cast<std::size_t>(std::distance(active_fingers.begin(), end_iter));
+ 
+-    const u64 tick = core_timing.GetCPUTicks();
++    const u64 timestamp = static_cast<u64>(core_timing.GetGlobalTimeNs().count());
+     const auto& last_entry = shared_memory->touch_screen_lifo.ReadCurrentEntry().state;
+ 
+     next_state.sampling_number = last_entry.sampling_number + 1;
+@@ -102,8 +102,8 @@ void Controller_Touchscreen::OnUpdate(const Core::Timing::CoreTiming& core_timin
+             touch_entry.diameter_x = Settings::values.touchscreen.diameter_x;
+             touch_entry.diameter_y = Settings::values.touchscreen.diameter_y;
+             touch_entry.rotation_angle = Settings::values.touchscreen.rotation_angle;
+-            touch_entry.delta_time = tick - active_fingers[id].last_touch;
+-            fingers[active_fingers[id].id].last_touch = tick;
++            touch_entry.delta_time = timestamp - active_fingers[id].last_touch;
++            fingers[active_fingers[id].id].last_touch = timestamp;
+             touch_entry.finger = active_fingers[id].id;
+             touch_entry.attribute.raw = active_fingers[id].attribute.raw;
+         } else {
+diff --git a/src/core/perf_stats.cpp b/src/core/perf_stats.cpp
+index f09c176f8143..1231c0dc87ab 100644
+--- a/src/core/perf_stats.cpp
++++ b/src/core/perf_stats.cpp
+@@ -126,8 +126,8 @@ double PerfStats::GetLastFrameTimeScale() const {
+ }
+ 
+ void SpeedLimiter::DoSpeedLimiting(microseconds current_system_time_us) {
+-    if (!Settings::values.use_speed_limit.GetValue() ||
+-        Settings::values.use_multi_core.GetValue()) {
++    if (Settings::values.use_multi_core.GetValue() ||
++        !Settings::values.use_speed_limit.GetValue()) {
+         return;
+     }
+ 
+diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
+index 9c103c0d42d8..050b11874eb2 100644
+--- a/src/video_core/gpu_thread.cpp
++++ b/src/video_core/gpu_thread.cpp
+@@ -25,7 +25,7 @@ static void RunThread(std::stop_token stop_token, Core::System& system,
+     SCOPE_EXIT({ MicroProfileOnThreadExit(); });
+ 
+     Common::SetCurrentThreadName(name.c_str());
+-    Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
++    Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+     system.RegisterHostThread();
+ 
+     auto current_context = context.Acquire();

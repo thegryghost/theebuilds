@@ -1,0 +1,37 @@
+diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
+index 9c103c0d42d8..7cc5647e92a6 100644
+--- a/src/video_core/gpu_thread.cpp
++++ b/src/video_core/gpu_thread.cpp
+@@ -32,7 +32,8 @@ static void RunThread(std::stop_token stop_token, Core::System& system,
+     VideoCore::RasterizerInterface* const rasterizer = renderer.ReadRasterizer();
+ 
+     while (!stop_token.stop_requested()) {
+-        CommandDataContainer next = state.queue.PopWait(stop_token);
++        CommandDataContainer next;
++        state.queue.Pop(next, stop_token);
+         if (stop_token.stop_requested()) {
+             break;
+         }
+diff --git a/src/video_core/gpu_thread.h b/src/video_core/gpu_thread.h
+index 90bcb5958f50..43940bd6ded1 100644
+--- a/src/video_core/gpu_thread.h
++++ b/src/video_core/gpu_thread.h
+@@ -10,8 +10,8 @@
+ #include <thread>
+ #include <variant>
+ 
++#include "common/bounded_threadsafe_queue.h"
+ #include "common/polyfill_thread.h"
+-#include "common/threadsafe_queue.h"
+ #include "video_core/framebuffer_config.h"
+ 
+ namespace Tegra {
+@@ -97,7 +97,7 @@ struct CommandDataContainer {
+ 
+ /// Struct used to synchronize the GPU thread
+ struct SynchState final {
+-    using CommandQueue = Common::MPSCQueue<CommandDataContainer, true>;
++    using CommandQueue = Common::MPSCQueue<CommandDataContainer>;
+     std::mutex write_lock;
+     CommandQueue queue;
+     u64 last_fence{};

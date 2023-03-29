@@ -1,0 +1,501 @@
+diff --git a/src/core/hle/service/am/applets/applet_cabinet.cpp b/src/core/hle/service/am/applets/applet_cabinet.cpp
+index d0969b0f10e1..162687b2938c 100644
+--- a/src/core/hle/service/am/applets/applet_cabinet.cpp
++++ b/src/core/hle/service/am/applets/applet_cabinet.cpp
+@@ -119,7 +119,7 @@ void Cabinet::DisplayCompleted(bool apply_changes, std::string_view amiibo_name)
+     case Service::NFP::CabinetMode::StartNicknameAndOwnerSettings: {
+         Service::NFP::AmiiboName name{};
+         std::memcpy(name.data(), amiibo_name.data(), std::min(amiibo_name.size(), name.size() - 1));
+-        nfp_device->SetNicknameAndOwner(name);
++        nfp_device->SetRegisterInfoPrivate(name);
+         break;
+     }
+     case Service::NFP::CabinetMode::StartGameDataEraser:
+@@ -129,7 +129,7 @@ void Cabinet::DisplayCompleted(bool apply_changes, std::string_view amiibo_name)
+         nfp_device->RestoreAmiibo();
+         break;
+     case Service::NFP::CabinetMode::StartFormatter:
+-        nfp_device->DeleteAllData();
++        nfp_device->Format();
+         break;
+     default:
+         UNIMPLEMENTED_MSG("Unknown CabinetMode={}", applet_input_common.applet_mode);
+diff --git a/src/core/hle/service/nfp/amiibo_crypto.cpp b/src/core/hle/service/nfp/amiibo_crypto.cpp
+index ffb2f959cbd7..ddf04b1d75cd 100644
+--- a/src/core/hle/service/nfp/amiibo_crypto.cpp
++++ b/src/core/hle/service/nfp/amiibo_crypto.cpp
+@@ -80,13 +80,16 @@ NTAG215File NfcDataToEncodedData(const EncryptedNTAG215File& nfc_data) {
+     encoded_data.hmac_data = nfc_data.user_memory.hmac_data;
+     encoded_data.constant_value = nfc_data.user_memory.constant_value;
+     encoded_data.write_counter = nfc_data.user_memory.write_counter;
++    encoded_data.amiibo_version = nfc_data.user_memory.amiibo_version;
+     encoded_data.settings = nfc_data.user_memory.settings;
+     encoded_data.owner_mii = nfc_data.user_memory.owner_mii;
+-    encoded_data.title_id = nfc_data.user_memory.title_id;
+-    encoded_data.applicaton_write_counter = nfc_data.user_memory.applicaton_write_counter;
++    encoded_data.application_id = nfc_data.user_memory.application_id;
++    encoded_data.application_write_counter = nfc_data.user_memory.application_write_counter;
+     encoded_data.application_area_id = nfc_data.user_memory.application_area_id;
++    encoded_data.application_id_byte = nfc_data.user_memory.application_id_byte;
+     encoded_data.unknown = nfc_data.user_memory.unknown;
+     encoded_data.unknown2 = nfc_data.user_memory.unknown2;
++    encoded_data.application_area_crc = nfc_data.user_memory.application_area_crc;
+     encoded_data.application_area = nfc_data.user_memory.application_area;
+     encoded_data.hmac_tag = nfc_data.user_memory.hmac_tag;
+     encoded_data.lock_bytes = nfc_data.uuid.lock_bytes;
+@@ -111,13 +114,16 @@ EncryptedNTAG215File EncodedDataToNfcData(const NTAG215File& encoded_data) {
+     nfc_data.user_memory.hmac_data = encoded_data.hmac_data;
+     nfc_data.user_memory.constant_value = encoded_data.constant_value;
+     nfc_data.user_memory.write_counter = encoded_data.write_counter;
++    nfc_data.user_memory.amiibo_version = encoded_data.amiibo_version;
+     nfc_data.user_memory.settings = encoded_data.settings;
+     nfc_data.user_memory.owner_mii = encoded_data.owner_mii;
+-    nfc_data.user_memory.title_id = encoded_data.title_id;
+-    nfc_data.user_memory.applicaton_write_counter = encoded_data.applicaton_write_counter;
++    nfc_data.user_memory.application_id = encoded_data.application_id;
++    nfc_data.user_memory.application_write_counter = encoded_data.application_write_counter;
+     nfc_data.user_memory.application_area_id = encoded_data.application_area_id;
++    nfc_data.user_memory.application_id_byte = encoded_data.application_id_byte;
+     nfc_data.user_memory.unknown = encoded_data.unknown;
+     nfc_data.user_memory.unknown2 = encoded_data.unknown2;
++    nfc_data.user_memory.application_area_crc = encoded_data.application_area_crc;
+     nfc_data.user_memory.application_area = encoded_data.application_area;
+     nfc_data.user_memory.hmac_tag = encoded_data.hmac_tag;
+     nfc_data.user_memory.model_info = encoded_data.model_info;
+diff --git a/src/core/hle/service/nfp/nfp_device.cpp b/src/core/hle/service/nfp/nfp_device.cpp
+index 1bdc42741929..ddff90d6acd5 100644
+--- a/src/core/hle/service/nfp/nfp_device.cpp
++++ b/src/core/hle/service/nfp/nfp_device.cpp
+@@ -174,8 +174,8 @@ Result NfpDevice::StopDetection() {
+ 
+     if (device_state == DeviceState::TagFound || device_state == DeviceState::TagMounted) {
+         CloseAmiibo();
+-        return ResultSuccess;
+     }
++
+     if (device_state == DeviceState::SearchingForTag || device_state == DeviceState::TagRemoved) {
+         device_state = DeviceState::Initialized;
+         return ResultSuccess;
+@@ -204,9 +204,7 @@ Result NfpDevice::Flush() {
+     const auto& current_date = GetAmiiboDate(current_posix_time);
+     if (settings.write_date.raw_date != current_date.raw_date) {
+         settings.write_date = current_date;
+-        settings.crc_counter++;
+-        // TODO: Find how to calculate the crc check
+-        // settings.crc = CalculateCRC(settings);
++        UpdateSettingsCrc();
+     }
+ 
+     tag_data.write_counter++;
+@@ -318,7 +316,7 @@ Result NfpDevice::GetCommonInfo(CommonInfo& common_info) const {
+     common_info = {
+         .last_write_date = settings.write_date.GetWriteDate(),
+         .write_counter = tag_data.write_counter,
+-        .version = 0,
++        .version = tag_data.amiibo_version,
+         .application_area_size = sizeof(ApplicationArea),
+     };
+     return ResultSuccess;
+@@ -370,13 +368,95 @@ Result NfpDevice::GetRegisterInfo(RegisterInfo& register_info) const {
+         .mii_char_info = manager.ConvertV3ToCharInfo(tag_data.owner_mii),
+         .creation_date = settings.init_date.GetWriteDate(),
+         .amiibo_name = GetAmiiboName(settings),
+-        .font_region = {},
++        .font_region = settings.settings.font_region,
++    };
++
++    return ResultSuccess;
++}
++
++Result NfpDevice::GetAdminInfo(AdminInfo& admin_info) const {
++    if (device_state != DeviceState::TagMounted) {
++        LOG_ERROR(Service_NFC, "Wrong device state {}", device_state);
++        if (device_state == DeviceState::TagRemoved) {
++            return TagRemoved;
++        }
++        return WrongDeviceState;
++    }
++
++    if (mount_target == MountTarget::None || mount_target == MountTarget::Rom) {
++        LOG_ERROR(Service_NFC, "Amiibo is read only", device_state);
++        return WrongDeviceState;
++    }
++
++    u8 flags = static_cast<u8>(tag_data.settings.settings.raw >> 0x4);
++    if (tag_data.settings.settings.amiibo_initialized == 0) {
++        flags = flags & 0xfe;
++    }
++
++    u64 application_id = 0;
++    u32 application_area_id = 0;
++    AppAreaVersion app_area_version = AppAreaVersion::NotSet;
++    if (tag_data.settings.settings.appdata_initialized != 0) {
++        application_id = tag_data.application_id;
++        app_area_version =
++            static_cast<AppAreaVersion>(application_id >> application_id_version_offset & 0xf);
++
++        // Restore application id to original value
++        if (application_id >> 0x38 != 0) {
++            const u8 application_byte = tag_data.application_id_byte & 0xf;
++            application_id = RemoveVersionByte(application_id) |
++                             (static_cast<u64>(application_byte) << application_id_version_offset);
++        }
++
++        application_area_id = tag_data.application_area_id;
++    }
++
++    // TODO: Validate this data
++    admin_info = {
++        .application_id = application_id,
++        .application_area_id = application_area_id,
++        .crc_change_counter = tag_data.settings.crc_counter,
++        .flags = flags,
++        .tag_type = PackedTagType::Type2,
++        .app_area_version = app_area_version,
+     };
+ 
+     return ResultSuccess;
+ }
+ 
+-Result NfpDevice::SetNicknameAndOwner(const AmiiboName& amiibo_name) {
++Result NfpDevice::DeleteRegisterInfo() {
++    if (device_state != DeviceState::TagMounted) {
++        LOG_ERROR(Service_NFC, "Wrong device state {}", device_state);
++        if (device_state == DeviceState::TagRemoved) {
++            return TagRemoved;
++        }
++        return WrongDeviceState;
++    }
++
++    if (mount_target == MountTarget::None || mount_target == MountTarget::Rom) {
++        LOG_ERROR(Service_NFC, "Amiibo is read only", device_state);
++        return WrongDeviceState;
++    }
++
++    if (tag_data.settings.settings.amiibo_initialized == 0) {
++        return RegistrationIsNotInitialized;
++    }
++
++    Common::TinyMT rng{};
++    rng.GenerateRandomBytes(&tag_data.owner_mii, sizeof(tag_data.owner_mii));
++    rng.GenerateRandomBytes(&tag_data.settings.amiibo_name, sizeof(tag_data.settings.amiibo_name));
++    rng.GenerateRandomBytes(&tag_data.unknown, sizeof(u8));
++    rng.GenerateRandomBytes(&tag_data.unknown2[0], sizeof(u32));
++    rng.GenerateRandomBytes(&tag_data.unknown2[1], sizeof(u32));
++    rng.GenerateRandomBytes(&tag_data.application_area_crc, sizeof(u32));
++    rng.GenerateRandomBytes(&tag_data.settings.init_date, sizeof(u32));
++    tag_data.settings.settings.font_region.Assign(0);
++    tag_data.settings.settings.amiibo_initialized.Assign(0);
++
++    return Flush();
++}
++
++Result NfpDevice::SetRegisterInfoPrivate(const AmiiboName& amiibo_name) {
+     if (device_state != DeviceState::TagMounted) {
+         LOG_ERROR(Service_NFP, "Wrong device state {}", device_state);
+         if (device_state == DeviceState::TagRemoved) {
+@@ -393,16 +473,23 @@ Result NfpDevice::SetNicknameAndOwner(const AmiiboName& amiibo_name) {
+     Service::Mii::MiiManager manager;
+     auto& settings = tag_data.settings;
+ 
+-    settings.init_date = GetAmiiboDate(current_posix_time);
+-    settings.write_date = GetAmiiboDate(current_posix_time);
+-    settings.crc_counter++;
+-    // TODO: Find how to calculate the crc check
+-    // settings.crc = CalculateCRC(settings);
++    if (tag_data.settings.settings.amiibo_initialized == 0) {
++        settings.init_date = GetAmiiboDate(current_posix_time);
++        settings.write_date.raw_date = 0;
++    }
+ 
+     SetAmiiboName(settings, amiibo_name);
+     tag_data.owner_mii = manager.ConvertCharInfoToV3(manager.BuildDefault(0));
++    tag_data.unknown = 0;
++    tag_data.unknown2[6] = 0;
++    settings.country_code_id = 0;
++    settings.settings.font_region.Assign(0);
+     settings.settings.amiibo_initialized.Assign(1);
+ 
++    // TODO: this is a mix of tag.file input
++    std::array<u8, 0x7e> unknown_input{};
++    tag_data.application_area_crc = CalculateCrc(unknown_input);
++
+     return Flush();
+ }
+ 
+@@ -425,23 +512,17 @@ Result NfpDevice::RestoreAmiibo() {
+     return ResultSuccess;
+ }
+ 
+-Result NfpDevice::DeleteAllData() {
+-    const auto result = DeleteApplicationArea();
+-    if (result.IsError()) {
+-        return result;
+-    }
++Result NfpDevice::Format() {
++    auto result1 = DeleteApplicationArea();
++    auto result2 = DeleteRegisterInfo();
+ 
+-    if (device_state != DeviceState::TagMounted) {
+-        LOG_ERROR(Service_NFP, "Wrong device state {}", device_state);
+-        if (device_state == DeviceState::TagRemoved) {
+-            return TagRemoved;
+-        }
+-        return WrongDeviceState;
++    if (result1.IsError()) {
++        return result1;
+     }
+ 
+-    Common::TinyMT rng{};
+-    rng.GenerateRandomBytes(&tag_data.owner_mii, sizeof(tag_data.owner_mii));
+-    tag_data.settings.settings.amiibo_initialized.Assign(0);
++    if (result2.IsError()) {
++        return result2;
++    }
+ 
+     return Flush();
+ }
+@@ -569,7 +650,10 @@ Result NfpDevice::SetApplicationArea(std::span<const u8> data) {
+     rng.GenerateRandomBytes(tag_data.application_area.data() + data.size(),
+                             sizeof(ApplicationArea) - data.size());
+ 
+-    tag_data.applicaton_write_counter++;
++    if (tag_data.application_write_counter != counter_limit) {
++        tag_data.application_write_counter++;
++    }
++
+     is_data_moddified = true;
+ 
+     return ResultSuccess;
+@@ -617,14 +701,25 @@ Result NfpDevice::RecreateApplicationArea(u32 access_id, std::span<const u8> dat
+     rng.GenerateRandomBytes(tag_data.application_area.data() + data.size(),
+                             sizeof(ApplicationArea) - data.size());
+ 
+-    // TODO: Investigate why the title id needs to be moddified
+-    tag_data.title_id = system.GetApplicationProcessProgramID();
+-    tag_data.title_id = tag_data.title_id | 0x30000000ULL;
++    if (tag_data.application_write_counter != counter_limit) {
++        tag_data.application_write_counter++;
++    }
++
++    const u64 application_id = system.GetApplicationProcessProgramID();
++
++    tag_data.application_id_byte =
++        static_cast<u8>(application_id >> application_id_version_offset & 0xf);
++    tag_data.application_id =
++        RemoveVersionByte(application_id) |
++        (static_cast<u64>(AppAreaVersion::NintendoSwitch) << application_id_version_offset);
+     tag_data.settings.settings.appdata_initialized.Assign(1);
+     tag_data.application_area_id = access_id;
+-    tag_data.applicaton_write_counter++;
+     tag_data.unknown = {};
+ 
++    // TODO: this is a mix of tag_data input
++    std::array<u8, 0x7e> unknown_input{};
++    tag_data.application_area_crc = CalculateCrc(unknown_input);
++
+     return Flush();
+ }
+ 
+@@ -642,12 +737,20 @@ Result NfpDevice::DeleteApplicationArea() {
+         return WrongDeviceState;
+     }
+ 
++    if (tag_data.settings.settings.appdata_initialized == 0) {
++        return ApplicationAreaIsNotInitialized;
++    }
++
++    if (tag_data.application_write_counter != counter_limit) {
++        tag_data.application_write_counter++;
++    }
++
+     Common::TinyMT rng{};
+     rng.GenerateRandomBytes(tag_data.application_area.data(), sizeof(ApplicationArea));
+-    rng.GenerateRandomBytes(&tag_data.title_id, sizeof(u64));
++    rng.GenerateRandomBytes(&tag_data.application_id, sizeof(u64));
+     rng.GenerateRandomBytes(&tag_data.application_area_id, sizeof(u32));
++    rng.GenerateRandomBytes(&tag_data.application_id_byte, sizeof(u8));
+     tag_data.settings.settings.appdata_initialized.Assign(0);
+-    tag_data.applicaton_write_counter++;
+     tag_data.unknown = {};
+ 
+     return Flush();
+@@ -719,4 +822,45 @@ AmiiboDate NfpDevice::GetAmiiboDate(s64 posix_time) const {
+     return amiibo_date;
+ }
+ 
++u64 NfpDevice::RemoveVersionByte(u64 application_id) const {
++    return application_id & ~(0xfULL << application_id_version_offset);
++}
++
++void NfpDevice::UpdateSettingsCrc() {
++    auto& settings = tag_data.settings;
++
++    if (settings.crc_counter != counter_limit) {
++        settings.crc_counter++;
++    }
++
++    // TODO: this reads data from a global, find what it is
++    std::array<u8, 8> unknown_input{};
++    settings.crc = CalculateCrc(unknown_input);
++}
++
++u32 NfpDevice::CalculateCrc(std::span<const u8> data) {
++    constexpr u32 magic = 0xedb88320;
++    u32 crc = 0xffffffff;
++
++    if (data.size() == 0) {
++        return 0;
++    }
++
++    for (u8 input : data) {
++        u32 temp = (crc ^ input) >> 1;
++        if (((crc ^ input) & 1) != 0) {
++            temp = temp ^ magic;
++        }
++
++        for (std::size_t step = 0; step < 7; ++step) {
++            crc = temp >> 1;
++            if ((temp & 1) != 0) {
++                crc = temp >> 1 ^ magic;
++            }
++        }
++    }
++
++    return ~crc;
++}
++
+ } // namespace Service::NFP
+diff --git a/src/core/hle/service/nfp/nfp_device.h b/src/core/hle/service/nfp/nfp_device.h
+index b6a46f2acefe..06386401d1c2 100644
+--- a/src/core/hle/service/nfp/nfp_device.h
++++ b/src/core/hle/service/nfp/nfp_device.h
+@@ -47,10 +47,12 @@ class NfpDevice {
+     Result GetCommonInfo(CommonInfo& common_info) const;
+     Result GetModelInfo(ModelInfo& model_info) const;
+     Result GetRegisterInfo(RegisterInfo& register_info) const;
++    Result GetAdminInfo(AdminInfo& admin_info) const;
+ 
+-    Result SetNicknameAndOwner(const AmiiboName& amiibo_name);
++    Result DeleteRegisterInfo();
++    Result SetRegisterInfoPrivate(const AmiiboName& amiibo_name);
+     Result RestoreAmiibo();
+-    Result DeleteAllData();
++    Result Format();
+ 
+     Result OpenApplicationArea(u32 access_id);
+     Result GetApplicationAreaId(u32& application_area_id) const;
+@@ -76,6 +78,9 @@ class NfpDevice {
+     AmiiboName GetAmiiboName(const AmiiboSettings& settings) const;
+     void SetAmiiboName(AmiiboSettings& settings, const AmiiboName& amiibo_name);
+     AmiiboDate GetAmiiboDate(s64 posix_time) const;
++    u64 RemoveVersionByte(u64 application_id) const;
++    void UpdateSettingsCrc();
++    u32 CalculateCrc(std::span<const u8>);
+ 
+     bool is_controller_set{};
+     int callback_key;
+diff --git a/src/core/hle/service/nfp/nfp_types.h b/src/core/hle/service/nfp/nfp_types.h
+index fc228c2b2a7f..142343d6ee49 100644
+--- a/src/core/hle/service/nfp/nfp_types.h
++++ b/src/core/hle/service/nfp/nfp_types.h
+@@ -10,6 +10,8 @@
+ 
+ namespace Service::NFP {
+ static constexpr std::size_t amiibo_name_length = 0xA;
++static constexpr std::size_t application_id_version_offset = 0x1c;
++static constexpr std::size_t counter_limit = 0xffff;
+ 
+ enum class ServiceType : u32 {
+     User,
+@@ -99,6 +101,14 @@ enum class TagProtocol : u32 {
+     All = 0xFFFFFFFFU,
+ };
+ 
++enum class AppAreaVersion : u8 {
++    Nintendo3DS = 0,
++    NintendoWiiU = 1,
++    Nintendo3DSv2 = 2,
++    NintendoSwitch = 3,
++    NotSet = 0xFF,
++};
++
+ enum class CabinetMode : u8 {
+     StartNicknameAndOwnerSettings,
+     StartGameDataEraser,
+@@ -197,6 +207,7 @@ struct Settings {
+     union {
+         u8 raw{};
+ 
++        BitField<0, 4, u8> font_region;
+         BitField<4, 1, u8> amiibo_initialized;
+         BitField<5, 1, u8> appdata_initialized;
+     };
+@@ -236,18 +247,20 @@ static_assert(sizeof(NTAG215Password) == 0x8, "NTAG215Password is an invalid siz
+ struct EncryptedAmiiboFile {
+     u8 constant_value;                     // Must be A5
+     u16_be write_counter;                  // Number of times the amiibo has been written?
+-    INSERT_PADDING_BYTES(0x1);             // Unknown 1
++    u8 amiibo_version;                     // Amiibo file version
+     AmiiboSettings settings;               // Encrypted amiibo settings
+     HashData hmac_tag;                     // Hash
+     AmiiboModelInfo model_info;            // Encrypted amiibo model info
+     HashData keygen_salt;                  // Salt
+     HashData hmac_data;                    // Hash
+     Service::Mii::Ver3StoreData owner_mii; // Encrypted Mii data
+-    u64_be title_id;                       // Encrypted Game id
+-    u16_be applicaton_write_counter;       // Encrypted Counter
++    u64_be application_id;                 // Encrypted Game id
++    u16_be application_write_counter;      // Encrypted Counter
+     u32_be application_area_id;            // Encrypted Game id
+-    std::array<u8, 0x2> unknown;
+-    std::array<u32, 0x8> unknown2;
++    u8 application_id_byte;
++    u8 unknown;
++    std::array<u32, 0x7> unknown2;
++    u32_be application_area_crc;
+     ApplicationArea application_area; // Encrypted Game data
+ };
+ static_assert(sizeof(EncryptedAmiiboFile) == 0x1F8, "AmiiboFile is an invalid size");
+@@ -259,14 +272,16 @@ struct NTAG215File {
+     HashData hmac_data;        // Hash
+     u8 constant_value;         // Must be A5
+     u16_be write_counter;      // Number of times the amiibo has been written?
+-    INSERT_PADDING_BYTES(0x1); // Unknown 1
++    u8 amiibo_version;         // Amiibo file version
+     AmiiboSettings settings;
+-    Service::Mii::Ver3StoreData owner_mii; // Encrypted Mii data
+-    u64_be title_id;
+-    u16_be applicaton_write_counter; // Encrypted Counter
++    Service::Mii::Ver3StoreData owner_mii; // Mii data
++    u64_be application_id;                 // Game id
++    u16_be application_write_counter;      // Counter
+     u32_be application_area_id;
+-    std::array<u8, 0x2> unknown;
+-    std::array<u32, 0x8> unknown2;
++    u8 application_id_byte;
++    u8 unknown;
++    std::array<u32, 0x7> unknown2;
++    u32_be application_area_crc;
+     ApplicationArea application_area; // Encrypted Game data
+     HashData hmac_tag;                // Hash
+     UniqueSerialNumber uid;           // Unique serial number
+@@ -336,6 +351,18 @@ struct RegisterInfo {
+ };
+ static_assert(sizeof(RegisterInfo) == 0x100, "RegisterInfo is an invalid size");
+ 
++struct AdminInfo {
++    u64 application_id;
++    u32 application_area_id;
++    u16 crc_change_counter;
++    u8 flags;
++    PackedTagType tag_type;
++    AppAreaVersion app_area_version;
++    INSERT_PADDING_BYTES(0x7);
++    INSERT_PADDING_BYTES(0x28);
++};
++static_assert(sizeof(AdminInfo) == 0x40, "AdminInfo is an invalid size");
++
+ struct SectorKey {
+     MifareCmd command;
+     u8 unknown; // Usually 1

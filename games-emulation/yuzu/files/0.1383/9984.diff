@@ -1,0 +1,1394 @@
+diff --git a/src/audio_core/device/device_session.cpp b/src/audio_core/device/device_session.cpp
+index 5a327a606857..043ce887544e 100644
+--- a/src/audio_core/device/device_session.cpp
++++ b/src/audio_core/device/device_session.cpp
+@@ -93,7 +93,7 @@ void DeviceSession::AppendBuffers(std::span<const AudioBuffer> buffers) const {
+             stream->AppendBuffer(new_buffer, samples);
+         } else {
+             std::vector<s16> samples(buffer.size / sizeof(s16));
+-            system.Memory().ReadBlockUnsafe(buffer.samples, samples.data(), buffer.size);
++            system.ApplicationMemory().ReadBlockUnsafe(buffer.samples, samples.data(), buffer.size);
+             stream->AppendBuffer(new_buffer, samples);
+         }
+     }
+@@ -102,7 +102,7 @@ void DeviceSession::AppendBuffers(std::span<const AudioBuffer> buffers) const {
+ void DeviceSession::ReleaseBuffer(const AudioBuffer& buffer) const {
+     if (type == Sink::StreamType::In) {
+         auto samples{stream->ReleaseBuffer(buffer.size / sizeof(s16))};
+-        system.Memory().WriteBlockUnsafe(buffer.samples, samples.data(), buffer.size);
++        system.ApplicationMemory().WriteBlockUnsafe(buffer.samples, samples.data(), buffer.size);
+     }
+ }
+ 
+diff --git a/src/audio_core/renderer/adsp/adsp.cpp b/src/audio_core/renderer/adsp/adsp.cpp
+index a2839566312e..74772fc50cad 100644
+--- a/src/audio_core/renderer/adsp/adsp.cpp
++++ b/src/audio_core/renderer/adsp/adsp.cpp
+@@ -13,7 +13,7 @@
+ namespace AudioCore::AudioRenderer::ADSP {
+ 
+ ADSP::ADSP(Core::System& system_, Sink::Sink& sink_)
+-    : system{system_}, memory{system.Memory()}, sink{sink_} {}
++    : system{system_}, memory{system.ApplicationMemory()}, sink{sink_} {}
+ 
+ ADSP::~ADSP() {
+     ClearCommandBuffers();
+diff --git a/src/audio_core/renderer/adsp/command_list_processor.cpp b/src/audio_core/renderer/adsp/command_list_processor.cpp
+index e3bf2d7ecd3a..7a300d21629d 100644
+--- a/src/audio_core/renderer/adsp/command_list_processor.cpp
++++ b/src/audio_core/renderer/adsp/command_list_processor.cpp
+@@ -17,7 +17,7 @@ namespace AudioCore::AudioRenderer::ADSP {
+ void CommandListProcessor::Initialize(Core::System& system_, CpuAddr buffer, u64 size,
+                                       Sink::SinkStream* stream_) {
+     system = &system_;
+-    memory = &system->Memory();
++    memory = &system->ApplicationMemory();
+     stream = stream_;
+     header = reinterpret_cast<CommandListHeader*>(buffer);
+     commands = reinterpret_cast<u8*>(buffer + sizeof(CommandListHeader));
+diff --git a/src/audio_core/renderer/system.cpp b/src/audio_core/renderer/system.cpp
+index 28f063641b68..ad869facb7c1 100644
+--- a/src/audio_core/renderer/system.cpp
++++ b/src/audio_core/renderer/system.cpp
+@@ -127,8 +127,7 @@ Result System::Initialize(const AudioRendererParameterInternal& params,
+     render_device = params.rendering_device;
+     execution_mode = params.execution_mode;
+ 
+-    core.Memory().ZeroBlock(*core.ApplicationProcess(), transfer_memory->GetSourceAddress(),
+-                            transfer_memory_size);
++    core.ApplicationMemory().ZeroBlock(transfer_memory->GetSourceAddress(), transfer_memory_size);
+ 
+     // Note: We're not actually using the transfer memory because it's a pain to code for.
+     // Allocate the memory normally instead and hope the game doesn't try to read anything back
+diff --git a/src/core/arm/arm_interface.cpp b/src/core/arm/arm_interface.cpp
+index be3f55cd2fb4..d30914b7a8ea 100644
+--- a/src/core/arm/arm_interface.cpp
++++ b/src/core/arm/arm_interface.cpp
+@@ -44,7 +44,7 @@ void ARM_Interface::SymbolicateBacktrace(Core::System& system, std::vector<Backt
+     std::map<std::string, Symbols::Symbols> symbols;
+     for (const auto& module : modules) {
+         symbols.insert_or_assign(
+-            module.second, Symbols::GetSymbols(module.first, system.Memory(),
++            module.second, Symbols::GetSymbols(module.first, system.ApplicationMemory(),
+                                                system.ApplicationProcess()->Is64BitProcess()));
+     }
+ 
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_32.cpp b/src/core/arm/dynarmic/arm_dynarmic_32.cpp
+index aa92d3fc3dc1..cab21a88e84c 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_32.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_32.cpp
+@@ -28,8 +28,8 @@ using namespace Common::Literals;
+ class DynarmicCallbacks32 : public Dynarmic::A32::UserCallbacks {
+ public:
+     explicit DynarmicCallbacks32(ARM_Dynarmic_32& parent_)
+-        : parent{parent_},
+-          memory(parent.system.Memory()), debugger_enabled{parent.system.DebuggerEnabled()},
++        : parent{parent_}, memory(parent.system.ApplicationMemory()),
++          debugger_enabled{parent.system.DebuggerEnabled()},
+           check_memory_access{debugger_enabled ||
+                               !Settings::values.cpuopt_ignore_memory_aborts.GetValue()} {}
+ 
+@@ -468,7 +468,7 @@ void ARM_Dynarmic_32::PageTableChanged(Common::PageTable& page_table,
+ std::vector<ARM_Interface::BacktraceEntry> ARM_Dynarmic_32::GetBacktrace(Core::System& system,
+                                                                          u64 fp, u64 lr, u64 pc) {
+     std::vector<BacktraceEntry> out;
+-    auto& memory = system.Memory();
++    auto& memory = system.ApplicationMemory();
+ 
+     out.push_back({"", 0, pc, 0, ""});
+ 
+diff --git a/src/core/arm/dynarmic/arm_dynarmic_64.cpp b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+index 67073c84d7db..bbbcb4f9d04d 100644
+--- a/src/core/arm/dynarmic/arm_dynarmic_64.cpp
++++ b/src/core/arm/dynarmic/arm_dynarmic_64.cpp
+@@ -28,8 +28,8 @@ using namespace Common::Literals;
+ class DynarmicCallbacks64 : public Dynarmic::A64::UserCallbacks {
+ public:
+     explicit DynarmicCallbacks64(ARM_Dynarmic_64& parent_)
+-        : parent{parent_},
+-          memory(parent.system.Memory()), debugger_enabled{parent.system.DebuggerEnabled()},
++        : parent{parent_}, memory(parent.system.ApplicationMemory()),
++          debugger_enabled{parent.system.DebuggerEnabled()},
+           check_memory_access{debugger_enabled ||
+                               !Settings::values.cpuopt_ignore_memory_aborts.GetValue()} {}
+ 
+@@ -529,7 +529,7 @@ void ARM_Dynarmic_64::PageTableChanged(Common::PageTable& page_table,
+ std::vector<ARM_Interface::BacktraceEntry> ARM_Dynarmic_64::GetBacktrace(Core::System& system,
+                                                                          u64 fp, u64 lr, u64 pc) {
+     std::vector<BacktraceEntry> out;
+-    auto& memory = system.Memory();
++    auto& memory = system.ApplicationMemory();
+ 
+     out.push_back({"", 0, pc, 0, ""});
+ 
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index f6273ac39f2b..caa6a77be49e 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -293,6 +293,7 @@ struct System::Impl {
+         ASSERT(Kernel::KProcess::Initialize(main_process, system, "main",
+                                             Kernel::KProcess::ProcessType::Userland, resource_limit)
+                    .IsSuccess());
++        kernel.MakeApplicationProcess(main_process);
+         const auto [load_result, load_parameters] = app_loader->Load(*main_process, system);
+         if (load_result != Loader::ResultStatus::Success) {
+             LOG_CRITICAL(Core, "Failed to load ROM (Error {})!", load_result);
+@@ -302,7 +303,6 @@ struct System::Impl {
+                 static_cast<u32>(SystemResultStatus::ErrorLoader) + static_cast<u32>(load_result));
+         }
+         AddGlueRegistrationForProcess(*app_loader, *main_process);
+-        kernel.MakeApplicationProcess(main_process);
+         kernel.InitializeCores();
+ 
+         // Initialize cheat engine
+@@ -681,11 +681,11 @@ const ExclusiveMonitor& System::Monitor() const {
+     return impl->kernel.GetExclusiveMonitor();
+ }
+ 
+-Memory::Memory& System::Memory() {
++Memory::Memory& System::ApplicationMemory() {
+     return impl->memory;
+ }
+ 
+-const Core::Memory::Memory& System::Memory() const {
++const Core::Memory::Memory& System::ApplicationMemory() const {
+     return impl->memory;
+ }
+ 
+diff --git a/src/core/core.h b/src/core/core.h
+index 7032240be927..4a5aba032da7 100644
+--- a/src/core/core.h
++++ b/src/core/core.h
+@@ -256,10 +256,10 @@ class System {
+     [[nodiscard]] const ExclusiveMonitor& Monitor() const;
+ 
+     /// Gets a mutable reference to the system memory instance.
+-    [[nodiscard]] Core::Memory::Memory& Memory();
++    [[nodiscard]] Core::Memory::Memory& ApplicationMemory();
+ 
+     /// Gets a constant reference to the system memory instance.
+-    [[nodiscard]] const Core::Memory::Memory& Memory() const;
++    [[nodiscard]] const Core::Memory::Memory& ApplicationMemory() const;
+ 
+     /// Gets a mutable reference to the GPU interface
+     [[nodiscard]] Tegra::GPU& GPU();
+diff --git a/src/core/debugger/gdbstub.cpp b/src/core/debugger/gdbstub.cpp
+index 5cfb66b93bb8..e2a13bbd2c2d 100644
+--- a/src/core/debugger/gdbstub.cpp
++++ b/src/core/debugger/gdbstub.cpp
+@@ -261,9 +261,9 @@ void GDBStub::ExecuteCommand(std::string_view packet, std::vector<DebuggerAction
+         const size_t addr{static_cast<size_t>(strtoll(command.data(), nullptr, 16))};
+         const size_t size{static_cast<size_t>(strtoll(command.data() + sep, nullptr, 16))};
+ 
+-        if (system.Memory().IsValidVirtualAddressRange(addr, size)) {
++        if (system.ApplicationMemory().IsValidVirtualAddressRange(addr, size)) {
+             std::vector<u8> mem(size);
+-            system.Memory().ReadBlock(addr, mem.data(), size);
++            system.ApplicationMemory().ReadBlock(addr, mem.data(), size);
+ 
+             SendReply(Common::HexToString(mem));
+         } else {
+@@ -281,8 +281,8 @@ void GDBStub::ExecuteCommand(std::string_view packet, std::vector<DebuggerAction
+         const auto mem_substr{std::string_view(command).substr(mem_sep)};
+         const auto mem{Common::HexStringToVector(mem_substr, false)};
+ 
+-        if (system.Memory().IsValidVirtualAddressRange(addr, size)) {
+-            system.Memory().WriteBlock(addr, mem.data(), size);
++        if (system.ApplicationMemory().IsValidVirtualAddressRange(addr, size)) {
++            system.ApplicationMemory().WriteBlock(addr, mem.data(), size);
+             system.InvalidateCpuInstructionCacheRange(addr, size);
+             SendReply(GDB_STUB_REPLY_OK);
+         } else {
+@@ -325,7 +325,7 @@ void GDBStub::HandleBreakpointInsert(std::string_view command) {
+     const size_t addr{static_cast<size_t>(strtoll(command.data() + addr_sep, nullptr, 16))};
+     const size_t size{static_cast<size_t>(strtoll(command.data() + size_sep, nullptr, 16))};
+ 
+-    if (!system.Memory().IsValidVirtualAddressRange(addr, size)) {
++    if (!system.ApplicationMemory().IsValidVirtualAddressRange(addr, size)) {
+         SendReply(GDB_STUB_REPLY_ERR);
+         return;
+     }
+@@ -334,22 +334,22 @@ void GDBStub::HandleBreakpointInsert(std::string_view command) {
+ 
+     switch (type) {
+     case BreakpointType::Software:
+-        replaced_instructions[addr] = system.Memory().Read32(addr);
+-        system.Memory().Write32(addr, arch->BreakpointInstruction());
++        replaced_instructions[addr] = system.ApplicationMemory().Read32(addr);
++        system.ApplicationMemory().Write32(addr, arch->BreakpointInstruction());
+         system.InvalidateCpuInstructionCacheRange(addr, sizeof(u32));
+         success = true;
+         break;
+     case BreakpointType::WriteWatch:
+-        success = system.ApplicationProcess()->InsertWatchpoint(system, addr, size,
++        success = system.ApplicationProcess()->InsertWatchpoint(addr, size,
+                                                                 Kernel::DebugWatchpointType::Write);
+         break;
+     case BreakpointType::ReadWatch:
+-        success = system.ApplicationProcess()->InsertWatchpoint(system, addr, size,
++        success = system.ApplicationProcess()->InsertWatchpoint(addr, size,
+                                                                 Kernel::DebugWatchpointType::Read);
+         break;
+     case BreakpointType::AccessWatch:
+         success = system.ApplicationProcess()->InsertWatchpoint(
+-            system, addr, size, Kernel::DebugWatchpointType::ReadOrWrite);
++            addr, size, Kernel::DebugWatchpointType::ReadOrWrite);
+         break;
+     case BreakpointType::Hardware:
+     default:
+@@ -372,7 +372,7 @@ void GDBStub::HandleBreakpointRemove(std::string_view command) {
+     const size_t addr{static_cast<size_t>(strtoll(command.data() + addr_sep, nullptr, 16))};
+     const size_t size{static_cast<size_t>(strtoll(command.data() + size_sep, nullptr, 16))};
+ 
+-    if (!system.Memory().IsValidVirtualAddressRange(addr, size)) {
++    if (!system.ApplicationMemory().IsValidVirtualAddressRange(addr, size)) {
+         SendReply(GDB_STUB_REPLY_ERR);
+         return;
+     }
+@@ -383,7 +383,7 @@ void GDBStub::HandleBreakpointRemove(std::string_view command) {
+     case BreakpointType::Software: {
+         const auto orig_insn{replaced_instructions.find(addr)};
+         if (orig_insn != replaced_instructions.end()) {
+-            system.Memory().Write32(addr, orig_insn->second);
++            system.ApplicationMemory().Write32(addr, orig_insn->second);
+             system.InvalidateCpuInstructionCacheRange(addr, sizeof(u32));
+             replaced_instructions.erase(addr);
+             success = true;
+@@ -391,16 +391,16 @@ void GDBStub::HandleBreakpointRemove(std::string_view command) {
+         break;
+     }
+     case BreakpointType::WriteWatch:
+-        success = system.ApplicationProcess()->RemoveWatchpoint(system, addr, size,
++        success = system.ApplicationProcess()->RemoveWatchpoint(addr, size,
+                                                                 Kernel::DebugWatchpointType::Write);
+         break;
+     case BreakpointType::ReadWatch:
+-        success = system.ApplicationProcess()->RemoveWatchpoint(system, addr, size,
++        success = system.ApplicationProcess()->RemoveWatchpoint(addr, size,
+                                                                 Kernel::DebugWatchpointType::Read);
+         break;
+     case BreakpointType::AccessWatch:
+         success = system.ApplicationProcess()->RemoveWatchpoint(
+-            system, addr, size, Kernel::DebugWatchpointType::ReadOrWrite);
++            addr, size, Kernel::DebugWatchpointType::ReadOrWrite);
+         break;
+     case BreakpointType::Hardware:
+     default:
+@@ -483,9 +483,9 @@ static std::optional<std::string> GetNameFromThreadType64(Core::Memory::Memory&
+ static std::optional<std::string> GetThreadName(Core::System& system,
+                                                 const Kernel::KThread* thread) {
+     if (system.ApplicationProcess()->Is64BitProcess()) {
+-        return GetNameFromThreadType64(system.Memory(), thread);
++        return GetNameFromThreadType64(system.ApplicationMemory(), thread);
+     } else {
+-        return GetNameFromThreadType32(system.Memory(), thread);
++        return GetNameFromThreadType32(system.ApplicationMemory(), thread);
+     }
+ }
+ 
+diff --git a/src/core/hle/kernel/k_address_arbiter.cpp b/src/core/hle/kernel/k_address_arbiter.cpp
+index 274928dcfe92..08c254028d62 100644
+--- a/src/core/hle/kernel/k_address_arbiter.cpp
++++ b/src/core/hle/kernel/k_address_arbiter.cpp
+@@ -21,8 +21,8 @@ KAddressArbiter::~KAddressArbiter() = default;
+ 
+ namespace {
+ 
+-bool ReadFromUser(Core::System& system, s32* out, KProcessAddress address) {
+-    *out = system.Memory().Read32(GetInteger(address));
++bool ReadFromUser(KernelCore& kernel, s32* out, KProcessAddress address) {
++    *out = GetCurrentMemory(kernel).Read32(GetInteger(address));
+     return true;
+ }
+ 
+@@ -209,7 +209,7 @@ Result KAddressArbiter::SignalAndModifyByWaitingCountIfEqual(uint64_t addr, s32
+         if (value != new_value) {
+             succeeded = UpdateIfEqual(m_system, std::addressof(user_value), addr, value, new_value);
+         } else {
+-            succeeded = ReadFromUser(m_system, std::addressof(user_value), addr);
++            succeeded = ReadFromUser(m_kernel, std::addressof(user_value), addr);
+         }
+ 
+         R_UNLESS(succeeded, ResultInvalidCurrentMemory);
+@@ -252,7 +252,7 @@ Result KAddressArbiter::WaitIfLessThan(uint64_t addr, s32 value, bool decrement,
+         if (decrement) {
+             succeeded = DecrementIfLessThan(m_system, std::addressof(user_value), addr, value);
+         } else {
+-            succeeded = ReadFromUser(m_system, std::addressof(user_value), addr);
++            succeeded = ReadFromUser(m_kernel, std::addressof(user_value), addr);
+         }
+ 
+         if (!succeeded) {
+@@ -303,7 +303,7 @@ Result KAddressArbiter::WaitIfEqual(uint64_t addr, s32 value, s64 timeout) {
+ 
+         // Read the value from userspace.
+         s32 user_value{};
+-        if (!ReadFromUser(m_system, std::addressof(user_value), addr)) {
++        if (!ReadFromUser(m_kernel, std::addressof(user_value), addr)) {
+             slp.CancelSleep();
+             R_THROW(ResultInvalidCurrentMemory);
+         }
+diff --git a/src/core/hle/kernel/k_condition_variable.cpp b/src/core/hle/kernel/k_condition_variable.cpp
+index c6634313fe40..73017cf99880 100644
+--- a/src/core/hle/kernel/k_condition_variable.cpp
++++ b/src/core/hle/kernel/k_condition_variable.cpp
+@@ -18,13 +18,13 @@ namespace Kernel {
+ 
+ namespace {
+ 
+-bool ReadFromUser(Core::System& system, u32* out, KProcessAddress address) {
+-    *out = system.Memory().Read32(GetInteger(address));
++bool ReadFromUser(KernelCore& kernel, u32* out, KProcessAddress address) {
++    *out = GetCurrentMemory(kernel).Read32(GetInteger(address));
+     return true;
+ }
+ 
+-bool WriteToUser(Core::System& system, KProcessAddress address, const u32* p) {
+-    system.Memory().Write32(GetInteger(address), *p);
++bool WriteToUser(KernelCore& kernel, KProcessAddress address, const u32* p) {
++    GetCurrentMemory(kernel).Write32(GetInteger(address), *p);
+     return true;
+ }
+ 
+@@ -128,7 +128,7 @@ Result KConditionVariable::SignalToAddress(KProcessAddress addr) {
+ 
+         // Write the value to userspace.
+         Result result{ResultSuccess};
+-        if (WriteToUser(m_system, addr, std::addressof(next_value))) [[likely]] {
++        if (WriteToUser(m_kernel, addr, std::addressof(next_value))) [[likely]] {
+             result = ResultSuccess;
+         } else {
+             result = ResultInvalidCurrentMemory;
+@@ -157,7 +157,7 @@ Result KConditionVariable::WaitForAddress(Handle handle, KProcessAddress addr, u
+ 
+         // Read the tag from userspace.
+         u32 test_tag{};
+-        R_UNLESS(ReadFromUser(m_system, std::addressof(test_tag), addr),
++        R_UNLESS(ReadFromUser(m_kernel, std::addressof(test_tag), addr),
+                  ResultInvalidCurrentMemory);
+ 
+         // If the tag isn't the handle (with wait mask), we're done.
+@@ -257,7 +257,7 @@ void KConditionVariable::Signal(u64 cv_key, s32 count) {
+         // If we have no waiters, clear the has waiter flag.
+         if (it == m_tree.end() || it->GetConditionVariableKey() != cv_key) {
+             const u32 has_waiter_flag{};
+-            WriteToUser(m_system, cv_key, std::addressof(has_waiter_flag));
++            WriteToUser(m_kernel, cv_key, std::addressof(has_waiter_flag));
+         }
+     }
+ }
+@@ -301,12 +301,12 @@ Result KConditionVariable::Wait(KProcessAddress addr, u64 key, u32 value, s64 ti
+             // Write to the cv key.
+             {
+                 const u32 has_waiter_flag = 1;
+-                WriteToUser(m_system, key, std::addressof(has_waiter_flag));
++                WriteToUser(m_kernel, key, std::addressof(has_waiter_flag));
+                 std::atomic_thread_fence(std::memory_order_seq_cst);
+             }
+ 
+             // Write the value to userspace.
+-            if (!WriteToUser(m_system, addr, std::addressof(next_value))) {
++            if (!WriteToUser(m_kernel, addr, std::addressof(next_value))) {
+                 slp.CancelSleep();
+                 R_THROW(ResultInvalidCurrentMemory);
+             }
+diff --git a/src/core/hle/kernel/k_page_table.cpp b/src/core/hle/kernel/k_page_table.cpp
+index cb39387ea624..02b5cada4827 100644
+--- a/src/core/hle/kernel/k_page_table.cpp
++++ b/src/core/hle/kernel/k_page_table.cpp
+@@ -108,7 +108,8 @@ Result KPageTable::InitializeForProcess(FileSys::ProgramAddressSpaceType as_type
+                                         bool enable_das_merge, bool from_back,
+                                         KMemoryManager::Pool pool, KProcessAddress code_addr,
+                                         size_t code_size, KSystemResource* system_resource,
+-                                        KResourceLimit* resource_limit) {
++                                        KResourceLimit* resource_limit,
++                                        Core::Memory::Memory& memory) {
+ 
+     const auto GetSpaceStart = [this](KAddressSpaceInfo::Type type) {
+         return KAddressSpaceInfo::GetAddressSpaceStart(m_address_space_width, type);
+@@ -117,6 +118,9 @@ Result KPageTable::InitializeForProcess(FileSys::ProgramAddressSpaceType as_type
+         return KAddressSpaceInfo::GetAddressSpaceSize(m_address_space_width, type);
+     };
+ 
++    // Set the tracking memory
++    m_memory = std::addressof(memory);
++
+     //  Set our width and heap/alias sizes
+     m_address_space_width = GetAddressSpaceWidthFromType(as_type);
+     const KProcessAddress start = 0;
+@@ -334,10 +338,10 @@ Result KPageTable::InitializeForProcess(FileSys::ProgramAddressSpaceType as_type
+ 
+ void KPageTable::Finalize() {
+     // Finalize memory blocks.
+-    m_memory_block_manager.Finalize(
+-        m_memory_block_slab_manager, [&](KProcessAddress addr, u64 size) {
+-            m_system.Memory().UnmapRegion(*m_page_table_impl, addr, size);
+-        });
++    m_memory_block_manager.Finalize(m_memory_block_slab_manager,
++                                    [&](KProcessAddress addr, u64 size) {
++                                        m_memory->UnmapRegion(*m_page_table_impl, addr, size);
++                                    });
+ 
+     // Release any insecure mapped memory.
+     if (m_mapped_insecure_memory) {
+@@ -1010,23 +1014,22 @@ Result KPageTable::SetupForIpcServer(KProcessAddress* out_addr, size_t size,
+                 clear_size = 0;
+             }
+ 
+-            std::memset(m_system.Memory().GetPointer<void>(GetInteger(start_partial_virt)),
+-                        fill_val, partial_offset);
++            std::memset(m_memory->GetPointer<void>(GetInteger(start_partial_virt)), fill_val,
++                        partial_offset);
+             std::memcpy(
+-                m_system.Memory().GetPointer<void>(GetInteger(start_partial_virt) + partial_offset),
+-                m_system.Memory().GetPointer<void>(
+-                    GetInteger(
+-                        GetHeapVirtualAddress(m_system.Kernel().MemoryLayout(), cur_block_addr)) +
+-                    partial_offset),
++                m_memory->GetPointer<void>(GetInteger(start_partial_virt) + partial_offset),
++                m_memory->GetPointer<void>(GetInteger(GetHeapVirtualAddress(
++                                               m_system.Kernel().MemoryLayout(), cur_block_addr)) +
++                                           partial_offset),
+                 copy_size);
+             if (clear_size > 0) {
+-                std::memset(m_system.Memory().GetPointer<void>(GetInteger(start_partial_virt) +
+-                                                               partial_offset + copy_size),
++                std::memset(m_memory->GetPointer<void>(GetInteger(start_partial_virt) +
++                                                       partial_offset + copy_size),
+                             fill_val, clear_size);
+             }
+         } else {
+-            std::memset(m_system.Memory().GetPointer<void>(GetInteger(start_partial_virt)),
+-                        fill_val, PageSize);
++            std::memset(m_memory->GetPointer<void>(GetInteger(start_partial_virt)), fill_val,
++                        PageSize);
+         }
+ 
+         // Map the page.
+@@ -1099,15 +1102,14 @@ Result KPageTable::SetupForIpcServer(KProcessAddress* out_addr, size_t size,
+             GetHeapVirtualAddress(m_system.Kernel().MemoryLayout(), end_partial_page);
+         if (send) {
+             const size_t copy_size = src_end - mapping_src_end;
+-            std::memcpy(m_system.Memory().GetPointer<void>(GetInteger(end_partial_virt)),
+-                        m_system.Memory().GetPointer<void>(GetInteger(GetHeapVirtualAddress(
++            std::memcpy(m_memory->GetPointer<void>(GetInteger(end_partial_virt)),
++                        m_memory->GetPointer<void>(GetInteger(GetHeapVirtualAddress(
+                             m_system.Kernel().MemoryLayout(), cur_block_addr))),
+                         copy_size);
+-            std::memset(
+-                m_system.Memory().GetPointer<void>(GetInteger(end_partial_virt) + copy_size),
+-                fill_val, PageSize - copy_size);
++            std::memset(m_memory->GetPointer<void>(GetInteger(end_partial_virt) + copy_size),
++                        fill_val, PageSize - copy_size);
+         } else {
+-            std::memset(m_system.Memory().GetPointer<void>(GetInteger(end_partial_virt)), fill_val,
++            std::memset(m_memory->GetPointer<void>(GetInteger(end_partial_virt)), fill_val,
+                         PageSize);
+         }
+ 
+@@ -2800,7 +2802,7 @@ Result KPageTable::SetHeapSize(u64* out, size_t size) {
+ 
+         // Clear all the newly allocated pages.
+         for (size_t cur_page = 0; cur_page < num_pages; ++cur_page) {
+-            std::memset(m_system.Memory().GetPointer(m_current_heap_end + (cur_page * PageSize)), 0,
++            std::memset(m_memory->GetPointer(m_current_heap_end + (cur_page * PageSize)), 0,
+                         PageSize);
+         }
+ 
+@@ -3006,7 +3008,7 @@ Result KPageTable::Operate(KProcessAddress addr, size_t num_pages, const KPageGr
+             const size_t size{node.GetNumPages() * PageSize};
+ 
+             // Map the pages.
+-            m_system.Memory().MapMemoryRegion(*m_page_table_impl, addr, size, node.GetAddress());
++            m_memory->MapMemoryRegion(*m_page_table_impl, addr, size, node.GetAddress());
+ 
+             addr += size;
+         }
+@@ -3039,14 +3041,14 @@ Result KPageTable::Operate(KProcessAddress addr, size_t num_pages, KMemoryPermis
+         SCOPE_EXIT({ pages_to_close.CloseAndReset(); });
+ 
+         this->AddRegionToPages(addr, num_pages, pages_to_close);
+-        m_system.Memory().UnmapRegion(*m_page_table_impl, addr, num_pages * PageSize);
++        m_memory->UnmapRegion(*m_page_table_impl, addr, num_pages * PageSize);
+         break;
+     }
+     case OperationType::MapFirst:
+     case OperationType::Map: {
+         ASSERT(map_addr);
+         ASSERT(Common::IsAligned(GetInteger(map_addr), PageSize));
+-        m_system.Memory().MapMemoryRegion(*m_page_table_impl, addr, num_pages * PageSize, map_addr);
++        m_memory->MapMemoryRegion(*m_page_table_impl, addr, num_pages * PageSize, map_addr);
+ 
+         // Open references to pages, if we should.
+         if (IsHeapPhysicalAddress(m_kernel.MemoryLayout(), map_addr)) {
+diff --git a/src/core/hle/kernel/k_page_table.h b/src/core/hle/kernel/k_page_table.h
+index 1917b2a98921..022d15f3558e 100644
+--- a/src/core/hle/kernel/k_page_table.h
++++ b/src/core/hle/kernel/k_page_table.h
+@@ -66,7 +66,8 @@ class KPageTable final {
+     Result InitializeForProcess(FileSys::ProgramAddressSpaceType as_type, bool enable_aslr,
+                                 bool enable_das_merge, bool from_back, KMemoryManager::Pool pool,
+                                 KProcessAddress code_addr, size_t code_size,
+-                                KSystemResource* system_resource, KResourceLimit* resource_limit);
++                                KSystemResource* system_resource, KResourceLimit* resource_limit,
++                                Core::Memory::Memory& memory);
+ 
+     void Finalize();
+ 
+@@ -546,6 +547,7 @@ class KPageTable final {
+ 
+     Core::System& m_system;
+     KernelCore& m_kernel;
++    Core::Memory::Memory* m_memory{};
+ };
+ 
+ } // namespace Kernel
+diff --git a/src/core/hle/kernel/k_process.cpp b/src/core/hle/kernel/k_process.cpp
+index 53f8139f3040..efe86ad272b9 100644
+--- a/src/core/hle/kernel/k_process.cpp
++++ b/src/core/hle/kernel/k_process.cpp
+@@ -367,8 +367,8 @@ Result KProcess::LoadFromMetadata(const FileSys::ProgramMetadata& metadata, std:
+     // Initialize process address space
+     if (const Result result{m_page_table.InitializeForProcess(
+             metadata.GetAddressSpaceType(), false, false, false, KMemoryManager::Pool::Application,
+-            0x8000000, code_size, std::addressof(m_kernel.GetAppSystemResource()),
+-            m_resource_limit)};
++            0x8000000, code_size, std::addressof(m_kernel.GetAppSystemResource()), m_resource_limit,
++            m_kernel.System().ApplicationMemory())};
+         result.IsError()) {
+         R_RETURN(result);
+     }
+@@ -592,8 +592,7 @@ Result KProcess::DeleteThreadLocalRegion(KProcessAddress addr) {
+     R_SUCCEED();
+ }
+ 
+-bool KProcess::InsertWatchpoint(Core::System& system, KProcessAddress addr, u64 size,
+-                                DebugWatchpointType type) {
++bool KProcess::InsertWatchpoint(KProcessAddress addr, u64 size, DebugWatchpointType type) {
+     const auto watch{std::find_if(m_watchpoints.begin(), m_watchpoints.end(), [&](const auto& wp) {
+         return wp.type == DebugWatchpointType::None;
+     })};
+@@ -609,14 +608,13 @@ bool KProcess::InsertWatchpoint(Core::System& system, KProcessAddress addr, u64
+     for (KProcessAddress page = Common::AlignDown(GetInteger(addr), PageSize); page < addr + size;
+          page += PageSize) {
+         m_debug_page_refcounts[page]++;
+-        system.Memory().MarkRegionDebug(page, PageSize, true);
++        this->GetMemory().MarkRegionDebug(page, PageSize, true);
+     }
+ 
+     return true;
+ }
+ 
+-bool KProcess::RemoveWatchpoint(Core::System& system, KProcessAddress addr, u64 size,
+-                                DebugWatchpointType type) {
++bool KProcess::RemoveWatchpoint(KProcessAddress addr, u64 size, DebugWatchpointType type) {
+     const auto watch{std::find_if(m_watchpoints.begin(), m_watchpoints.end(), [&](const auto& wp) {
+         return wp.start_address == addr && wp.end_address == addr + size && wp.type == type;
+     })};
+@@ -633,7 +631,7 @@ bool KProcess::RemoveWatchpoint(Core::System& system, KProcessAddress addr, u64
+          page += PageSize) {
+         m_debug_page_refcounts[page]--;
+         if (!m_debug_page_refcounts[page]) {
+-            system.Memory().MarkRegionDebug(page, PageSize, false);
++            this->GetMemory().MarkRegionDebug(page, PageSize, false);
+         }
+     }
+ 
+@@ -646,8 +644,7 @@ void KProcess::LoadModule(CodeSet code_set, KProcessAddress base_addr) {
+         m_page_table.SetProcessMemoryPermission(segment.addr + base_addr, segment.size, permission);
+     };
+ 
+-    m_kernel.System().Memory().WriteBlock(*this, base_addr, code_set.memory.data(),
+-                                          code_set.memory.size());
++    this->GetMemory().WriteBlock(base_addr, code_set.memory.data(), code_set.memory.size());
+ 
+     ReprotectSegment(code_set.CodeSegment(), Svc::MemoryPermission::ReadExecute);
+     ReprotectSegment(code_set.RODataSegment(), Svc::MemoryPermission::Read);
+@@ -706,4 +703,9 @@ Result KProcess::AllocateMainThreadStack(std::size_t stack_size) {
+     R_SUCCEED();
+ }
+ 
++Core::Memory::Memory& KProcess::GetMemory() const {
++    // TODO: per-process memory
++    return m_kernel.System().ApplicationMemory();
++}
++
+ } // namespace Kernel
+diff --git a/src/core/hle/kernel/k_process.h b/src/core/hle/kernel/k_process.h
+index 04b6bbb8623f..925981d06594 100644
+--- a/src/core/hle/kernel/k_process.h
++++ b/src/core/hle/kernel/k_process.h
+@@ -22,8 +22,12 @@
+ #include "core/hle/result.h"
+ 
+ namespace Core {
++namespace Memory {
++class Memory;
++};
++
+ class System;
+-}
++} // namespace Core
+ 
+ namespace FileSys {
+ class ProgramMetadata;
+@@ -135,6 +139,9 @@ class KProcess final : public KAutoObjectWithSlabHeapAndContainer<KProcess, KWor
+         return m_handle_table;
+     }
+ 
++    /// Gets a reference to process's memory.
++    Core::Memory::Memory& GetMemory() const;
++
+     Result SignalToAddress(KProcessAddress address) {
+         return m_condition_var.SignalToAddress(address);
+     }
+@@ -397,12 +404,10 @@ class KProcess final : public KAutoObjectWithSlabHeapAndContainer<KProcess, KWor
+     // Debug watchpoint management
+ 
+     // Attempts to insert a watchpoint into a free slot. Returns false if none are available.
+-    bool InsertWatchpoint(Core::System& system, KProcessAddress addr, u64 size,
+-                          DebugWatchpointType type);
++    bool InsertWatchpoint(KProcessAddress addr, u64 size, DebugWatchpointType type);
+ 
+     // Attempts to remove the watchpoint specified by the given parameters.
+-    bool RemoveWatchpoint(Core::System& system, KProcessAddress addr, u64 size,
+-                          DebugWatchpointType type);
++    bool RemoveWatchpoint(KProcessAddress addr, u64 size, DebugWatchpointType type);
+ 
+     const std::array<DebugWatchpoint, Core::Hardware::NUM_WATCHPOINTS>& GetWatchpoints() const {
+         return m_watchpoints;
+diff --git a/src/core/hle/kernel/k_server_session.cpp b/src/core/hle/kernel/k_server_session.cpp
+index 2288ee4350e7..c66aff50134a 100644
+--- a/src/core/hle/kernel/k_server_session.cpp
++++ b/src/core/hle/kernel/k_server_session.cpp
+@@ -222,7 +222,7 @@ Result KServerSession::SendReply(bool is_hle) {
+             // HLE servers write directly to a pointer to the thread command buffer. Therefore
+             // the reply has already been written in this case.
+         } else {
+-            Core::Memory::Memory& memory{m_kernel.System().Memory()};
++            Core::Memory::Memory& memory{client_thread->GetOwnerProcess()->GetMemory()};
+             KThread* server_thread{GetCurrentThreadPointer(m_kernel)};
+             UNIMPLEMENTED_IF(server_thread->GetOwnerProcess() != client_thread->GetOwnerProcess());
+ 
+@@ -319,7 +319,7 @@ Result KServerSession::ReceiveRequest(std::shared_ptr<Service::HLERequestContext
+     // bool recv_list_broken = false;
+ 
+     // Receive the message.
+-    Core::Memory::Memory& memory{m_kernel.System().Memory()};
++    Core::Memory::Memory& memory{client_thread->GetOwnerProcess()->GetMemory()};
+     if (out_context != nullptr) {
+         // HLE request.
+         u32* cmd_buf{reinterpret_cast<u32*>(memory.GetPointer(client_message))};
+diff --git a/src/core/hle/kernel/k_thread.cpp b/src/core/hle/kernel/k_thread.cpp
+index 9d101c6409db..70480b72581f 100644
+--- a/src/core/hle/kernel/k_thread.cpp
++++ b/src/core/hle/kernel/k_thread.cpp
+@@ -546,7 +546,7 @@ u16 KThread::GetUserDisableCount() const {
+         return {};
+     }
+ 
+-    auto& memory = m_kernel.System().Memory();
++    auto& memory = this->GetOwnerProcess()->GetMemory();
+     return memory.Read16(m_tls_address + offsetof(ThreadLocalRegion, disable_count));
+ }
+ 
+@@ -556,7 +556,7 @@ void KThread::SetInterruptFlag() {
+         return;
+     }
+ 
+-    auto& memory = m_kernel.System().Memory();
++    auto& memory = this->GetOwnerProcess()->GetMemory();
+     memory.Write16(m_tls_address + offsetof(ThreadLocalRegion, interrupt_flag), 1);
+ }
+ 
+@@ -566,7 +566,7 @@ void KThread::ClearInterruptFlag() {
+         return;
+     }
+ 
+-    auto& memory = m_kernel.System().Memory();
++    auto& memory = this->GetOwnerProcess()->GetMemory();
+     memory.Write16(m_tls_address + offsetof(ThreadLocalRegion, interrupt_flag), 0);
+ }
+ 
+@@ -1422,6 +1422,11 @@ s32 GetCurrentCoreId(KernelCore& kernel) {
+     return GetCurrentThread(kernel).GetCurrentCore();
+ }
+ 
++Core::Memory::Memory& GetCurrentMemory(KernelCore& kernel) {
++    // TODO: per-process memory
++    return kernel.System().ApplicationMemory();
++}
++
+ KScopedDisableDispatch::~KScopedDisableDispatch() {
+     // If we are shutting down the kernel, none of this is relevant anymore.
+     if (m_kernel.IsShuttingDown()) {
+diff --git a/src/core/hle/kernel/k_thread.h b/src/core/hle/kernel/k_thread.h
+index 0fa9672bfe9c..9c1a41128a7c 100644
+--- a/src/core/hle/kernel/k_thread.h
++++ b/src/core/hle/kernel/k_thread.h
+@@ -34,6 +34,9 @@ class Fiber;
+ }
+ 
+ namespace Core {
++namespace Memory {
++class Memory;
++}
+ class ARM_Interface;
+ class System;
+ } // namespace Core
+@@ -113,6 +116,7 @@ KThread& GetCurrentThread(KernelCore& kernel);
+ KProcess* GetCurrentProcessPointer(KernelCore& kernel);
+ KProcess& GetCurrentProcess(KernelCore& kernel);
+ s32 GetCurrentCoreId(KernelCore& kernel);
++Core::Memory::Memory& GetCurrentMemory(KernelCore& kernel);
+ 
+ class KThread final : public KAutoObjectWithSlabHeapAndContainer<KThread, KWorkerTask>,
+                       public boost::intrusive::list_base_hook<>,
+diff --git a/src/core/hle/kernel/kernel.cpp b/src/core/hle/kernel/kernel.cpp
+index 29809b2c5ca3..4f3366c9dfee 100644
+--- a/src/core/hle/kernel/kernel.cpp
++++ b/src/core/hle/kernel/kernel.cpp
+@@ -102,7 +102,7 @@ struct KernelCore::Impl {
+     void InitializeCores() {
+         for (u32 core_id = 0; core_id < Core::Hardware::NUM_CPU_CORES; core_id++) {
+             cores[core_id]->Initialize((*application_process).Is64BitProcess());
+-            system.Memory().SetCurrentPageTable(*application_process, core_id);
++            system.ApplicationMemory().SetCurrentPageTable(*application_process, core_id);
+         }
+     }
+ 
+@@ -206,7 +206,7 @@ struct KernelCore::Impl {
+ 
+     void InitializePhysicalCores() {
+         exclusive_monitor =
+-            Core::MakeExclusiveMonitor(system.Memory(), Core::Hardware::NUM_CPU_CORES);
++            Core::MakeExclusiveMonitor(system.ApplicationMemory(), Core::Hardware::NUM_CPU_CORES);
+         for (u32 i = 0; i < Core::Hardware::NUM_CPU_CORES; i++) {
+             const s32 core{static_cast<s32>(i)};
+ 
+diff --git a/src/core/hle/kernel/svc/svc_cache.cpp b/src/core/hle/kernel/svc/svc_cache.cpp
+index 1779832d37c6..082942dab7a1 100644
+--- a/src/core/hle/kernel/svc/svc_cache.cpp
++++ b/src/core/hle/kernel/svc/svc_cache.cpp
+@@ -46,7 +46,7 @@ Result FlushProcessDataCache(Core::System& system, Handle process_handle, u64 ad
+     R_UNLESS(page_table.Contains(address, size), ResultInvalidCurrentMemory);
+ 
+     // Perform the operation.
+-    R_RETURN(system.Memory().FlushDataCache(*process, address, size));
++    R_RETURN(GetCurrentMemory(system.Kernel()).FlushDataCache(address, size));
+ }
+ 
+ void FlushEntireDataCache64(Core::System& system) {
+diff --git a/src/core/hle/kernel/svc/svc_debug_string.cpp b/src/core/hle/kernel/svc/svc_debug_string.cpp
+index 8771d2b01b09..4c14ce6683d8 100644
+--- a/src/core/hle/kernel/svc/svc_debug_string.cpp
++++ b/src/core/hle/kernel/svc/svc_debug_string.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "core/core.h"
++#include "core/hle/kernel/k_thread.h"
+ #include "core/hle/kernel/svc.h"
+ #include "core/memory.h"
+ 
+@@ -12,7 +13,7 @@ Result OutputDebugString(Core::System& system, u64 address, u64 len) {
+     R_SUCCEED_IF(len == 0);
+ 
+     std::string str(len, '\0');
+-    system.Memory().ReadBlock(address, str.data(), str.size());
++    GetCurrentMemory(system.Kernel()).ReadBlock(address, str.data(), str.size());
+     LOG_DEBUG(Debug_Emulated, "{}", str);
+ 
+     R_SUCCEED();
+diff --git a/src/core/hle/kernel/svc/svc_exception.cpp b/src/core/hle/kernel/svc/svc_exception.cpp
+index 4ab5f471f532..580cf2f75c3b 100644
+--- a/src/core/hle/kernel/svc/svc_exception.cpp
++++ b/src/core/hle/kernel/svc/svc_exception.cpp
+@@ -25,7 +25,7 @@ void Break(Core::System& system, BreakReason reason, u64 info1, u64 info2) {
+             return;
+         }
+ 
+-        auto& memory = system.Memory();
++        auto& memory = GetCurrentMemory(system.Kernel());
+ 
+         // This typically is an error code so we're going to assume this is the case
+         if (sz == sizeof(u32)) {
+diff --git a/src/core/hle/kernel/svc/svc_ipc.cpp b/src/core/hle/kernel/svc/svc_ipc.cpp
+index 2a8c09a79223..ea03068aa18d 100644
+--- a/src/core/hle/kernel/svc/svc_ipc.cpp
++++ b/src/core/hle/kernel/svc/svc_ipc.cpp
+@@ -41,12 +41,12 @@ Result ReplyAndReceive(Core::System& system, s32* out_index, uint64_t handles_ad
+     auto& handle_table = GetCurrentProcess(kernel).GetHandleTable();
+ 
+     R_UNLESS(0 <= num_handles && num_handles <= ArgumentHandleCountMax, ResultOutOfRange);
+-    R_UNLESS(system.Memory().IsValidVirtualAddressRange(
++    R_UNLESS(GetCurrentMemory(kernel).IsValidVirtualAddressRange(
+                  handles_addr, static_cast<u64>(sizeof(Handle) * num_handles)),
+              ResultInvalidPointer);
+ 
+     std::vector<Handle> handles(num_handles);
+-    system.Memory().ReadBlock(handles_addr, handles.data(), sizeof(Handle) * num_handles);
++    GetCurrentMemory(kernel).ReadBlock(handles_addr, handles.data(), sizeof(Handle) * num_handles);
+ 
+     // Convert handle list to object table.
+     std::vector<KSynchronizationObject*> objs(num_handles);
+diff --git a/src/core/hle/kernel/svc/svc_port.cpp b/src/core/hle/kernel/svc/svc_port.cpp
+index c6eb70422cce..abba757c7102 100644
+--- a/src/core/hle/kernel/svc/svc_port.cpp
++++ b/src/core/hle/kernel/svc/svc_port.cpp
+@@ -14,7 +14,8 @@ namespace Kernel::Svc {
+ 
+ Result ConnectToNamedPort(Core::System& system, Handle* out, u64 user_name) {
+     // Copy the provided name from user memory to kernel memory.
+-    auto string_name = system.Memory().ReadCString(user_name, KObjectName::NameLengthMax);
++    auto string_name =
++        GetCurrentMemory(system.Kernel()).ReadCString(user_name, KObjectName::NameLengthMax);
+ 
+     std::array<char, KObjectName::NameLengthMax> name{};
+     std::strncpy(name.data(), string_name.c_str(), KObjectName::NameLengthMax - 1);
+@@ -62,7 +63,8 @@ Result ConnectToPort(Core::System& system, Handle* out_handle, Handle port) {
+ Result ManageNamedPort(Core::System& system, Handle* out_server_handle, uint64_t user_name,
+                        int32_t max_sessions) {
+     // Copy the provided name from user memory to kernel memory.
+-    auto string_name = system.Memory().ReadCString(user_name, KObjectName::NameLengthMax);
++    auto string_name =
++        GetCurrentMemory(system.Kernel()).ReadCString(user_name, KObjectName::NameLengthMax);
+ 
+     // Copy the provided name from user memory to kernel memory.
+     std::array<char, KObjectName::NameLengthMax> name{};
+diff --git a/src/core/hle/kernel/svc/svc_process.cpp b/src/core/hle/kernel/svc/svc_process.cpp
+index 3c3579947b55..619ed16a340d 100644
+--- a/src/core/hle/kernel/svc/svc_process.cpp
++++ b/src/core/hle/kernel/svc/svc_process.cpp
+@@ -73,7 +73,7 @@ Result GetProcessList(Core::System& system, s32* out_num_processes, u64 out_proc
+         R_THROW(ResultInvalidCurrentMemory);
+     }
+ 
+-    auto& memory = system.Memory();
++    auto& memory = GetCurrentMemory(kernel);
+     const auto& process_list = kernel.GetProcessList();
+     const auto num_processes = process_list.size();
+     const auto copy_amount =
+diff --git a/src/core/hle/kernel/svc/svc_query_memory.cpp b/src/core/hle/kernel/svc/svc_query_memory.cpp
+index 5db5611f015b..4d9fcd25fa06 100644
+--- a/src/core/hle/kernel/svc/svc_query_memory.cpp
++++ b/src/core/hle/kernel/svc/svc_query_memory.cpp
+@@ -30,10 +30,10 @@ Result QueryProcessMemory(Core::System& system, uint64_t out_memory_info, PageIn
+         R_THROW(ResultInvalidHandle);
+     }
+ 
+-    auto& memory{system.Memory()};
++    auto& current_memory{GetCurrentMemory(system.Kernel())};
+     const auto memory_info{process->PageTable().QueryInfo(address).GetSvcMemoryInfo()};
+ 
+-    memory.WriteBlock(out_memory_info, std::addressof(memory_info), sizeof(memory_info));
++    current_memory.WriteBlock(out_memory_info, std::addressof(memory_info), sizeof(memory_info));
+ 
+     //! This is supposed to be part of the QueryInfo call.
+     *out_page_info = {};
+diff --git a/src/core/hle/kernel/svc/svc_synchronization.cpp b/src/core/hle/kernel/svc/svc_synchronization.cpp
+index e490a13ae7b0..04d65f0bd664 100644
+--- a/src/core/hle/kernel/svc/svc_synchronization.cpp
++++ b/src/core/hle/kernel/svc/svc_synchronization.cpp
+@@ -90,7 +90,8 @@ Result WaitSynchronization(Core::System& system, int32_t* out_index, u64 user_ha
+ 
+     std::vector<Handle> handles(num_handles);
+     if (num_handles > 0) {
+-        system.Memory().ReadBlock(user_handles, handles.data(), num_handles * sizeof(Handle));
++        GetCurrentMemory(system.Kernel())
++            .ReadBlock(user_handles, handles.data(), num_handles * sizeof(Handle));
+     }
+ 
+     R_RETURN(WaitSynchronization(system, out_index, handles.data(), num_handles, timeout_ns));
+diff --git a/src/core/hle/kernel/svc/svc_thread.cpp b/src/core/hle/kernel/svc/svc_thread.cpp
+index 0be4858a2c97..37b54079cf2f 100644
+--- a/src/core/hle/kernel/svc/svc_thread.cpp
++++ b/src/core/hle/kernel/svc/svc_thread.cpp
+@@ -178,7 +178,7 @@ Result GetThreadContext3(Core::System& system, u64 out_context, Handle thread_ha
+         R_TRY(thread->GetThreadContext3(context));
+ 
+         // Copy the thread context to user space.
+-        system.Memory().WriteBlock(out_context, context.data(), context.size());
++        GetCurrentMemory(kernel).WriteBlock(out_context, context.data(), context.size());
+ 
+         R_SUCCEED();
+     }
+@@ -242,7 +242,7 @@ Result GetThreadList(Core::System& system, s32* out_num_threads, u64 out_thread_
+         R_THROW(ResultInvalidCurrentMemory);
+     }
+ 
+-    auto& memory = system.Memory();
++    auto& memory = GetCurrentMemory(system.Kernel());
+     const auto& thread_list = current_process->GetThreadList();
+     const auto num_threads = thread_list.size();
+     const auto copy_amount = std::min(static_cast<std::size_t>(out_thread_ids_size), num_threads);
+diff --git a/src/core/hle/service/am/am.cpp b/src/core/hle/service/am/am.cpp
+index deeca925da52..8ab179cc86c5 100644
+--- a/src/core/hle/service/am/am.cpp
++++ b/src/core/hle/service/am/am.cpp
+@@ -1265,7 +1265,8 @@ void ILibraryAppletCreator::CreateTransferMemoryStorage(HLERequestContext& ctx)
+     }
+ 
+     std::vector<u8> memory(transfer_mem->GetSize());
+-    system.Memory().ReadBlock(transfer_mem->GetSourceAddress(), memory.data(), memory.size());
++    system.ApplicationMemory().ReadBlock(transfer_mem->GetSourceAddress(), memory.data(),
++                                         memory.size());
+ 
+     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+     rb.Push(ResultSuccess);
+@@ -1298,7 +1299,8 @@ void ILibraryAppletCreator::CreateHandleStorage(HLERequestContext& ctx) {
+     }
+ 
+     std::vector<u8> memory(transfer_mem->GetSize());
+-    system.Memory().ReadBlock(transfer_mem->GetSourceAddress(), memory.data(), memory.size());
++    system.ApplicationMemory().ReadBlock(transfer_mem->GetSourceAddress(), memory.data(),
++                                         memory.size());
+ 
+     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+     rb.Push(ResultSuccess);
+diff --git a/src/core/hle/service/hid/controllers/console_sixaxis.cpp b/src/core/hle/service/hid/controllers/console_sixaxis.cpp
+index 37f2e4405ea2..bcb272eaff87 100644
+--- a/src/core/hle/service/hid/controllers/console_sixaxis.cpp
++++ b/src/core/hle/service/hid/controllers/console_sixaxis.cpp
+@@ -60,7 +60,8 @@ void Controller_ConsoleSixAxis::OnUpdate(const Core::Timing::CoreTiming& core_ti
+ 
+     // Update seven six axis transfer memory
+     seven_sixaxis_lifo.WriteNextEntry(next_seven_sixaxis_state);
+-    system.Memory().WriteBlock(transfer_memory, &seven_sixaxis_lifo, sizeof(seven_sixaxis_lifo));
++    system.ApplicationMemory().WriteBlock(transfer_memory, &seven_sixaxis_lifo,
++                                          sizeof(seven_sixaxis_lifo));
+ }
+ 
+ void Controller_ConsoleSixAxis::SetTransferMemoryAddress(Common::ProcessAddress t_mem) {
+diff --git a/src/core/hle/service/hid/hidbus/ringcon.cpp b/src/core/hle/service/hid/hidbus/ringcon.cpp
+index 65a2dd521f29..378108012053 100644
+--- a/src/core/hle/service/hid/hidbus/ringcon.cpp
++++ b/src/core/hle/service/hid/hidbus/ringcon.cpp
+@@ -64,8 +64,8 @@ void RingController::OnUpdate() {
+         curr_entry.polling_data.out_size = sizeof(ringcon_value);
+         std::memcpy(curr_entry.polling_data.data.data(), &ringcon_value, sizeof(ringcon_value));
+ 
+-        system.Memory().WriteBlock(transfer_memory, &enable_sixaxis_data,
+-                                   sizeof(enable_sixaxis_data));
++        system.ApplicationMemory().WriteBlock(transfer_memory, &enable_sixaxis_data,
++                                              sizeof(enable_sixaxis_data));
+         break;
+     }
+     default:
+diff --git a/src/core/hle/service/hid/irsensor/image_transfer_processor.cpp b/src/core/hle/service/hid/irsensor/image_transfer_processor.cpp
+index ca5d067e8f8f..803a6277c10b 100644
+--- a/src/core/hle/service/hid/irsensor/image_transfer_processor.cpp
++++ b/src/core/hle/service/hid/irsensor/image_transfer_processor.cpp
+@@ -58,16 +58,16 @@ void ImageTransferProcessor::OnControllerUpdate(Core::HID::ControllerTriggerType
+     if (camera_data.format != current_config.origin_format) {
+         LOG_WARNING(Service_IRS, "Wrong Input format {} expected {}", camera_data.format,
+                     current_config.origin_format);
+-        system.Memory().ZeroBlock(*system.ApplicationProcess(), transfer_memory,
+-                                  GetDataSize(current_config.trimming_format));
++        system.ApplicationMemory().ZeroBlock(transfer_memory,
++                                             GetDataSize(current_config.trimming_format));
+         return;
+     }
+ 
+     if (current_config.origin_format > current_config.trimming_format) {
+         LOG_WARNING(Service_IRS, "Origin format {} is smaller than trimming format {}",
+                     current_config.origin_format, current_config.trimming_format);
+-        system.Memory().ZeroBlock(*system.ApplicationProcess(), transfer_memory,
+-                                  GetDataSize(current_config.trimming_format));
++        system.ApplicationMemory().ZeroBlock(transfer_memory,
++                                             GetDataSize(current_config.trimming_format));
+         return;
+     }
+ 
+@@ -84,8 +84,8 @@ void ImageTransferProcessor::OnControllerUpdate(Core::HID::ControllerTriggerType
+                     "Trimming area ({}, {}, {}, {}) is outside of origin area ({}, {})",
+                     current_config.trimming_start_x, current_config.trimming_start_y,
+                     trimming_width, trimming_height, origin_width, origin_height);
+-        system.Memory().ZeroBlock(*system.ApplicationProcess(), transfer_memory,
+-                                  GetDataSize(current_config.trimming_format));
++        system.ApplicationMemory().ZeroBlock(transfer_memory,
++                                             GetDataSize(current_config.trimming_format));
+         return;
+     }
+ 
+@@ -99,8 +99,8 @@ void ImageTransferProcessor::OnControllerUpdate(Core::HID::ControllerTriggerType
+         }
+     }
+ 
+-    system.Memory().WriteBlock(transfer_memory, window_data.data(),
+-                               GetDataSize(current_config.trimming_format));
++    system.ApplicationMemory().WriteBlock(transfer_memory, window_data.data(),
++                                          GetDataSize(current_config.trimming_format));
+ 
+     if (!IsProcessorActive()) {
+         StartProcessor();
+@@ -148,7 +148,7 @@ Core::IrSensor::ImageTransferProcessorState ImageTransferProcessor::GetState(
+     std::vector<u8>& data) const {
+     const auto size = GetDataSize(current_config.trimming_format);
+     data.resize(size);
+-    system.Memory().ReadBlock(transfer_memory, data.data(), size);
++    system.ApplicationMemory().ReadBlock(transfer_memory, data.data(), size);
+     return processor_state;
+ }
+ 
+diff --git a/src/core/hle/service/hle_ipc.cpp b/src/core/hle/service/hle_ipc.cpp
+index cca697c64cdc..2290df7055a2 100644
+--- a/src/core/hle/service/hle_ipc.cpp
++++ b/src/core/hle/service/hle_ipc.cpp
+@@ -303,8 +303,7 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer(Kernel::KThread& requesti
+     }
+ 
+     // Copy the translated command buffer back into the thread's command buffer area.
+-    memory.WriteBlock(owner_process, requesting_thread.GetTlsAddress(), cmd_buf.data(),
+-                      write_size * sizeof(u32));
++    memory.WriteBlock(requesting_thread.GetTlsAddress(), cmd_buf.data(), write_size * sizeof(u32));
+ 
+     return ResultSuccess;
+ }
+diff --git a/src/core/hle/service/jit/jit.cpp b/src/core/hle/service/jit/jit.cpp
+index 607f27b21b00..be996870f31f 100644
+--- a/src/core/hle/service/jit/jit.cpp
++++ b/src/core/hle/service/jit/jit.cpp
+@@ -24,8 +24,8 @@ class IJitEnvironment final : public ServiceFramework<IJitEnvironment> {
+ public:
+     explicit IJitEnvironment(Core::System& system_, Kernel::KProcess& process_, CodeRange user_rx,
+                              CodeRange user_ro)
+-        : ServiceFramework{system_, "IJitEnvironment"}, process{&process_}, context{
+-                                                                                system_.Memory()} {
++        : ServiceFramework{system_, "IJitEnvironment"}, process{&process_},
++          context{system_.ApplicationMemory()} {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+             {0, &IJitEnvironment::GenerateCode, "GenerateCode"},
+diff --git a/src/core/hle/service/ldr/ldr.cpp b/src/core/hle/service/ldr/ldr.cpp
+index 437dc2ea5d80..c42489ff9b74 100644
+--- a/src/core/hle/service/ldr/ldr.cpp
++++ b/src/core/hle/service/ldr/ldr.cpp
+@@ -225,7 +225,7 @@ class RelocatableObject final : public ServiceFramework<RelocatableObject> {
+ 
+         // Read NRR data from memory
+         std::vector<u8> nrr_data(nrr_size);
+-        system.Memory().ReadBlock(nrr_address, nrr_data.data(), nrr_size);
++        system.ApplicationMemory().ReadBlock(nrr_address, nrr_data.data(), nrr_size);
+         NRRHeader header;
+         std::memcpy(&header, nrr_data.data(), sizeof(NRRHeader));
+ 
+@@ -314,7 +314,7 @@ class RelocatableObject final : public ServiceFramework<RelocatableObject> {
+         const auto is_region_available = [&](VAddr addr) {
+             const auto end_addr = addr + size;
+             while (addr < end_addr) {
+-                if (system.Memory().IsValidVirtualAddress(addr)) {
++                if (system.ApplicationMemory().IsValidVirtualAddress(addr)) {
+                     return false;
+                 }
+ 
+@@ -427,8 +427,8 @@ class RelocatableObject final : public ServiceFramework<RelocatableObject> {
+         const VAddr bss_end_addr{
+             Common::AlignUp(bss_start + nro_header.bss_size, Kernel::PageSize)};
+ 
+-        const auto CopyCode = [this, process](VAddr src_addr, VAddr dst_addr, u64 size) {
+-            system.Memory().CopyBlock(*process, dst_addr, src_addr, size);
++        const auto CopyCode = [this](VAddr src_addr, VAddr dst_addr, u64 size) {
++            system.ApplicationMemory().CopyBlock(dst_addr, src_addr, size);
+         };
+         CopyCode(nro_addr + nro_header.segment_headers[TEXT_INDEX].memory_offset, text_start,
+                  nro_header.segment_headers[TEXT_INDEX].memory_size);
+@@ -506,7 +506,7 @@ class RelocatableObject final : public ServiceFramework<RelocatableObject> {
+ 
+         // Read NRO data from memory
+         std::vector<u8> nro_data(nro_size);
+-        system.Memory().ReadBlock(nro_address, nro_data.data(), nro_size);
++        system.ApplicationMemory().ReadBlock(nro_address, nro_data.data(), nro_size);
+ 
+         SHA256Hash hash{};
+         mbedtls_sha256_ret(nro_data.data(), nro_data.size(), hash.data(), 0);
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
+index d2308fffc984..453a965dcb22 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
+@@ -304,8 +304,8 @@ NvResult nvhost_gpu::SubmitGPFIFOBase(std::span<const u8> input, std::vector<u8>
+     Tegra::CommandList entries(params.num_entries);
+ 
+     if (kickoff) {
+-        system.Memory().ReadBlock(params.address, entries.command_lists.data(),
+-                                  params.num_entries * sizeof(Tegra::CommandListHeader));
++        system.ApplicationMemory().ReadBlock(params.address, entries.command_lists.data(),
++                                             params.num_entries * sizeof(Tegra::CommandListHeader));
+     } else {
+         std::memcpy(entries.command_lists.data(), &input[sizeof(IoctlSubmitGpfifo)],
+                     params.num_entries * sizeof(Tegra::CommandListHeader));
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.cpp b/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
+index 7bcef105b1b7..1ab51f10b0d6 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
+@@ -105,8 +105,8 @@ NvResult nvhost_nvdec_common::Submit(DeviceFD fd, std::span<const u8> input,
+         const auto object = nvmap.GetHandle(cmd_buffer.memory_id);
+         ASSERT_OR_EXECUTE(object, return NvResult::InvalidState;);
+         Tegra::ChCommandHeaderList cmdlist(cmd_buffer.word_count);
+-        system.Memory().ReadBlock(object->address + cmd_buffer.offset, cmdlist.data(),
+-                                  cmdlist.size() * sizeof(u32));
++        system.ApplicationMemory().ReadBlock(object->address + cmd_buffer.offset, cmdlist.data(),
++                                             cmdlist.size() * sizeof(u32));
+         gpu.PushCommandBuffer(core.Host1xDeviceFile().fd_to_id[fd], cmdlist);
+     }
+     std::memcpy(output.data(), &params, sizeof(IoctlSubmit));
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 95e070825d43..4323106326fb 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -832,11 +832,6 @@ std::string Memory::ReadCString(Common::ProcessAddress vaddr, std::size_t max_le
+     return impl->ReadCString(vaddr, max_length);
+ }
+ 
+-void Memory::ReadBlock(const Kernel::KProcess& process, const Common::ProcessAddress src_addr,
+-                       void* dest_buffer, const std::size_t size) {
+-    impl->ReadBlockImpl<false>(process, src_addr, dest_buffer, size);
+-}
+-
+ void Memory::ReadBlock(const Common::ProcessAddress src_addr, void* dest_buffer,
+                        const std::size_t size) {
+     impl->ReadBlock(src_addr, dest_buffer, size);
+@@ -847,11 +842,6 @@ void Memory::ReadBlockUnsafe(const Common::ProcessAddress src_addr, void* dest_b
+     impl->ReadBlockUnsafe(src_addr, dest_buffer, size);
+ }
+ 
+-void Memory::WriteBlock(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                        const void* src_buffer, std::size_t size) {
+-    impl->WriteBlockImpl<false>(process, dest_addr, src_buffer, size);
+-}
+-
+ void Memory::WriteBlock(const Common::ProcessAddress dest_addr, const void* src_buffer,
+                         const std::size_t size) {
+     impl->WriteBlock(dest_addr, src_buffer, size);
+@@ -862,29 +852,25 @@ void Memory::WriteBlockUnsafe(const Common::ProcessAddress dest_addr, const void
+     impl->WriteBlockUnsafe(dest_addr, src_buffer, size);
+ }
+ 
+-void Memory::CopyBlock(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                       Common::ProcessAddress src_addr, const std::size_t size) {
+-    impl->CopyBlock(process, dest_addr, src_addr, size);
++void Memory::CopyBlock(Common::ProcessAddress dest_addr, Common::ProcessAddress src_addr,
++                       const std::size_t size) {
++    impl->CopyBlock(*system.ApplicationProcess(), dest_addr, src_addr, size);
+ }
+ 
+-void Memory::ZeroBlock(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                       const std::size_t size) {
+-    impl->ZeroBlock(process, dest_addr, size);
++void Memory::ZeroBlock(Common::ProcessAddress dest_addr, const std::size_t size) {
++    impl->ZeroBlock(*system.ApplicationProcess(), dest_addr, size);
+ }
+ 
+-Result Memory::InvalidateDataCache(const Kernel::KProcess& process,
+-                                   Common::ProcessAddress dest_addr, const std::size_t size) {
+-    return impl->InvalidateDataCache(process, dest_addr, size);
++Result Memory::InvalidateDataCache(Common::ProcessAddress dest_addr, const std::size_t size) {
++    return impl->InvalidateDataCache(*system.ApplicationProcess(), dest_addr, size);
+ }
+ 
+-Result Memory::StoreDataCache(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                              const std::size_t size) {
+-    return impl->StoreDataCache(process, dest_addr, size);
++Result Memory::StoreDataCache(Common::ProcessAddress dest_addr, const std::size_t size) {
++    return impl->StoreDataCache(*system.ApplicationProcess(), dest_addr, size);
+ }
+ 
+-Result Memory::FlushDataCache(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                              const std::size_t size) {
+-    return impl->FlushDataCache(process, dest_addr, size);
++Result Memory::FlushDataCache(Common::ProcessAddress dest_addr, const std::size_t size) {
++    return impl->FlushDataCache(*system.ApplicationProcess(), dest_addr, size);
+ }
+ 
+ void Memory::RasterizerMarkRegionCached(Common::ProcessAddress vaddr, u64 size, bool cached) {
+diff --git a/src/core/memory.h b/src/core/memory.h
+index ed4e87739d74..72a0be813734 100644
+--- a/src/core/memory.h
++++ b/src/core/memory.h
+@@ -304,26 +304,6 @@ class Memory {
+      */
+     std::string ReadCString(Common::ProcessAddress vaddr, std::size_t max_length);
+ 
+-    /**
+-     * Reads a contiguous block of bytes from a specified process' address space.
+-     *
+-     * @param process     The process to read the data from.
+-     * @param src_addr    The virtual address to begin reading from.
+-     * @param dest_buffer The buffer to place the read bytes into.
+-     * @param size        The amount of data to read, in bytes.
+-     *
+-     * @note If a size of 0 is specified, then this function reads nothing and
+-     *       no attempts to access memory are made at all.
+-     *
+-     * @pre dest_buffer must be at least size bytes in length, otherwise a
+-     *      buffer overrun will occur.
+-     *
+-     * @post The range [dest_buffer, size) contains the read bytes from the
+-     *       process' address space.
+-     */
+-    void ReadBlock(const Kernel::KProcess& process, Common::ProcessAddress src_addr,
+-                   void* dest_buffer, std::size_t size);
+-
+     /**
+      * Reads a contiguous block of bytes from the current process' address space.
+      *
+@@ -361,29 +341,6 @@ class Memory {
+      */
+     void ReadBlockUnsafe(Common::ProcessAddress src_addr, void* dest_buffer, std::size_t size);
+ 
+-    /**
+-     * Writes a range of bytes into a given process' address space at the specified
+-     * virtual address.
+-     *
+-     * @param process    The process to write data into the address space of.
+-     * @param dest_addr  The destination virtual address to begin writing the data at.
+-     * @param src_buffer The data to write into the process' address space.
+-     * @param size       The size of the data to write, in bytes.
+-     *
+-     * @post The address range [dest_addr, size) in the process' address space
+-     *       contains the data that was within src_buffer.
+-     *
+-     * @post If an attempt is made to write into an unmapped region of memory, the writes
+-     *       will be ignored and an error will be logged.
+-     *
+-     * @post If a write is performed into a region of memory that is considered cached
+-     *       rasterizer memory, will cause the currently active rasterizer to be notified
+-     *       and will mark that region as invalidated to caches that the active
+-     *       graphics backend may be maintaining over the course of execution.
+-     */
+-    void WriteBlock(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                    const void* src_buffer, std::size_t size);
+-
+     /**
+      * Writes a range of bytes into the current process' address space at the specified
+      * virtual address.
+@@ -428,7 +385,6 @@ class Memory {
+      * Copies data within a process' address space to another location within the
+      * same address space.
+      *
+-     * @param process   The process that will have data copied within its address space.
+      * @param dest_addr The destination virtual address to begin copying the data into.
+      * @param src_addr  The source virtual address to begin copying the data from.
+      * @param size      The size of the data to copy, in bytes.
+@@ -436,58 +392,50 @@ class Memory {
+      * @post The range [dest_addr, size) within the process' address space contains the
+      *       same data within the range [src_addr, size).
+      */
+-    void CopyBlock(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                   Common::ProcessAddress src_addr, std::size_t size);
++    void CopyBlock(Common::ProcessAddress dest_addr, Common::ProcessAddress src_addr,
++                   std::size_t size);
+ 
+     /**
+      * Zeros a range of bytes within the current process' address space at the specified
+      * virtual address.
+      *
+-     * @param process   The process that will have data zeroed within its address space.
+      * @param dest_addr The destination virtual address to zero the data from.
+      * @param size      The size of the range to zero out, in bytes.
+      *
+      * @post The range [dest_addr, size) within the process' address space contains the
+      *       value 0.
+      */
+-    void ZeroBlock(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                   std::size_t size);
++    void ZeroBlock(Common::ProcessAddress dest_addr, std::size_t size);
+ 
+     /**
+      * Invalidates a range of bytes within the current process' address space at the specified
+      * virtual address.
+      *
+-     * @param process   The process that will have data invalidated within its address space.
+      * @param dest_addr The destination virtual address to invalidate the data from.
+      * @param size      The size of the range to invalidate, in bytes.
+      *
+      */
+-    Result InvalidateDataCache(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                               std::size_t size);
++    Result InvalidateDataCache(Common::ProcessAddress dest_addr, std::size_t size);
+ 
+     /**
+      * Stores a range of bytes within the current process' address space at the specified
+      * virtual address.
+      *
+-     * @param process   The process that will have data stored within its address space.
+      * @param dest_addr The destination virtual address to store the data from.
+      * @param size      The size of the range to store, in bytes.
+      *
+      */
+-    Result StoreDataCache(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                          std::size_t size);
++    Result StoreDataCache(Common::ProcessAddress dest_addr, std::size_t size);
+ 
+     /**
+      * Flushes a range of bytes within the current process' address space at the specified
+      * virtual address.
+      *
+-     * @param process   The process that will have data flushed within its address space.
+      * @param dest_addr The destination virtual address to flush the data from.
+      * @param size      The size of the range to flush, in bytes.
+      *
+      */
+-    Result FlushDataCache(const Kernel::KProcess& process, Common::ProcessAddress dest_addr,
+-                          std::size_t size);
++    Result FlushDataCache(Common::ProcessAddress dest_addr, std::size_t size);
+ 
+     /**
+      * Marks each page within the specified address range as cached or uncached.
+diff --git a/src/core/memory/cheat_engine.cpp b/src/core/memory/cheat_engine.cpp
+index d1284a3a756c..8742dd164d51 100644
+--- a/src/core/memory/cheat_engine.cpp
++++ b/src/core/memory/cheat_engine.cpp
+@@ -39,11 +39,11 @@ StandardVmCallbacks::StandardVmCallbacks(System& system_, const CheatProcessMeta
+ StandardVmCallbacks::~StandardVmCallbacks() = default;
+ 
+ void StandardVmCallbacks::MemoryRead(VAddr address, void* data, u64 size) {
+-    system.Memory().ReadBlock(SanitizeAddress(address), data, size);
++    system.ApplicationMemory().ReadBlock(SanitizeAddress(address), data, size);
+ }
+ 
+ void StandardVmCallbacks::MemoryWrite(VAddr address, const void* data, u64 size) {
+-    system.Memory().WriteBlock(SanitizeAddress(address), data, size);
++    system.ApplicationMemory().WriteBlock(SanitizeAddress(address), data, size);
+ }
+ 
+ u64 StandardVmCallbacks::HidKeysDown() {
+diff --git a/src/core/reporter.cpp b/src/core/reporter.cpp
+index 146c3f21e381..6c3dc73692df 100644
+--- a/src/core/reporter.cpp
++++ b/src/core/reporter.cpp
+@@ -264,7 +264,7 @@ void Reporter::SaveUnimplementedFunctionReport(Service::HLERequestContext& ctx,
+     const auto title_id = system.GetApplicationProcessProgramID();
+     auto out = GetFullDataAuto(timestamp, title_id, system);
+ 
+-    auto function_out = GetHLERequestContextData(ctx, system.Memory());
++    auto function_out = GetHLERequestContextData(ctx, system.ApplicationMemory());
+     function_out["command_id"] = command_id;
+     function_out["function_name"] = name;
+     function_out["service_name"] = service_name;
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+index 83924475b526..015a7d3c1868 100644
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -22,7 +22,7 @@ std::atomic<size_t> MemoryManager::unique_identifier_generator{};
+ 
+ MemoryManager::MemoryManager(Core::System& system_, u64 address_space_bits_, u64 big_page_bits_,
+                              u64 page_bits_)
+-    : system{system_}, memory{system.Memory()}, device_memory{system.DeviceMemory()},
++    : system{system_}, memory{system.ApplicationMemory()}, device_memory{system.DeviceMemory()},
+       address_space_bits{address_space_bits_}, page_bits{page_bits_}, big_page_bits{big_page_bits_},
+       entries{}, big_entries{}, page_table{address_space_bits, address_space_bits + page_bits - 38,
+                                            page_bits != big_page_bits ? page_bits : 0},
+diff --git a/src/video_core/video_core.cpp b/src/video_core/video_core.cpp
+index fedb4a7bb4ca..b42d484161aa 100644
+--- a/src/video_core/video_core.cpp
++++ b/src/video_core/video_core.cpp
+@@ -18,7 +18,7 @@ std::unique_ptr<VideoCore::RendererBase> CreateRenderer(
+     Core::System& system, Core::Frontend::EmuWindow& emu_window, Tegra::GPU& gpu,
+     std::unique_ptr<Core::Frontend::GraphicsContext> context) {
+     auto& telemetry_session = system.TelemetrySession();
+-    auto& cpu_memory = system.Memory();
++    auto& cpu_memory = system.ApplicationMemory();
+ 
+     switch (Settings::values.renderer_backend.GetValue()) {
+     case Settings::RendererBackend::OpenGL:

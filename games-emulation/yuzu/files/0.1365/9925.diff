@@ -1,0 +1,88 @@
+diff --git a/src/video_core/renderer_opengl/gl_fence_manager.cpp b/src/video_core/renderer_opengl/gl_fence_manager.cpp
+index 91463f854fd3..5326172af8ac 100644
+--- a/src/video_core/renderer_opengl/gl_fence_manager.cpp
++++ b/src/video_core/renderer_opengl/gl_fence_manager.cpp
+@@ -27,9 +27,7 @@ bool GLInnerFence::IsSignaled() const {
+         return true;
+     }
+     ASSERT(sync_object.handle != 0);
+-    GLint sync_status;
+-    glGetSynciv(sync_object.handle, GL_SYNC_STATUS, 1, nullptr, &sync_status);
+-    return sync_status == GL_SIGNALED;
++    return sync_object.IsSignaled();
+ }
+ 
+ void GLInnerFence::Wait() {
+diff --git a/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp b/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
+index 29491e762863..89000d6e01b9 100644
+--- a/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
++++ b/src/video_core/renderer_opengl/gl_graphics_pipeline.cpp
+@@ -621,10 +621,7 @@ bool GraphicsPipeline::IsBuilt() noexcept {
+     if (built_fence.handle == 0) {
+         return false;
+     }
+-    // Timeout of zero means this is non-blocking
+-    const auto sync_status = glClientWaitSync(built_fence.handle, 0, 0);
+-    ASSERT(sync_status != GL_WAIT_FAILED);
+-    is_built = sync_status != GL_TIMEOUT_EXPIRED;
++    is_built = built_fence.IsSignaled();
+     return is_built;
+ }
+ 
+diff --git a/src/video_core/renderer_opengl/gl_resource_manager.cpp b/src/video_core/renderer_opengl/gl_resource_manager.cpp
+index 3a664fdecfb0..eae8fd11089f 100644
+--- a/src/video_core/renderer_opengl/gl_resource_manager.cpp
++++ b/src/video_core/renderer_opengl/gl_resource_manager.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <string_view>
+ #include <glad/glad.h>
++#include "common/assert.h"
+ #include "common/microprofile.h"
+ #include "video_core/renderer_opengl/gl_resource_manager.h"
+ #include "video_core/renderer_opengl/gl_shader_util.h"
+@@ -158,6 +159,15 @@ void OGLSync::Release() {
+     handle = 0;
+ }
+ 
++bool OGLSync::IsSignaled() const noexcept {
++    // At least on Nvidia, glClientWaitSync with a timeout of 0
++    // is faster than glGetSynciv of GL_SYNC_STATUS.
++    // Timeout of 0 means this check is non-blocking.
++    const auto sync_status = glClientWaitSync(handle, 0, 0);
++    ASSERT(sync_status != GL_WAIT_FAILED);
++    return sync_status != GL_TIMEOUT_EXPIRED;
++}
++
+ void OGLFramebuffer::Create() {
+     if (handle != 0)
+         return;
+diff --git a/src/video_core/renderer_opengl/gl_resource_manager.h b/src/video_core/renderer_opengl/gl_resource_manager.h
+index bc05ba4bd2d4..77362acd2651 100644
+--- a/src/video_core/renderer_opengl/gl_resource_manager.h
++++ b/src/video_core/renderer_opengl/gl_resource_manager.h
+@@ -263,6 +263,9 @@ class OGLSync final {
+     /// Deletes the internal OpenGL resource
+     void Release();
+ 
++    /// Checks if the sync has been signaled
++    bool IsSignaled() const noexcept;
++
+     GLsync handle = 0;
+ };
+ 
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.cpp b/src/video_core/renderer_opengl/gl_texture_cache.cpp
+index b047e7b3d4cf..acff3b8ec88a 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_texture_cache.cpp
+@@ -714,9 +714,7 @@ std::optional<size_t> TextureCacheRuntime::StagingBuffers::FindBuffer(size_t req
+             continue;
+         }
+         if (syncs[index].handle != 0) {
+-            GLint status;
+-            glGetSynciv(syncs[index].handle, GL_SYNC_STATUS, 1, nullptr, &status);
+-            if (status != GL_SIGNALED) {
++            if (!syncs[index].IsSignaled()) {
+                 continue;
+             }
+             syncs[index].Release();

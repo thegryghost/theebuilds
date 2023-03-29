@@ -1,0 +1,1256 @@
+diff --git a/src/core/frontend/applets/applet.h b/src/core/frontend/applets/applet.h
+new file mode 100644
+index 000000000000..77fffe306cc7
+--- /dev/null
++++ b/src/core/frontend/applets/applet.h
+@@ -0,0 +1,14 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++namespace Core::Frontend {
++
++class Applet {
++public:
++    virtual ~Applet() = default;
++    virtual void Close() const = 0;
++};
++
++} // namespace Core::Frontend
+diff --git a/src/core/frontend/applets/cabinet.cpp b/src/core/frontend/applets/cabinet.cpp
+index 26c7fefe389c..2d501eeae9c1 100644
+--- a/src/core/frontend/applets/cabinet.cpp
++++ b/src/core/frontend/applets/cabinet.cpp
+@@ -10,6 +10,8 @@ namespace Core::Frontend {
+ 
+ CabinetApplet::~CabinetApplet() = default;
+ 
++void DefaultCabinetApplet::Close() const {}
++
+ void DefaultCabinetApplet::ShowCabinetApplet(
+     const CabinetCallback& callback, const CabinetParameters& parameters,
+     std::shared_ptr<Service::NFP::NfpDevice> nfp_device) const {
+diff --git a/src/core/frontend/applets/cabinet.h b/src/core/frontend/applets/cabinet.h
+index c28a235c11ed..74dc5a4f6f79 100644
+--- a/src/core/frontend/applets/cabinet.h
++++ b/src/core/frontend/applets/cabinet.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <functional>
++#include "core/frontend/applets/applet.h"
+ #include "core/hle/service/nfp/nfp_types.h"
+ 
+ namespace Service::NFP {
+@@ -20,7 +21,7 @@ struct CabinetParameters {
+ 
+ using CabinetCallback = std::function<void(bool, const std::string&)>;
+ 
+-class CabinetApplet {
++class CabinetApplet : public Applet {
+ public:
+     virtual ~CabinetApplet();
+     virtual void ShowCabinetApplet(const CabinetCallback& callback,
+@@ -30,6 +31,7 @@ class CabinetApplet {
+ 
+ class DefaultCabinetApplet final : public CabinetApplet {
+ public:
++    void Close() const override;
+     void ShowCabinetApplet(const CabinetCallback& callback, const CabinetParameters& parameters,
+                            std::shared_ptr<Service::NFP::NfpDevice> nfp_device) const override;
+ };
+diff --git a/src/core/frontend/applets/controller.cpp b/src/core/frontend/applets/controller.cpp
+index 52919484e201..8e586e9384ab 100644
+--- a/src/core/frontend/applets/controller.cpp
++++ b/src/core/frontend/applets/controller.cpp
+@@ -16,6 +16,8 @@ DefaultControllerApplet::DefaultControllerApplet(HID::HIDCore& hid_core_) : hid_
+ 
+ DefaultControllerApplet::~DefaultControllerApplet() = default;
+ 
++void DefaultControllerApplet::Close() const {}
++
+ void DefaultControllerApplet::ReconfigureControllers(ReconfigureCallback callback,
+                                                      const ControllerParameters& parameters) const {
+     LOG_INFO(Service_HID, "called, deducing the best configuration based on the given parameters!");
+diff --git a/src/core/frontend/applets/controller.h b/src/core/frontend/applets/controller.h
+index adb2feefd93c..5c488387df0f 100644
+--- a/src/core/frontend/applets/controller.h
++++ b/src/core/frontend/applets/controller.h
+@@ -7,6 +7,7 @@
+ #include <vector>
+ 
+ #include "common/common_types.h"
++#include "core/frontend/applets/applet.h"
+ 
+ namespace Core::HID {
+ class HIDCore;
+@@ -34,7 +35,7 @@ struct ControllerParameters {
+     bool allow_gamecube_controller{};
+ };
+ 
+-class ControllerApplet {
++class ControllerApplet : public Applet {
+ public:
+     using ReconfigureCallback = std::function<void()>;
+ 
+@@ -49,6 +50,7 @@ class DefaultControllerApplet final : public ControllerApplet {
+     explicit DefaultControllerApplet(HID::HIDCore& hid_core_);
+     ~DefaultControllerApplet() override;
+ 
++    void Close() const override;
+     void ReconfigureControllers(ReconfigureCallback callback,
+                                 const ControllerParameters& parameters) const override;
+ 
+diff --git a/src/core/frontend/applets/error.cpp b/src/core/frontend/applets/error.cpp
+index 69c2b2b4dd7a..2e6f7a3d9666 100644
+--- a/src/core/frontend/applets/error.cpp
++++ b/src/core/frontend/applets/error.cpp
+@@ -8,6 +8,8 @@ namespace Core::Frontend {
+ 
+ ErrorApplet::~ErrorApplet() = default;
+ 
++void DefaultErrorApplet::Close() const {}
++
+ void DefaultErrorApplet::ShowError(Result error, FinishedCallback finished) const {
+     LOG_CRITICAL(Service_Fatal, "Application requested error display: {:04}-{:04} (raw={:08X})",
+                  error.module.Value(), error.description.Value(), error.raw);
+diff --git a/src/core/frontend/applets/error.h b/src/core/frontend/applets/error.h
+index 884f2f653f6c..3a12196ce496 100644
+--- a/src/core/frontend/applets/error.h
++++ b/src/core/frontend/applets/error.h
+@@ -6,11 +6,12 @@
+ #include <chrono>
+ #include <functional>
+ 
++#include "core/frontend/applets/applet.h"
+ #include "core/hle/result.h"
+ 
+ namespace Core::Frontend {
+ 
+-class ErrorApplet {
++class ErrorApplet : public Applet {
+ public:
+     using FinishedCallback = std::function<void()>;
+ 
+@@ -28,6 +29,7 @@ class ErrorApplet {
+ 
+ class DefaultErrorApplet final : public ErrorApplet {
+ public:
++    void Close() const override;
+     void ShowError(Result error, FinishedCallback finished) const override;
+     void ShowErrorWithTimestamp(Result error, std::chrono::seconds time,
+                                 FinishedCallback finished) const override;
+diff --git a/src/core/frontend/applets/general_frontend.cpp b/src/core/frontend/applets/general_frontend.cpp
+index 29a00fb6f899..b4b213a31c02 100644
+--- a/src/core/frontend/applets/general_frontend.cpp
++++ b/src/core/frontend/applets/general_frontend.cpp
+@@ -10,6 +10,8 @@ ParentalControlsApplet::~ParentalControlsApplet() = default;
+ 
+ DefaultParentalControlsApplet::~DefaultParentalControlsApplet() = default;
+ 
++void DefaultParentalControlsApplet::Close() const {}
++
+ void DefaultParentalControlsApplet::VerifyPIN(std::function<void(bool)> finished,
+                                               bool suspend_future_verification_temporarily) {
+     LOG_INFO(Service_AM,
+@@ -39,6 +41,8 @@ PhotoViewerApplet::~PhotoViewerApplet() = default;
+ 
+ DefaultPhotoViewerApplet::~DefaultPhotoViewerApplet() = default;
+ 
++void DefaultPhotoViewerApplet::Close() const {}
++
+ void DefaultPhotoViewerApplet::ShowPhotosForApplication(u64 title_id,
+                                                         std::function<void()> finished) const {
+     LOG_INFO(Service_AM,
+diff --git a/src/core/frontend/applets/general_frontend.h b/src/core/frontend/applets/general_frontend.h
+index cbec8b4ad04f..319838ac7c60 100644
+--- a/src/core/frontend/applets/general_frontend.h
++++ b/src/core/frontend/applets/general_frontend.h
+@@ -6,9 +6,11 @@
+ #include <functional>
+ #include "common/common_types.h"
+ 
++#include "core/frontend/applets/applet.h"
++
+ namespace Core::Frontend {
+ 
+-class ParentalControlsApplet {
++class ParentalControlsApplet : public Applet {
+ public:
+     virtual ~ParentalControlsApplet();
+ 
+@@ -33,6 +35,7 @@ class DefaultParentalControlsApplet final : public ParentalControlsApplet {
+ public:
+     ~DefaultParentalControlsApplet() override;
+ 
++    void Close() const override;
+     void VerifyPIN(std::function<void(bool)> finished,
+                    bool suspend_future_verification_temporarily) override;
+     void VerifyPINForSettings(std::function<void(bool)> finished) override;
+@@ -40,7 +43,7 @@ class DefaultParentalControlsApplet final : public ParentalControlsApplet {
+     void ChangePIN(std::function<void()> finished) override;
+ };
+ 
+-class PhotoViewerApplet {
++class PhotoViewerApplet : public Applet {
+ public:
+     virtual ~PhotoViewerApplet();
+ 
+@@ -52,6 +55,7 @@ class DefaultPhotoViewerApplet final : public PhotoViewerApplet {
+ public:
+     ~DefaultPhotoViewerApplet() override;
+ 
++    void Close() const override;
+     void ShowPhotosForApplication(u64 title_id, std::function<void()> finished) const override;
+     void ShowAllPhotos(std::function<void()> finished) const override;
+ };
+diff --git a/src/core/frontend/applets/mii_edit.cpp b/src/core/frontend/applets/mii_edit.cpp
+index bc8c57067a4c..2988c3e7202e 100644
+--- a/src/core/frontend/applets/mii_edit.cpp
++++ b/src/core/frontend/applets/mii_edit.cpp
+@@ -8,6 +8,8 @@ namespace Core::Frontend {
+ 
+ MiiEditApplet::~MiiEditApplet() = default;
+ 
++void DefaultMiiEditApplet::Close() const {}
++
+ void DefaultMiiEditApplet::ShowMiiEdit(const MiiEditCallback& callback) const {
+     LOG_WARNING(Service_AM, "(STUBBED) called");
+ 
+diff --git a/src/core/frontend/applets/mii_edit.h b/src/core/frontend/applets/mii_edit.h
+index d828f06ecfb3..9d86ee65839c 100644
+--- a/src/core/frontend/applets/mii_edit.h
++++ b/src/core/frontend/applets/mii_edit.h
+@@ -5,9 +5,11 @@
+ 
+ #include <functional>
+ 
++#include "core/frontend/applets/applet.h"
++
+ namespace Core::Frontend {
+ 
+-class MiiEditApplet {
++class MiiEditApplet : public Applet {
+ public:
+     using MiiEditCallback = std::function<void()>;
+ 
+@@ -18,6 +20,7 @@ class MiiEditApplet {
+ 
+ class DefaultMiiEditApplet final : public MiiEditApplet {
+ public:
++    void Close() const override;
+     void ShowMiiEdit(const MiiEditCallback& callback) const override;
+ };
+ 
+diff --git a/src/core/frontend/applets/profile_select.cpp b/src/core/frontend/applets/profile_select.cpp
+index da4cfbf87ad8..910d20c0d7c5 100644
+--- a/src/core/frontend/applets/profile_select.cpp
++++ b/src/core/frontend/applets/profile_select.cpp
+@@ -9,6 +9,8 @@ namespace Core::Frontend {
+ 
+ ProfileSelectApplet::~ProfileSelectApplet() = default;
+ 
++void DefaultProfileSelectApplet::Close() const {}
++
+ void DefaultProfileSelectApplet::SelectProfile(SelectProfileCallback callback) const {
+     Service::Account::ProfileManager manager;
+     callback(manager.GetUser(Settings::values.current_user.GetValue()).value_or(Common::UUID{}));
+diff --git a/src/core/frontend/applets/profile_select.h b/src/core/frontend/applets/profile_select.h
+index 138429533db9..76e9635354ff 100644
+--- a/src/core/frontend/applets/profile_select.h
++++ b/src/core/frontend/applets/profile_select.h
+@@ -7,9 +7,11 @@
+ #include <optional>
+ #include "common/uuid.h"
+ 
++#include "core/frontend/applets/applet.h"
++
+ namespace Core::Frontend {
+ 
+-class ProfileSelectApplet {
++class ProfileSelectApplet : public Applet {
+ public:
+     using SelectProfileCallback = std::function<void(std::optional<Common::UUID>)>;
+ 
+@@ -20,6 +22,7 @@ class ProfileSelectApplet {
+ 
+ class DefaultProfileSelectApplet final : public ProfileSelectApplet {
+ public:
++    void Close() const override;
+     void SelectProfile(SelectProfileCallback callback) const override;
+ };
+ 
+diff --git a/src/core/frontend/applets/software_keyboard.cpp b/src/core/frontend/applets/software_keyboard.cpp
+index a3720f4d73e7..7655d215b4fa 100644
+--- a/src/core/frontend/applets/software_keyboard.cpp
++++ b/src/core/frontend/applets/software_keyboard.cpp
+@@ -13,6 +13,8 @@ SoftwareKeyboardApplet::~SoftwareKeyboardApplet() = default;
+ 
+ DefaultSoftwareKeyboardApplet::~DefaultSoftwareKeyboardApplet() = default;
+ 
++void DefaultSoftwareKeyboardApplet::Close() const {}
++
+ void DefaultSoftwareKeyboardApplet::InitializeKeyboard(
+     bool is_inline, KeyboardInitializeParameters initialize_parameters,
+     SubmitNormalCallback submit_normal_callback_, SubmitInlineCallback submit_inline_callback_) {
+diff --git a/src/core/frontend/applets/software_keyboard.h b/src/core/frontend/applets/software_keyboard.h
+index 8aef103d3235..8ed96da240e4 100644
+--- a/src/core/frontend/applets/software_keyboard.h
++++ b/src/core/frontend/applets/software_keyboard.h
+@@ -7,6 +7,7 @@
+ 
+ #include "common/common_types.h"
+ 
++#include "core/frontend/applets/applet.h"
+ #include "core/hle/service/am/applets/applet_software_keyboard_types.h"
+ 
+ namespace Core::Frontend {
+@@ -52,7 +53,7 @@ struct InlineTextParameters {
+     s32 cursor_position;
+ };
+ 
+-class SoftwareKeyboardApplet {
++class SoftwareKeyboardApplet : public Applet {
+ public:
+     using SubmitInlineCallback =
+         std::function<void(Service::AM::Applets::SwkbdReplyType, std::u16string, s32)>;
+@@ -84,6 +85,8 @@ class DefaultSoftwareKeyboardApplet final : public SoftwareKeyboardApplet {
+ public:
+     ~DefaultSoftwareKeyboardApplet() override;
+ 
++    void Close() const override;
++
+     void InitializeKeyboard(bool is_inline, KeyboardInitializeParameters initialize_parameters,
+                             SubmitNormalCallback submit_normal_callback_,
+                             SubmitInlineCallback submit_inline_callback_) override;
+diff --git a/src/core/frontend/applets/web_browser.cpp b/src/core/frontend/applets/web_browser.cpp
+index b09cb7102046..6e703ef06512 100644
+--- a/src/core/frontend/applets/web_browser.cpp
++++ b/src/core/frontend/applets/web_browser.cpp
+@@ -10,6 +10,8 @@ WebBrowserApplet::~WebBrowserApplet() = default;
+ 
+ DefaultWebBrowserApplet::~DefaultWebBrowserApplet() = default;
+ 
++void DefaultWebBrowserApplet::Close() const {}
++
+ void DefaultWebBrowserApplet::OpenLocalWebPage(const std::string& local_url,
+                                                ExtractROMFSCallback extract_romfs_callback,
+                                                OpenWebPageCallback callback) const {
+diff --git a/src/core/frontend/applets/web_browser.h b/src/core/frontend/applets/web_browser.h
+index 4f72284ad486..178bbdd3f54a 100644
+--- a/src/core/frontend/applets/web_browser.h
++++ b/src/core/frontend/applets/web_browser.h
+@@ -5,11 +5,12 @@
+ 
+ #include <functional>
+ 
++#include "core/frontend/applets/applet.h"
+ #include "core/hle/service/am/applets/applet_web_browser_types.h"
+ 
+ namespace Core::Frontend {
+ 
+-class WebBrowserApplet {
++class WebBrowserApplet : public Applet {
+ public:
+     using ExtractROMFSCallback = std::function<void()>;
+     using OpenWebPageCallback =
+@@ -29,6 +30,8 @@ class DefaultWebBrowserApplet final : public WebBrowserApplet {
+ public:
+     ~DefaultWebBrowserApplet() override;
+ 
++    void Close() const override;
++
+     void OpenLocalWebPage(const std::string& local_url, ExtractROMFSCallback extract_romfs_callback,
+                           OpenWebPageCallback callback) const override;
+ 
+diff --git a/src/core/hle/service/am/am.cpp b/src/core/hle/service/am/am.cpp
+index deeca925da52..8943e4a817c6 100644
+--- a/src/core/hle/service/am/am.cpp
++++ b/src/core/hle/service/am/am.cpp
+@@ -945,7 +945,7 @@ class ILibraryAppletAccessor final : public ServiceFramework<ILibraryAppletAcces
+             {0, &ILibraryAppletAccessor::GetAppletStateChangedEvent, "GetAppletStateChangedEvent"},
+             {1, &ILibraryAppletAccessor::IsCompleted, "IsCompleted"},
+             {10, &ILibraryAppletAccessor::Start, "Start"},
+-            {20, nullptr, "RequestExit"},
++            {20, &ILibraryAppletAccessor::RequestExit, "RequestExit"},
+             {25, nullptr, "Terminate"},
+             {30, &ILibraryAppletAccessor::GetResult, "GetResult"},
+             {50, nullptr, "SetOutOfFocusApplicationSuspendingEnabled"},
+@@ -1010,6 +1010,15 @@ class ILibraryAppletAccessor final : public ServiceFramework<ILibraryAppletAcces
+         rb.Push(ResultSuccess);
+     }
+ 
++    void RequestExit(HLERequestContext& ctx) {
++        LOG_DEBUG(Service_AM, "called");
++
++        ASSERT(applet != nullptr);
++
++        IPC::ResponseBuilder rb{ctx, 2};
++        rb.Push(applet->RequestExit());
++    }
++
+     void PushInData(HLERequestContext& ctx) {
+         LOG_DEBUG(Service_AM, "called");
+ 
+diff --git a/src/core/hle/service/am/applets/applet_cabinet.cpp b/src/core/hle/service/am/applets/applet_cabinet.cpp
+index 162687b2938c..93c9f2a558c5 100644
+--- a/src/core/hle/service/am/applets/applet_cabinet.cpp
++++ b/src/core/hle/service/am/applets/applet_cabinet.cpp
+@@ -174,4 +174,9 @@ void Cabinet::Cancel() {
+     broker.SignalStateChanged();
+ }
+ 
++Result Cabinet::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ } // namespace Service::AM::Applets
+diff --git a/src/core/hle/service/am/applets/applet_cabinet.h b/src/core/hle/service/am/applets/applet_cabinet.h
+index 84197a8072e9..edd295a27346 100644
+--- a/src/core/hle/service/am/applets/applet_cabinet.h
++++ b/src/core/hle/service/am/applets/applet_cabinet.h
+@@ -89,6 +89,7 @@ class Cabinet final : public Applet {
+     void Execute() override;
+     void DisplayCompleted(bool apply_changes, std::string_view amiibo_name);
+     void Cancel();
++    Result RequestExit() override;
+ 
+ private:
+     const Core::Frontend::CabinetApplet& frontend;
+diff --git a/src/core/hle/service/am/applets/applet_controller.cpp b/src/core/hle/service/am/applets/applet_controller.cpp
+index 58484519b1ad..2d1d115d74d7 100644
+--- a/src/core/hle/service/am/applets/applet_controller.cpp
++++ b/src/core/hle/service/am/applets/applet_controller.cpp
+@@ -262,4 +262,9 @@ void Controller::ConfigurationComplete() {
+     broker.SignalStateChanged();
+ }
+ 
++Result Controller::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ } // namespace Service::AM::Applets
+diff --git a/src/core/hle/service/am/applets/applet_controller.h b/src/core/hle/service/am/applets/applet_controller.h
+index 1f9adec65d08..1fbabee11bcf 100644
+--- a/src/core/hle/service/am/applets/applet_controller.h
++++ b/src/core/hle/service/am/applets/applet_controller.h
+@@ -129,6 +129,7 @@ class Controller final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+     void ConfigurationComplete();
+ 
+diff --git a/src/core/hle/service/am/applets/applet_error.cpp b/src/core/hle/service/am/applets/applet_error.cpp
+index b013896b4b71..b46ea840cfb5 100644
+--- a/src/core/hle/service/am/applets/applet_error.cpp
++++ b/src/core/hle/service/am/applets/applet_error.cpp
+@@ -209,4 +209,9 @@ void Error::DisplayCompleted() {
+     broker.SignalStateChanged();
+ }
+ 
++Result Error::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ } // namespace Service::AM::Applets
+diff --git a/src/core/hle/service/am/applets/applet_error.h b/src/core/hle/service/am/applets/applet_error.h
+index d78d6f1d1abd..d822a32bbea2 100644
+--- a/src/core/hle/service/am/applets/applet_error.h
++++ b/src/core/hle/service/am/applets/applet_error.h
+@@ -34,6 +34,7 @@ class Error final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+     void DisplayCompleted();
+ 
+diff --git a/src/core/hle/service/am/applets/applet_general_backend.cpp b/src/core/hle/service/am/applets/applet_general_backend.cpp
+index 1eefa85e381f..8b352020e0b5 100644
+--- a/src/core/hle/service/am/applets/applet_general_backend.cpp
++++ b/src/core/hle/service/am/applets/applet_general_backend.cpp
+@@ -150,6 +150,11 @@ void Auth::AuthFinished(bool is_successful) {
+     broker.SignalStateChanged();
+ }
+ 
++Result Auth::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ PhotoViewer::PhotoViewer(Core::System& system_, LibraryAppletMode applet_mode_,
+                          const Core::Frontend::PhotoViewerApplet& frontend_)
+     : Applet{system_, applet_mode_}, frontend{frontend_}, system{system_} {}
+@@ -202,6 +207,11 @@ void PhotoViewer::ViewFinished() {
+     broker.SignalStateChanged();
+ }
+ 
++Result PhotoViewer::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ StubApplet::StubApplet(Core::System& system_, AppletId id_, LibraryAppletMode applet_mode_)
+     : Applet{system_, applet_mode_}, id{id_}, system{system_} {}
+ 
+@@ -250,4 +260,9 @@ void StubApplet::Execute() {
+     broker.SignalStateChanged();
+ }
+ 
++Result StubApplet::RequestExit() {
++    // Nothing to do.
++    R_SUCCEED();
++}
++
+ } // namespace Service::AM::Applets
+diff --git a/src/core/hle/service/am/applets/applet_general_backend.h b/src/core/hle/service/am/applets/applet_general_backend.h
+index a9f2535a21d5..34ecaebb91ad 100644
+--- a/src/core/hle/service/am/applets/applet_general_backend.h
++++ b/src/core/hle/service/am/applets/applet_general_backend.h
+@@ -28,6 +28,7 @@ class Auth final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+     void AuthFinished(bool is_successful = true);
+ 
+@@ -59,6 +60,7 @@ class PhotoViewer final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+     void ViewFinished();
+ 
+@@ -80,6 +82,7 @@ class StubApplet final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+ private:
+     AppletId id;
+diff --git a/src/core/hle/service/am/applets/applet_mii_edit.cpp b/src/core/hle/service/am/applets/applet_mii_edit.cpp
+index ae80ef506bcb..d1f652c09b81 100644
+--- a/src/core/hle/service/am/applets/applet_mii_edit.cpp
++++ b/src/core/hle/service/am/applets/applet_mii_edit.cpp
+@@ -135,4 +135,9 @@ void MiiEdit::MiiEditOutputForCharInfoEditing(MiiEditResult result,
+     broker.SignalStateChanged();
+ }
+ 
++Result MiiEdit::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ } // namespace Service::AM::Applets
+diff --git a/src/core/hle/service/am/applets/applet_mii_edit.h b/src/core/hle/service/am/applets/applet_mii_edit.h
+index d18dd3cf5136..3f46fae1b1fb 100644
+--- a/src/core/hle/service/am/applets/applet_mii_edit.h
++++ b/src/core/hle/service/am/applets/applet_mii_edit.h
+@@ -25,6 +25,7 @@ class MiiEdit final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+     void MiiEditOutput(MiiEditResult result, s32 index);
+ 
+diff --git a/src/core/hle/service/am/applets/applet_profile_select.cpp b/src/core/hle/service/am/applets/applet_profile_select.cpp
+index 1d69f5447881..07abc2563f7f 100644
+--- a/src/core/hle/service/am/applets/applet_profile_select.cpp
++++ b/src/core/hle/service/am/applets/applet_profile_select.cpp
+@@ -73,4 +73,9 @@ void ProfileSelect::SelectionComplete(std::optional<Common::UUID> uuid) {
+     broker.SignalStateChanged();
+ }
+ 
++Result ProfileSelect::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ } // namespace Service::AM::Applets
+diff --git a/src/core/hle/service/am/applets/applet_profile_select.h b/src/core/hle/service/am/applets/applet_profile_select.h
+index b77f1d205ecd..85705c216aa8 100644
+--- a/src/core/hle/service/am/applets/applet_profile_select.h
++++ b/src/core/hle/service/am/applets/applet_profile_select.h
+@@ -42,6 +42,7 @@ class ProfileSelect final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+     void SelectionComplete(std::optional<Common::UUID> uuid);
+ 
+diff --git a/src/core/hle/service/am/applets/applet_software_keyboard.cpp b/src/core/hle/service/am/applets/applet_software_keyboard.cpp
+index c18236045318..4145bb84f023 100644
+--- a/src/core/hle/service/am/applets/applet_software_keyboard.cpp
++++ b/src/core/hle/service/am/applets/applet_software_keyboard.cpp
+@@ -770,6 +770,11 @@ void SoftwareKeyboard::ExitKeyboard() {
+     broker.SignalStateChanged();
+ }
+ 
++Result SoftwareKeyboard::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ // Inline Software Keyboard Requests
+ 
+ void SoftwareKeyboard::RequestFinalize(const std::vector<u8>& request_data) {
+diff --git a/src/core/hle/service/am/applets/applet_software_keyboard.h b/src/core/hle/service/am/applets/applet_software_keyboard.h
+index b01b31c988b8..2e919811b94b 100644
+--- a/src/core/hle/service/am/applets/applet_software_keyboard.h
++++ b/src/core/hle/service/am/applets/applet_software_keyboard.h
+@@ -31,6 +31,7 @@ class SoftwareKeyboard final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+     /**
+      * Submits the input text to the application.
+diff --git a/src/core/hle/service/am/applets/applet_web_browser.cpp b/src/core/hle/service/am/applets/applet_web_browser.cpp
+index f061bae8019a..2accf789807a 100644
+--- a/src/core/hle/service/am/applets/applet_web_browser.cpp
++++ b/src/core/hle/service/am/applets/applet_web_browser.cpp
+@@ -363,6 +363,11 @@ void WebBrowser::WebBrowserExit(WebExitReason exit_reason, std::string last_url)
+     broker.SignalStateChanged();
+ }
+ 
++Result WebBrowser::RequestExit() {
++    frontend.Close();
++    R_SUCCEED();
++}
++
+ bool WebBrowser::InputTLVExistsInMap(WebArgInputTLVType input_tlv_type) const {
+     return web_arg_input_tlv_map.find(input_tlv_type) != web_arg_input_tlv_map.end();
+ }
+diff --git a/src/core/hle/service/am/applets/applet_web_browser.h b/src/core/hle/service/am/applets/applet_web_browser.h
+index fd727fac8d33..99fe1865906e 100644
+--- a/src/core/hle/service/am/applets/applet_web_browser.h
++++ b/src/core/hle/service/am/applets/applet_web_browser.h
+@@ -35,6 +35,7 @@ class WebBrowser final : public Applet {
+     Result GetStatus() const override;
+     void ExecuteInteractive() override;
+     void Execute() override;
++    Result RequestExit() override;
+ 
+     void ExtractOfflineRomFS();
+ 
+diff --git a/src/core/hle/service/am/applets/applets.h b/src/core/hle/service/am/applets/applets.h
+index a22eb62a8532..12f374199811 100644
+--- a/src/core/hle/service/am/applets/applets.h
++++ b/src/core/hle/service/am/applets/applets.h
+@@ -142,6 +142,7 @@ class Applet {
+     virtual Result GetStatus() const = 0;
+     virtual void ExecuteInteractive() = 0;
+     virtual void Execute() = 0;
++    virtual Result RequestExit() = 0;
+ 
+     AppletDataBroker& GetBroker() {
+         return broker;
+diff --git a/src/yuzu/applets/qt_amiibo_settings.cpp b/src/yuzu/applets/qt_amiibo_settings.cpp
+index 93ad4b4f9a3c..4559df5b1601 100644
+--- a/src/yuzu/applets/qt_amiibo_settings.cpp
++++ b/src/yuzu/applets/qt_amiibo_settings.cpp
+@@ -245,12 +245,19 @@ void QtAmiiboSettingsDialog::SetSettingsDescription() {
+ QtAmiiboSettings::QtAmiiboSettings(GMainWindow& parent) {
+     connect(this, &QtAmiiboSettings::MainWindowShowAmiiboSettings, &parent,
+             &GMainWindow::AmiiboSettingsShowDialog, Qt::QueuedConnection);
++    connect(this, &QtAmiiboSettings::MainWindowRequestExit, &parent,
++            &GMainWindow::AmiiboSettingsRequestExit, Qt::QueuedConnection);
+     connect(&parent, &GMainWindow::AmiiboSettingsFinished, this,
+             &QtAmiiboSettings::MainWindowFinished, Qt::QueuedConnection);
+ }
+ 
+ QtAmiiboSettings::~QtAmiiboSettings() = default;
+ 
++void QtAmiiboSettings::Close() const {
++    callback = {};
++    emit MainWindowRequestExit();
++}
++
+ void QtAmiiboSettings::ShowCabinetApplet(
+     const Core::Frontend::CabinetCallback& callback_,
+     const Core::Frontend::CabinetParameters& parameters,
+@@ -260,5 +267,7 @@ void QtAmiiboSettings::ShowCabinetApplet(
+ }
+ 
+ void QtAmiiboSettings::MainWindowFinished(bool is_success, const std::string& name) {
+-    callback(is_success, name);
++    if (callback) {
++        callback(is_success, name);
++    }
+ }
+diff --git a/src/yuzu/applets/qt_amiibo_settings.h b/src/yuzu/applets/qt_amiibo_settings.h
+index 930c96739d7f..bc389a33fa2e 100644
+--- a/src/yuzu/applets/qt_amiibo_settings.h
++++ b/src/yuzu/applets/qt_amiibo_settings.h
+@@ -68,6 +68,7 @@ class QtAmiiboSettings final : public QObject, public Core::Frontend::CabinetApp
+     explicit QtAmiiboSettings(GMainWindow& parent);
+     ~QtAmiiboSettings() override;
+ 
++    void Close() const override;
+     void ShowCabinetApplet(const Core::Frontend::CabinetCallback& callback_,
+                            const Core::Frontend::CabinetParameters& parameters,
+                            std::shared_ptr<Service::NFP::NfpDevice> nfp_device) const override;
+@@ -75,6 +76,7 @@ class QtAmiiboSettings final : public QObject, public Core::Frontend::CabinetApp
+ signals:
+     void MainWindowShowAmiiboSettings(const Core::Frontend::CabinetParameters& parameters,
+                                       std::shared_ptr<Service::NFP::NfpDevice> nfp_device) const;
++    void MainWindowRequestExit() const;
+ 
+ private:
+     void MainWindowFinished(bool is_success, const std::string& name);
+diff --git a/src/yuzu/applets/qt_controller.cpp b/src/yuzu/applets/qt_controller.cpp
+index c30b54499c4f..79018a7f6853 100644
+--- a/src/yuzu/applets/qt_controller.cpp
++++ b/src/yuzu/applets/qt_controller.cpp
+@@ -678,12 +678,19 @@ void QtControllerSelectorDialog::DisableUnsupportedPlayers() {
+ QtControllerSelector::QtControllerSelector(GMainWindow& parent) {
+     connect(this, &QtControllerSelector::MainWindowReconfigureControllers, &parent,
+             &GMainWindow::ControllerSelectorReconfigureControllers, Qt::QueuedConnection);
++    connect(this, &QtControllerSelector::MainWindowRequestExit, &parent,
++            &GMainWindow::ControllerSelectorRequestExit, Qt::QueuedConnection);
+     connect(&parent, &GMainWindow::ControllerSelectorReconfigureFinished, this,
+             &QtControllerSelector::MainWindowReconfigureFinished, Qt::QueuedConnection);
+ }
+ 
+ QtControllerSelector::~QtControllerSelector() = default;
+ 
++void QtControllerSelector::Close() const {
++    callback = {};
++    emit MainWindowRequestExit();
++}
++
+ void QtControllerSelector::ReconfigureControllers(
+     ReconfigureCallback callback_, const Core::Frontend::ControllerParameters& parameters) const {
+     callback = std::move(callback_);
+@@ -691,5 +698,7 @@ void QtControllerSelector::ReconfigureControllers(
+ }
+ 
+ void QtControllerSelector::MainWindowReconfigureFinished() {
+-    callback();
++    if (callback) {
++        callback();
++    }
+ }
+diff --git a/src/yuzu/applets/qt_controller.h b/src/yuzu/applets/qt_controller.h
+index 16e99f507729..2ef7e488f326 100644
+--- a/src/yuzu/applets/qt_controller.h
++++ b/src/yuzu/applets/qt_controller.h
+@@ -156,6 +156,7 @@ class QtControllerSelector final : public QObject, public Core::Frontend::Contro
+     explicit QtControllerSelector(GMainWindow& parent);
+     ~QtControllerSelector() override;
+ 
++    void Close() const override;
+     void ReconfigureControllers(
+         ReconfigureCallback callback_,
+         const Core::Frontend::ControllerParameters& parameters) const override;
+@@ -163,6 +164,7 @@ class QtControllerSelector final : public QObject, public Core::Frontend::Contro
+ signals:
+     void MainWindowReconfigureControllers(
+         const Core::Frontend::ControllerParameters& parameters) const;
++    void MainWindowRequestExit() const;
+ 
+ private:
+     void MainWindowReconfigureFinished();
+diff --git a/src/yuzu/applets/qt_error.cpp b/src/yuzu/applets/qt_error.cpp
+index e0190a979c56..1dc4f0383ebc 100644
+--- a/src/yuzu/applets/qt_error.cpp
++++ b/src/yuzu/applets/qt_error.cpp
+@@ -8,12 +8,19 @@
+ QtErrorDisplay::QtErrorDisplay(GMainWindow& parent) {
+     connect(this, &QtErrorDisplay::MainWindowDisplayError, &parent,
+             &GMainWindow::ErrorDisplayDisplayError, Qt::QueuedConnection);
++    connect(this, &QtErrorDisplay::MainWindowRequestExit, &parent,
++            &GMainWindow::ErrorDisplayRequestExit, Qt::QueuedConnection);
+     connect(&parent, &GMainWindow::ErrorDisplayFinished, this,
+             &QtErrorDisplay::MainWindowFinishedError, Qt::DirectConnection);
+ }
+ 
+ QtErrorDisplay::~QtErrorDisplay() = default;
+ 
++void QtErrorDisplay::Close() const {
++    callback = {};
++    emit MainWindowRequestExit();
++}
++
+ void QtErrorDisplay::ShowError(Result error, FinishedCallback finished) const {
+     callback = std::move(finished);
+     emit MainWindowDisplayError(
+@@ -55,5 +62,7 @@ void QtErrorDisplay::ShowCustomErrorText(Result error, std::string dialog_text,
+ }
+ 
+ void QtErrorDisplay::MainWindowFinishedError() {
+-    callback();
++    if (callback) {
++        callback();
++    }
+ }
+diff --git a/src/yuzu/applets/qt_error.h b/src/yuzu/applets/qt_error.h
+index e4e1747219f3..957f170adefe 100644
+--- a/src/yuzu/applets/qt_error.h
++++ b/src/yuzu/applets/qt_error.h
+@@ -16,6 +16,7 @@ class QtErrorDisplay final : public QObject, public Core::Frontend::ErrorApplet
+     explicit QtErrorDisplay(GMainWindow& parent);
+     ~QtErrorDisplay() override;
+ 
++    void Close() const override;
+     void ShowError(Result error, FinishedCallback finished) const override;
+     void ShowErrorWithTimestamp(Result error, std::chrono::seconds time,
+                                 FinishedCallback finished) const override;
+@@ -24,6 +25,7 @@ class QtErrorDisplay final : public QObject, public Core::Frontend::ErrorApplet
+ 
+ signals:
+     void MainWindowDisplayError(QString error_code, QString error_text) const;
++    void MainWindowRequestExit() const;
+ 
+ private:
+     void MainWindowFinishedError();
+diff --git a/src/yuzu/applets/qt_profile_select.cpp b/src/yuzu/applets/qt_profile_select.cpp
+index 4145c5299891..c0a1d5ab73db 100644
+--- a/src/yuzu/applets/qt_profile_select.cpp
++++ b/src/yuzu/applets/qt_profile_select.cpp
+@@ -157,17 +157,26 @@ void QtProfileSelectionDialog::SelectUser(const QModelIndex& index) {
+ QtProfileSelector::QtProfileSelector(GMainWindow& parent) {
+     connect(this, &QtProfileSelector::MainWindowSelectProfile, &parent,
+             &GMainWindow::ProfileSelectorSelectProfile, Qt::QueuedConnection);
++    connect(this, &QtProfileSelector::MainWindowRequestExit, &parent,
++            &GMainWindow::ProfileSelectorRequestExit, Qt::QueuedConnection);
+     connect(&parent, &GMainWindow::ProfileSelectorFinishedSelection, this,
+             &QtProfileSelector::MainWindowFinishedSelection, Qt::DirectConnection);
+ }
+ 
+ QtProfileSelector::~QtProfileSelector() = default;
+ 
++void QtProfileSelector::Close() const {
++    callback = {};
++    emit MainWindowRequestExit();
++}
++
+ void QtProfileSelector::SelectProfile(SelectProfileCallback callback_) const {
+     callback = std::move(callback_);
+     emit MainWindowSelectProfile();
+ }
+ 
+ void QtProfileSelector::MainWindowFinishedSelection(std::optional<Common::UUID> uuid) {
+-    callback(uuid);
++    if (callback) {
++        callback(uuid);
++    }
+ }
+diff --git a/src/yuzu/applets/qt_profile_select.h b/src/yuzu/applets/qt_profile_select.h
+index 637a3bda2a0d..9f214d071aca 100644
+--- a/src/yuzu/applets/qt_profile_select.h
++++ b/src/yuzu/applets/qt_profile_select.h
+@@ -65,10 +65,12 @@ class QtProfileSelector final : public QObject, public Core::Frontend::ProfileSe
+     explicit QtProfileSelector(GMainWindow& parent);
+     ~QtProfileSelector() override;
+ 
++    void Close() const override;
+     void SelectProfile(SelectProfileCallback callback_) const override;
+ 
+ signals:
+     void MainWindowSelectProfile() const;
++    void MainWindowRequestExit() const;
+ 
+ private:
+     void MainWindowFinishedSelection(std::optional<Common::UUID> uuid);
+diff --git a/src/yuzu/applets/qt_software_keyboard.h b/src/yuzu/applets/qt_software_keyboard.h
+index 30ac8ecf69c6..ac23ce047255 100644
+--- a/src/yuzu/applets/qt_software_keyboard.h
++++ b/src/yuzu/applets/qt_software_keyboard.h
+@@ -233,6 +233,10 @@ class QtSoftwareKeyboard final : public QObject, public Core::Frontend::Software
+     explicit QtSoftwareKeyboard(GMainWindow& parent);
+     ~QtSoftwareKeyboard() override;
+ 
++    void Close() const override {
++        ExitKeyboard();
++    }
++
+     void InitializeKeyboard(bool is_inline,
+                             Core::Frontend::KeyboardInitializeParameters initialize_parameters,
+                             SubmitNormalCallback submit_normal_callback_,
+diff --git a/src/yuzu/applets/qt_web_browser.cpp b/src/yuzu/applets/qt_web_browser.cpp
+index 0a5912326ae3..28acc0ff8158 100644
+--- a/src/yuzu/applets/qt_web_browser.cpp
++++ b/src/yuzu/applets/qt_web_browser.cpp
+@@ -393,6 +393,8 @@ void QtNXWebEngineView::FocusFirstLinkElement() {
+ QtWebBrowser::QtWebBrowser(GMainWindow& main_window) {
+     connect(this, &QtWebBrowser::MainWindowOpenWebPage, &main_window,
+             &GMainWindow::WebBrowserOpenWebPage, Qt::QueuedConnection);
++    connect(this, &QtWebBrowser::MainWindowRequestExit, &main_window,
++            &GMainWindow::WebBrowserRequestExit, Qt::QueuedConnection);
+     connect(&main_window, &GMainWindow::WebBrowserExtractOfflineRomFS, this,
+             &QtWebBrowser::MainWindowExtractOfflineRomFS, Qt::QueuedConnection);
+     connect(&main_window, &GMainWindow::WebBrowserClosed, this,
+@@ -401,6 +403,11 @@ QtWebBrowser::QtWebBrowser(GMainWindow& main_window) {
+ 
+ QtWebBrowser::~QtWebBrowser() = default;
+ 
++void QtWebBrowser::Close() const {
++    callback = {};
++    emit MainWindowRequestExit();
++}
++
+ void QtWebBrowser::OpenLocalWebPage(const std::string& local_url,
+                                     ExtractROMFSCallback extract_romfs_callback_,
+                                     OpenWebPageCallback callback_) const {
+@@ -436,5 +443,7 @@ void QtWebBrowser::MainWindowExtractOfflineRomFS() {
+ 
+ void QtWebBrowser::MainWindowWebBrowserClosed(Service::AM::Applets::WebExitReason exit_reason,
+                                               std::string last_url) {
+-    callback(exit_reason, last_url);
++    if (callback) {
++        callback(exit_reason, last_url);
++    }
+ }
+diff --git a/src/yuzu/applets/qt_web_browser.h b/src/yuzu/applets/qt_web_browser.h
+index ceae7926e54c..1234108ae2fe 100644
+--- a/src/yuzu/applets/qt_web_browser.h
++++ b/src/yuzu/applets/qt_web_browser.h
+@@ -196,6 +196,7 @@ class QtWebBrowser final : public QObject, public Core::Frontend::WebBrowserAppl
+     explicit QtWebBrowser(GMainWindow& parent);
+     ~QtWebBrowser() override;
+ 
++    void Close() const override;
+     void OpenLocalWebPage(const std::string& local_url,
+                           ExtractROMFSCallback extract_romfs_callback_,
+                           OpenWebPageCallback callback_) const override;
+@@ -206,6 +207,7 @@ class QtWebBrowser final : public QObject, public Core::Frontend::WebBrowserAppl
+ signals:
+     void MainWindowOpenWebPage(const std::string& main_url, const std::string& additional_args,
+                                bool is_local) const;
++    void MainWindowRequestExit() const;
+ 
+ private:
+     void MainWindowExtractOfflineRomFS();
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index ae14884b5aeb..19968bc21f91 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -596,27 +596,45 @@ void GMainWindow::RegisterMetaTypes() {
+ 
+ void GMainWindow::AmiiboSettingsShowDialog(const Core::Frontend::CabinetParameters& parameters,
+                                            std::shared_ptr<Service::NFP::NfpDevice> nfp_device) {
+-    QtAmiiboSettingsDialog dialog(this, parameters, input_subsystem.get(), nfp_device);
++    cabinet_applet =
++        new QtAmiiboSettingsDialog(this, parameters, input_subsystem.get(), nfp_device);
++    SCOPE_EXIT({
++        cabinet_applet->deleteLater();
++        cabinet_applet = nullptr;
++    });
+ 
+-    dialog.setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowStaysOnTopHint |
+-                          Qt::WindowTitleHint | Qt::WindowSystemMenuHint);
+-    dialog.setWindowModality(Qt::WindowModal);
+-    if (dialog.exec() == QDialog::Rejected) {
++    cabinet_applet->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowStaysOnTopHint |
++                                   Qt::WindowTitleHint | Qt::WindowSystemMenuHint);
++    cabinet_applet->setWindowModality(Qt::WindowModal);
++
++    if (cabinet_applet->exec() == QDialog::Rejected) {
+         emit AmiiboSettingsFinished(false, {});
+         return;
+     }
+ 
+-    emit AmiiboSettingsFinished(true, dialog.GetName());
++    emit AmiiboSettingsFinished(true, cabinet_applet->GetName());
++}
++
++void GMainWindow::AmiiboSettingsRequestExit() {
++    if (cabinet_applet) {
++        cabinet_applet->reject();
++    }
+ }
+ 
+ void GMainWindow::ControllerSelectorReconfigureControllers(
+     const Core::Frontend::ControllerParameters& parameters) {
+-    QtControllerSelectorDialog dialog(this, parameters, input_subsystem.get(), *system);
++    controller_applet =
++        new QtControllerSelectorDialog(this, parameters, input_subsystem.get(), *system);
++    SCOPE_EXIT({
++        controller_applet->deleteLater();
++        controller_applet = nullptr;
++    });
+ 
+-    dialog.setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowStaysOnTopHint |
+-                          Qt::WindowTitleHint | Qt::WindowSystemMenuHint);
+-    dialog.setWindowModality(Qt::WindowModal);
+-    dialog.exec();
++    controller_applet->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint |
++                                      Qt::WindowStaysOnTopHint | Qt::WindowTitleHint |
++                                      Qt::WindowSystemMenuHint);
++    controller_applet->setWindowModality(Qt::WindowModal);
++    controller_applet->exec();
+ 
+     emit ControllerSelectorReconfigureFinished();
+ 
+@@ -627,19 +645,30 @@ void GMainWindow::ControllerSelectorReconfigureControllers(
+     UpdateStatusButtons();
+ }
+ 
++void GMainWindow::ControllerSelectorRequestExit() {
++    if (controller_applet) {
++        controller_applet->reject();
++    }
++}
++
+ void GMainWindow::ProfileSelectorSelectProfile() {
+-    QtProfileSelectionDialog dialog(system->HIDCore(), this);
+-    dialog.setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowStaysOnTopHint |
+-                          Qt::WindowTitleHint | Qt::WindowSystemMenuHint |
+-                          Qt::WindowCloseButtonHint);
+-    dialog.setWindowModality(Qt::WindowModal);
+-    if (dialog.exec() == QDialog::Rejected) {
++    profile_select_applet = new QtProfileSelectionDialog(system->HIDCore(), this);
++    SCOPE_EXIT({
++        profile_select_applet->deleteLater();
++        profile_select_applet = nullptr;
++    });
++
++    profile_select_applet->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint |
++                                          Qt::WindowStaysOnTopHint | Qt::WindowTitleHint |
++                                          Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint);
++    profile_select_applet->setWindowModality(Qt::WindowModal);
++    if (profile_select_applet->exec() == QDialog::Rejected) {
+         emit ProfileSelectorFinishedSelection(std::nullopt);
+         return;
+     }
+ 
+     const Service::Account::ProfileManager manager;
+-    const auto uuid = manager.GetUser(static_cast<std::size_t>(dialog.GetIndex()));
++    const auto uuid = manager.GetUser(static_cast<std::size_t>(profile_select_applet->GetIndex()));
+     if (!uuid.has_value()) {
+         emit ProfileSelectorFinishedSelection(std::nullopt);
+         return;
+@@ -648,6 +677,12 @@ void GMainWindow::ProfileSelectorSelectProfile() {
+     emit ProfileSelectorFinishedSelection(uuid);
+ }
+ 
++void GMainWindow::ProfileSelectorRequestExit() {
++    if (profile_select_applet) {
++        profile_select_applet->reject();
++    }
++}
++
+ void GMainWindow::SoftwareKeyboardInitialize(
+     bool is_inline, Core::Frontend::KeyboardInitializeParameters initialize_parameters) {
+     if (software_keyboard) {
+@@ -772,7 +807,7 @@ void GMainWindow::WebBrowserOpenWebPage(const std::string& main_url,
+         return;
+     }
+ 
+-    QtNXWebEngineView web_browser_view(this, *system, input_subsystem.get());
++    web_applet = new QtNXWebEngineView(this, *system, input_subsystem.get());
+ 
+     ui->action_Pause->setEnabled(false);
+     ui->action_Restart->setEnabled(false);
+@@ -799,9 +834,9 @@ void GMainWindow::WebBrowserOpenWebPage(const std::string& main_url,
+         loading_progress.setValue(1);
+ 
+         if (is_local) {
+-            web_browser_view.LoadLocalWebPage(main_url, additional_args);
++            web_applet->LoadLocalWebPage(main_url, additional_args);
+         } else {
+-            web_browser_view.LoadExternalWebPage(main_url, additional_args);
++            web_applet->LoadExternalWebPage(main_url, additional_args);
+         }
+ 
+         if (render_window->IsLoadingComplete()) {
+@@ -810,15 +845,15 @@ void GMainWindow::WebBrowserOpenWebPage(const std::string& main_url,
+ 
+         const auto& layout = render_window->GetFramebufferLayout();
+         const auto scale_ratio = devicePixelRatioF();
+-        web_browser_view.resize(layout.screen.GetWidth() / scale_ratio,
+-                                layout.screen.GetHeight() / scale_ratio);
+-        web_browser_view.move(layout.screen.left / scale_ratio,
+-                              (layout.screen.top / scale_ratio) + menuBar()->height());
+-        web_browser_view.setZoomFactor(static_cast<qreal>(layout.screen.GetWidth() / scale_ratio) /
+-                                       static_cast<qreal>(Layout::ScreenUndocked::Width));
++        web_applet->resize(layout.screen.GetWidth() / scale_ratio,
++                           layout.screen.GetHeight() / scale_ratio);
++        web_applet->move(layout.screen.left / scale_ratio,
++                         (layout.screen.top / scale_ratio) + menuBar()->height());
++        web_applet->setZoomFactor(static_cast<qreal>(layout.screen.GetWidth() / scale_ratio) /
++                                  static_cast<qreal>(Layout::ScreenUndocked::Width));
+ 
+-        web_browser_view.setFocus();
+-        web_browser_view.show();
++        web_applet->setFocus();
++        web_applet->show();
+ 
+         loading_progress.setValue(2);
+ 
+@@ -831,7 +866,7 @@ void GMainWindow::WebBrowserOpenWebPage(const std::string& main_url,
+ 
+     // TODO (Morph): Remove this
+     QAction* exit_action = new QAction(tr("Disable Web Applet"), this);
+-    connect(exit_action, &QAction::triggered, this, [this, &web_browser_view] {
++    connect(exit_action, &QAction::triggered, this, [this] {
+         const auto result = QMessageBox::warning(
+             this, tr("Disable Web Applet"),
+             tr("Disabling the web applet can lead to undefined behavior and should only be used "
+@@ -840,21 +875,21 @@ void GMainWindow::WebBrowserOpenWebPage(const std::string& main_url,
+             QMessageBox::Yes | QMessageBox::No);
+         if (result == QMessageBox::Yes) {
+             UISettings::values.disable_web_applet = true;
+-            web_browser_view.SetFinished(true);
++            web_applet->SetFinished(true);
+         }
+     });
+     ui->menubar->addAction(exit_action);
+ 
+-    while (!web_browser_view.IsFinished()) {
++    while (!web_applet->IsFinished()) {
+         QCoreApplication::processEvents();
+ 
+         if (!exit_check) {
+-            web_browser_view.page()->runJavaScript(
++            web_applet->page()->runJavaScript(
+                 QStringLiteral("end_applet;"), [&](const QVariant& variant) {
+                     exit_check = false;
+                     if (variant.toBool()) {
+-                        web_browser_view.SetFinished(true);
+-                        web_browser_view.SetExitReason(
++                        web_applet->SetFinished(true);
++                        web_applet->SetExitReason(
+                             Service::AM::Applets::WebExitReason::EndButtonPressed);
+                     }
+                 });
+@@ -862,22 +897,22 @@ void GMainWindow::WebBrowserOpenWebPage(const std::string& main_url,
+             exit_check = true;
+         }
+ 
+-        if (web_browser_view.GetCurrentURL().contains(QStringLiteral("localhost"))) {
+-            if (!web_browser_view.IsFinished()) {
+-                web_browser_view.SetFinished(true);
+-                web_browser_view.SetExitReason(Service::AM::Applets::WebExitReason::CallbackURL);
++        if (web_applet->GetCurrentURL().contains(QStringLiteral("localhost"))) {
++            if (!web_applet->IsFinished()) {
++                web_applet->SetFinished(true);
++                web_applet->SetExitReason(Service::AM::Applets::WebExitReason::CallbackURL);
+             }
+ 
+-            web_browser_view.SetLastURL(web_browser_view.GetCurrentURL().toStdString());
++            web_applet->SetLastURL(web_applet->GetCurrentURL().toStdString());
+         }
+ 
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+     }
+ 
+-    const auto exit_reason = web_browser_view.GetExitReason();
+-    const auto last_url = web_browser_view.GetLastURL();
++    const auto exit_reason = web_applet->GetExitReason();
++    const auto last_url = web_applet->GetLastURL();
+ 
+-    web_browser_view.hide();
++    web_applet->hide();
+ 
+     render_window->setFocus();
+ 
+@@ -903,6 +938,15 @@ void GMainWindow::WebBrowserOpenWebPage(const std::string& main_url,
+ #endif
+ }
+ 
++void GMainWindow::WebBrowserRequestExit() {
++#ifdef YUZU_USE_QT_WEB_ENGINE
++    if (web_applet) {
++        web_applet->SetExitReason(Service::AM::Applets::WebExitReason::ExitRequested);
++        web_applet->SetFinished(true);
++    }
++#endif
++}
++
+ void GMainWindow::InitializeWidgets() {
+ #ifdef YUZU_ENABLE_COMPATIBILITY_REPORTING
+     ui->action_Report_Compatibility->setVisible(true);
+@@ -3089,13 +3133,23 @@ void GMainWindow::OnSaveConfig() {
+ }
+ 
+ void GMainWindow::ErrorDisplayDisplayError(QString error_code, QString error_text) {
+-    OverlayDialog dialog(render_window, *system, error_code, error_text, QString{}, tr("OK"),
+-                         Qt::AlignLeft | Qt::AlignVCenter);
+-    dialog.exec();
++    error_applet = new OverlayDialog(render_window, *system, error_code, error_text, QString{},
++                                     tr("OK"), Qt::AlignLeft | Qt::AlignVCenter);
++    SCOPE_EXIT({
++        error_applet->deleteLater();
++        error_applet = nullptr;
++    });
++    error_applet->exec();
+ 
+     emit ErrorDisplayFinished();
+ }
+ 
++void GMainWindow::ErrorDisplayRequestExit() {
++    if (error_applet) {
++        error_applet->reject();
++    }
++}
++
+ void GMainWindow::OnMenuReportCompatibility() {
+ #if defined(ARCHITECTURE_x86_64) && !defined(__APPLE__)
+     const auto& caps = Common::GetCPUCaps();
+diff --git a/src/yuzu/main.h b/src/yuzu/main.h
+index a23b373a5b23..a99938eaa68a 100644
+--- a/src/yuzu/main.h
++++ b/src/yuzu/main.h
+@@ -47,7 +47,11 @@ enum class DumpRomFSTarget;
+ enum class InstalledEntryType;
+ class GameListPlaceholder;
+ 
++class QtAmiiboSettingsDialog;
++class QtControllerSelectorDialog;
++class QtProfileSelectionDialog;
+ class QtSoftwareKeyboardDialog;
++class QtNXWebEngineView;
+ 
+ enum class StartGameType {
+     Normal, // Can use custom configuration
+@@ -184,8 +188,10 @@ public slots:
+     void OnSaveConfig();
+     void AmiiboSettingsShowDialog(const Core::Frontend::CabinetParameters& parameters,
+                                   std::shared_ptr<Service::NFP::NfpDevice> nfp_device);
++    void AmiiboSettingsRequestExit();
+     void ControllerSelectorReconfigureControllers(
+         const Core::Frontend::ControllerParameters& parameters);
++    void ControllerSelectorRequestExit();
+     void SoftwareKeyboardInitialize(
+         bool is_inline, Core::Frontend::KeyboardInitializeParameters initialize_parameters);
+     void SoftwareKeyboardShowNormal();
+@@ -196,9 +202,12 @@ public slots:
+     void SoftwareKeyboardInlineTextChanged(Core::Frontend::InlineTextParameters text_parameters);
+     void SoftwareKeyboardExit();
+     void ErrorDisplayDisplayError(QString error_code, QString error_text);
++    void ErrorDisplayRequestExit();
+     void ProfileSelectorSelectProfile();
++    void ProfileSelectorRequestExit();
+     void WebBrowserOpenWebPage(const std::string& main_url, const std::string& additional_args,
+                                bool is_local);
++    void WebBrowserRequestExit();
+     void OnAppFocusStateChanged(Qt::ApplicationState state);
+     void OnTasStateChanged();
+ 
+@@ -466,7 +475,12 @@ private slots:
+     QString last_filename_booted;
+ 
+     // Applets
++    QtAmiiboSettingsDialog* cabinet_applet = nullptr;
++    QtControllerSelectorDialog* controller_applet = nullptr;
++    QtProfileSelectionDialog* profile_select_applet = nullptr;
++    QDialog* error_applet = nullptr;
+     QtSoftwareKeyboardDialog* software_keyboard = nullptr;
++    QtNXWebEngineView* web_applet = nullptr;
+ 
+     // True if amiibo file select is visible
+     bool is_amiibo_file_select_active{};

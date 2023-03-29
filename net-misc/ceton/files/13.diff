@@ -1,0 +1,187 @@
+diff --git a/Makefile b/Makefile
+index 6987bca..e763275 100644
+--- a/Makefile
++++ b/Makefile
+@@ -32,15 +32,15 @@ all: $(targets)
+ 
+ ctn91xx:
+ 	@echo "Building ctn91xx driver..."
+-	@(cd $(KERNEL_DIR) && make -j15 -C $(KERNEL_DIR) SUBDIRS=$(PWD))
++	make -j15 -C $(KERNEL_DIR) M=$(PWD)
+ 
+ ctn91xx_module:
+-	@(cd $(KERNEL_DIR) && make -j15 -C $(KERNEL_DIR) SUBDIRS=$(PWD) modules)
++	make -j15 -C $(KERNEL_DIR) M=$(PWD) modules
+ 	
+ 
+ install:
+ 	@echo "Installing ctn91xx driver..."
+-	@(cd $(KERNEL_DIR) && make -j20 -C $(KERNEL_DIR) SUBDIRS=$(PWD) modules_install)
++	make -j20 -C $(KERNEL_DIR) M=$(PWD) modules_install
+ 	cp 98-ctn91xx.rules /etc/udev/rules.d/
+ 	/sbin/depmod -a
+ 
+diff --git a/ctn91xx_event.c b/ctn91xx_event.c
+index 69db212..fdc9943 100644
+--- a/ctn91xx_event.c
++++ b/ctn91xx_event.c
+@@ -186,7 +186,7 @@ ssize_t ctn91xx_event_read_common(ctn91xx_dev_t* dev, char __user * data, size_t
+         ctn91xx_event_cleanup(dev, event);
+     }
+ 
+-    current->state = TASK_RUNNING;
++    __set_current_state(TASK_RUNNING);
+     remove_wait_queue(&dev->event_waitqueue, &wait);
+ 
+     return retval;
+diff --git a/ctn91xx_mpeg.c b/ctn91xx_mpeg.c
+index a193ea9..e156ada 100644
+--- a/ctn91xx_mpeg.c
++++ b/ctn91xx_mpeg.c
+@@ -1218,7 +1218,11 @@ void ctn91xx_mpeg_unmap_page(ctn91xx_dev_t* dev, vbuffer_t* vbuffer,
+     vbuffer->lock_cnt[page_idx]--;
+     if(vbuffer->lock_cnt[page_idx] == 0) {
+ #if USE_PCI
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+         pci_dma_sync_single_for_cpu(dev->pdev, vbuffer->dma_addrs[page_idx], PAGE_SIZE, PCI_DMA_FROMDEVICE);
++#else
++        dma_sync_single_for_cpu(& dev->pdev->dev, vbuffer->dma_addrs[page_idx], PAGE_SIZE, (enum dma_data_direction) DMA_FROM_DEVICE);
++#endif
+ #endif
+         vbuffer->remaining[page_idx] = bytes_per_page;
+         vbuffer->sizes[page_idx] = bytes_per_page;
+@@ -1436,7 +1440,11 @@ void ctn91xx_interrupt_mpeg_dma(ctn91xx_dev_t* dev, uint8_t origin, int bank)
+                 int map_page_index = (cur_page_index + num_pages) % vbuffer->npages;
+ 
+ #if USE_PCI
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+                 pci_dma_sync_single_for_device(dev->pdev, vbuffer->dma_addrs[map_page_index], PAGE_SIZE, PCI_DMA_FROMDEVICE);
++#else
++                dma_sync_single_for_device(& dev->pdev->dev, vbuffer->dma_addrs[map_page_index], PAGE_SIZE, (enum dma_data_direction) DMA_FROM_DEVICE);
++#endif
+ #endif
+                 if(is_filter_stream(vbuffer->tuner_index)) {
+                     ctn91xx_write32(vbuffer->dma_addrs[map_page_index],
+@@ -1468,7 +1476,11 @@ void vbuffer_map_bank(ctn91xx_dev_t* dev, vbuffer_t* vbuffer, int num_pages, int
+         int write_page_index = WRAPPED_PAGE_INDEX(vbuffer, vbuffer->write_idx + j);
+ 
+ #if USE_PCI
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+         pci_dma_sync_single_for_device(dev->pdev, vbuffer->dma_addrs[write_page_index], PAGE_SIZE, PCI_DMA_FROMDEVICE);
++#else
++        dma_sync_single_for_device(& dev->pdev->dev, vbuffer->dma_addrs[write_page_index], PAGE_SIZE, DMA_FROM_DEVICE);
++#endif
+ #endif
+         if(is_filter_stream(vbuffer->tuner_index)) {
+             ctn91xx_write32(vbuffer->dma_addrs[write_page_index],
+diff --git a/ctn91xx_net.c b/ctn91xx_net.c
+index de0702e..480337d 100644
+--- a/ctn91xx_net.c
++++ b/ctn91xx_net.c
+@@ -10,7 +10,11 @@ static int ctn91xx_net_open( struct net_device *ndev );
+ static int ctn91xx_net_start_xmit( struct sk_buff *skb, struct net_device *ndev );
+ static int ctn91xx_net_stop( struct net_device *ndev );
+ static struct net_device_stats* ctn91xx_net_get_stats( struct net_device *ndev );
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
++static void ctn91xx_net_tx_timeout( struct net_device* ndev, unsigned int txq );
++#else
+ static void ctn91xx_net_tx_timeout( struct net_device* ndev );
++#endif
+ static void ctn91xx_handle_tx( ctn91xx_dev_t* dev, ctn91xx_net_priv_t* priv );
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,29)
+@@ -31,6 +35,7 @@ int ctn91xx_net_init( ctn91xx_dev_t* dev )
+ {
+     struct net_device* netdev = NULL;
+     ctn91xx_net_priv_t* priv = NULL;
++    u8 addr[6];
+     int i;
+ 
+     netdev = alloc_etherdev( sizeof( ctn91xx_net_priv_t ) );
+@@ -70,12 +75,13 @@ int ctn91xx_net_init( ctn91xx_dev_t* dev )
+     }
+ 
+ #if USE_PCI
+-    netdev->dev_addr[0] = 0x00;
+-    netdev->dev_addr[1] = 0x22;
+-    netdev->dev_addr[2] = 0x2c;
+-    netdev->dev_addr[3] = 0xff;
+-    netdev->dev_addr[4] = 0xff;
+-    netdev->dev_addr[5] = 0xff - dev->board_number;
++    addr[0] = 0x00;
++    addr[1] = 0x22;
++    addr[2] = 0x2c;
++    addr[3] = 0xff;
++    addr[4] = 0xff;
++    addr[5] = 0xff - dev->board_number;
++    eth_hw_addr_set(netdev,addr);
+ #else
+     random_ether_addr(netdev->dev_addr);
+ #endif
+@@ -175,7 +181,11 @@ static int ctn91xx_net_start_xmit( struct sk_buff *skb, struct net_device *ndev
+     return ret;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
++static void ctn91xx_net_tx_timeout( struct net_device* net_dev, unsigned int txq )
++#else
+ static void ctn91xx_net_tx_timeout( struct net_device* net_dev )
++#endif
+ {
+     ctn91xx_net_priv_t* priv = netdev_priv(net_dev);
+     ctn91xx_dev_t* dev = priv->ctn91xx_dev;
+diff --git a/ctn91xx_pci.c b/ctn91xx_pci.c
+index 4ff581c..3cb219a 100644
+--- a/ctn91xx_pci.c
++++ b/ctn91xx_pci.c
+@@ -13,6 +13,10 @@ static int boards[MAX_BOARDS] = {};
+ 
+ static int face_present = 0;
+ 
++#if LINUX_VERSION_CODE > KERNEL_VERSION(5,6,0)
++#define ioremap_nocache(a,b) ioremap(a,b)
++#endif
++
+ static int ctn91xx_register(struct pci_dev *pdev, const struct pci_device_id *ent)
+ {
+     uint32_t freq;
+@@ -48,7 +52,11 @@ static int ctn91xx_register(struct pci_dev *pdev, const struct pci_device_id *en
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(3,1,0)
+     if(pci_set_dma_mask(pdev, DMA_32BIT_MASK)) {
+ #else
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+     if(pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
++#else
++    if(dma_set_mask(& pdev->dev, DMA_BIT_MASK(32))) {
++#endif
+ #endif
+         ERROR("No suitable DMA mask available.");
+     }
+diff --git a/ctn91xx_util.c b/ctn91xx_util.c
+index c343786..01099e7 100644
+--- a/ctn91xx_util.c
++++ b/ctn91xx_util.c
+@@ -92,7 +92,11 @@ int ctn91xx_board_init(ctn91xx_dev_t* dev)
+ 
+         for( j=0; j<vbuffer->npages; j++ ) {
+ #if USE_PCI
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+             vbuffer->buffers[j] = pci_alloc_consistent( dev->pdev, PAGE_SIZE, &vbuffer->dma_addrs[j] );
++#else
++            vbuffer->buffers[j] = dma_alloc_coherent(& dev->pdev->dev, PAGE_SIZE, &vbuffer->dma_addrs[j],GFP_ATOMIC);
++#endif
+ #else
+             vbuffer->buffers[j] = kmalloc(PAGE_SIZE, GFP_KERNEL);
+             if( vbuffer->buffers[j] ) {
+@@ -187,7 +191,11 @@ void ctn91xx_board_uninit_dma_pool(ctn91xx_dev_t* dev)
+ 
+         for( j=0; j<vbuffer->npages; j++ ) {
+ #if USE_PCI
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+             pci_free_consistent( dev->pdev, PAGE_SIZE, vbuffer->buffers[j], vbuffer->dma_addrs[j] );
++#else
++            dma_free_coherent(& dev->pdev->dev, PAGE_SIZE, vbuffer->buffers[j], vbuffer->dma_addrs[j] );
++#endif
+ #else
+             kfree( vbuffer->buffers[j] );
+ #endif

@@ -1,0 +1,700 @@
+diff --git a/src/video_core/renderer_opengl/gl_rasterizer.cpp b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+index 7bced675c74f..33748762f607 100644
+--- a/src/video_core/renderer_opengl/gl_rasterizer.cpp
++++ b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+@@ -63,7 +63,7 @@ RasterizerOpenGL::RasterizerOpenGL(Core::Frontend::EmuWindow& emu_window_, Tegra
+       buffer_cache(*this, cpu_memory_, buffer_cache_runtime),
+       shader_cache(*this, emu_window_, device, texture_cache, buffer_cache, program_manager,
+                    state_tracker, gpu.ShaderNotify()),
+-      query_cache(*this), accelerate_dma(buffer_cache),
++      query_cache(*this), accelerate_dma(buffer_cache, texture_cache),
+       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache),
+       blit_image(program_manager_) {}
+ 
+@@ -1262,7 +1262,8 @@ void RasterizerOpenGL::ReleaseChannel(s32 channel_id) {
+     query_cache.EraseChannel(channel_id);
+ }
+ 
+-AccelerateDMA::AccelerateDMA(BufferCache& buffer_cache_) : buffer_cache{buffer_cache_} {}
++AccelerateDMA::AccelerateDMA(BufferCache& buffer_cache_, TextureCache& texture_cache_)
++    : buffer_cache{buffer_cache_}, texture_cache{texture_cache_} {}
+ 
+ bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) {
+     std::scoped_lock lock{buffer_cache.mutex};
+@@ -1274,4 +1275,44 @@ bool AccelerateDMA::BufferClear(GPUVAddr src_address, u64 amount, u32 value) {
+     return buffer_cache.DMAClear(src_address, amount, value);
+ }
+ 
++template <bool IS_IMAGE_UPLOAD>
++bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
++                                       const Tegra::DMA::BufferOperand& buffer_operand,
++                                       const Tegra::DMA::ImageOperand& image_operand) {
++    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
++    const auto image_id = texture_cache.DmaImageId(image_operand);
++    if (image_id == VideoCommon::NULL_IMAGE_ID) {
++        return false;
++    }
++    const u32 buffer_size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);
++    static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
++    const auto post_op = IS_IMAGE_UPLOAD ? VideoCommon::ObtainBufferOperation::DoNothing
++                                         : VideoCommon::ObtainBufferOperation::MarkAsWritten;
++    const auto [buffer, offset] =
++        buffer_cache.ObtainBuffer(buffer_operand.address, buffer_size, sync_info, post_op);
++
++    const auto [image, copy] = texture_cache.DmaBufferImageCopy(
++        copy_info, buffer_operand, image_operand, image_id, IS_IMAGE_UPLOAD);
++    const std::span copy_span{&copy, 1};
++
++    if constexpr (IS_IMAGE_UPLOAD) {
++        image->UploadMemory(buffer->Handle(), offset, copy_span);
++    } else {
++        image->DownloadMemory(buffer->Handle(), offset, copy_span);
++    }
++    return true;
++}
++
++bool AccelerateDMA::ImageToBuffer(const Tegra::DMA::ImageCopy& copy_info,
++                                  const Tegra::DMA::ImageOperand& image_operand,
++                                  const Tegra::DMA::BufferOperand& buffer_operand) {
++    return DmaBufferImageCopy<false>(copy_info, buffer_operand, image_operand);
++}
++
++bool AccelerateDMA::BufferToImage(const Tegra::DMA::ImageCopy& copy_info,
++                                  const Tegra::DMA::BufferOperand& buffer_operand,
++                                  const Tegra::DMA::ImageOperand& image_operand) {
++    return DmaBufferImageCopy<true>(copy_info, buffer_operand, image_operand);
++}
++
+ } // namespace OpenGL
+diff --git a/src/video_core/renderer_opengl/gl_rasterizer.h b/src/video_core/renderer_opengl/gl_rasterizer.h
+index 7e21fc43d48c..1f6562ef824f 100644
+--- a/src/video_core/renderer_opengl/gl_rasterizer.h
++++ b/src/video_core/renderer_opengl/gl_rasterizer.h
+@@ -50,24 +50,26 @@ static_assert(sizeof(BindlessSSBO) * CHAR_BIT == 128);
+ 
+ class AccelerateDMA : public Tegra::Engines::AccelerateDMAInterface {
+ public:
+-    explicit AccelerateDMA(BufferCache& buffer_cache);
++    explicit AccelerateDMA(BufferCache& buffer_cache, TextureCache& texture_cache);
+ 
+     bool BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount) override;
+ 
+     bool BufferClear(GPUVAddr src_address, u64 amount, u32 value) override;
+ 
+     bool ImageToBuffer(const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::ImageOperand& src,
+-                       const Tegra::DMA::BufferOperand& dst) override {
+-        return false;
+-    }
++                       const Tegra::DMA::BufferOperand& dst) override;
+ 
+     bool BufferToImage(const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& src,
+-                       const Tegra::DMA::ImageOperand& dst) override {
+-        return false;
+-    }
++                       const Tegra::DMA::ImageOperand& dst) override;
+ 
+ private:
++    template <bool IS_IMAGE_UPLOAD>
++    bool DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
++                            const Tegra::DMA::BufferOperand& src,
++                            const Tegra::DMA::ImageOperand& dst);
++
+     BufferCache& buffer_cache;
++    TextureCache& texture_cache;
+ };
+ 
+ class RasterizerOpenGL : public VideoCore::RasterizerAccelerated,
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.cpp b/src/video_core/renderer_opengl/gl_texture_cache.cpp
+index b047e7b3d4cf..4b13e807d5f2 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_texture_cache.cpp
+@@ -762,14 +762,14 @@ Image::Image(const VideoCommon::NullImageParams& params) : VideoCommon::ImageBas
+ 
+ Image::~Image() = default;
+ 
+-void Image::UploadMemory(const ImageBufferMap& map,
++void Image::UploadMemory(GLuint buffer_handle, size_t buffer_offset,
+                          std::span<const VideoCommon::BufferImageCopy> copies) {
+     const bool is_rescaled = True(flags & ImageFlagBits::Rescaled);
+     if (is_rescaled) {
+         ScaleDown(true);
+     }
+-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, map.buffer);
+-    glFlushMappedBufferRange(GL_PIXEL_UNPACK_BUFFER, map.offset, unswizzled_size_bytes);
++    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer_handle);
++    glFlushMappedBufferRange(GL_PIXEL_UNPACK_BUFFER, buffer_offset, unswizzled_size_bytes);
+ 
+     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+ 
+@@ -788,21 +788,26 @@ void Image::UploadMemory(const ImageBufferMap& map,
+             current_image_height = copy.buffer_image_height;
+             glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, current_image_height);
+         }
+-        CopyBufferToImage(copy, map.offset);
++        CopyBufferToImage(copy, buffer_offset);
+     }
+     if (is_rescaled) {
+         ScaleUp();
+     }
+ }
+ 
+-void Image::DownloadMemory(ImageBufferMap& map,
++void Image::UploadMemory(const ImageBufferMap& map,
++                         std::span<const VideoCommon::BufferImageCopy> copies) {
++    UploadMemory(map.buffer, map.offset, copies);
++}
++
++void Image::DownloadMemory(GLuint buffer_handle, size_t buffer_offset,
+                            std::span<const VideoCommon::BufferImageCopy> copies) {
+     const bool is_rescaled = True(flags & ImageFlagBits::Rescaled);
+     if (is_rescaled) {
+         ScaleDown();
+     }
+     glMemoryBarrier(GL_PIXEL_BUFFER_BARRIER_BIT); // TODO: Move this to its own API
+-    glBindBuffer(GL_PIXEL_PACK_BUFFER, map.buffer);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, buffer_handle);
+     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+ 
+     u32 current_row_length = std::numeric_limits<u32>::max();
+@@ -820,13 +825,18 @@ void Image::DownloadMemory(ImageBufferMap& map,
+             current_image_height = copy.buffer_image_height;
+             glPixelStorei(GL_PACK_IMAGE_HEIGHT, current_image_height);
+         }
+-        CopyImageToBuffer(copy, map.offset);
++        CopyImageToBuffer(copy, buffer_offset);
+     }
+     if (is_rescaled) {
+         ScaleUp(true);
+     }
+ }
+ 
++void Image::DownloadMemory(ImageBufferMap& map,
++                           std::span<const VideoCommon::BufferImageCopy> copies) {
++    DownloadMemory(map.buffer, map.offset, copies);
++}
++
+ GLuint Image::StorageHandle() noexcept {
+     switch (info.format) {
+     case PixelFormat::A8B8G8R8_SRGB:
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.h b/src/video_core/renderer_opengl/gl_texture_cache.h
+index e308754963e2..911e4607aa98 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.h
++++ b/src/video_core/renderer_opengl/gl_texture_cache.h
+@@ -206,9 +206,15 @@ class Image : public VideoCommon::ImageBase {
+     Image(Image&&) = default;
+     Image& operator=(Image&&) = default;
+ 
++    void UploadMemory(GLuint buffer_handle, size_t buffer_offset,
++                      std::span<const VideoCommon::BufferImageCopy> copies);
++
+     void UploadMemory(const ImageBufferMap& map,
+                       std::span<const VideoCommon::BufferImageCopy> copies);
+ 
++    void DownloadMemory(GLuint buffer_handle, size_t buffer_offset,
++                        std::span<const VideoCommon::BufferImageCopy> copies);
++
+     void DownloadMemory(ImageBufferMap& map, std::span<const VideoCommon::BufferImageCopy> copies);
+ 
+     GLuint StorageHandle() noexcept;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index f085d53a1435..a00cf1569e9d 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -770,232 +770,44 @@ bool AccelerateDMA::BufferCopy(GPUVAddr src_address, GPUVAddr dest_address, u64
+     return buffer_cache.DMACopy(src_address, dest_address, amount);
+ }
+ 
+-bool AccelerateDMA::ImageToBuffer(const Tegra::DMA::ImageCopy& copy_info,
+-                                  const Tegra::DMA::ImageOperand& src,
+-                                  const Tegra::DMA::BufferOperand& dst) {
++template <bool IS_IMAGE_UPLOAD>
++bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
++                                       const Tegra::DMA::BufferOperand& buffer_operand,
++                                       const Tegra::DMA::ImageOperand& image_operand) {
+     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+-    auto query_image = texture_cache.ObtainImage(src, false);
+-    if (!query_image) {
++    const auto image_id = texture_cache.DmaImageId(image_operand);
++    if (image_id == VideoCommon::NULL_IMAGE_ID) {
+         return false;
+     }
+-    auto* image = query_image->first;
+-    auto [level, base] = query_image->second;
+-    const u32 buffer_size = static_cast<u32>(dst.pitch * dst.height);
+-    const auto [buffer, offset] = buffer_cache.ObtainBuffer(
+-        dst.address, buffer_size, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+-        VideoCommon::ObtainBufferOperation::MarkAsWritten);
+-
+-    const bool is_rescaled = image->IsRescaled();
+-    if (is_rescaled) {
+-        image->ScaleDown();
+-    }
+-    VkImageSubresourceLayers subresources{
+-        .aspectMask = image->AspectMask(),
+-        .mipLevel = level,
+-        .baseArrayLayer = base,
+-        .layerCount = 1,
+-    };
+-    const u32 bpp = VideoCore::Surface::BytesPerBlock(image->info.format);
+-    const auto convert = [old_bpp = src.bytes_per_pixel, bpp](u32 value) {
+-        return (old_bpp * value) / bpp;
+-    };
+-    const u32 base_x = convert(src.params.origin.x.Value());
+-    const u32 base_y = src.params.origin.y.Value();
+-    const u32 length_x = convert(copy_info.length_x);
+-    const u32 length_y = copy_info.length_y;
+-    VkOffset3D image_offset{
+-        .x = static_cast<s32>(base_x),
+-        .y = static_cast<s32>(base_y),
+-        .z = 0,
+-    };
+-    VkExtent3D image_extent{
+-        .width = length_x,
+-        .height = length_y,
+-        .depth = 1,
+-    };
+-    auto buff_info(dst);
+-    buff_info.pitch = convert(dst.pitch);
+-    scheduler.RequestOutsideRenderPassOperationContext();
+-    scheduler.Record([src_image = image->Handle(), dst_buffer = buffer->Handle(),
+-                      buffer_offset = offset, subresources, image_offset, image_extent,
+-                      buff_info](vk::CommandBuffer cmdbuf) {
+-        const std::array buffer_copy_info{
+-            VkBufferImageCopy{
+-                .bufferOffset = buffer_offset,
+-                .bufferRowLength = buff_info.pitch,
+-                .bufferImageHeight = buff_info.height,
+-                .imageSubresource = subresources,
+-                .imageOffset = image_offset,
+-                .imageExtent = image_extent,
+-            },
+-        };
+-        const VkImageSubresourceRange range{
+-            .aspectMask = subresources.aspectMask,
+-            .baseMipLevel = subresources.mipLevel,
+-            .levelCount = 1,
+-            .baseArrayLayer = subresources.baseArrayLayer,
+-            .layerCount = 1,
+-        };
+-        static constexpr VkMemoryBarrier WRITE_BARRIER{
+-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+-            .pNext = nullptr,
+-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+-        };
+-        const std::array pre_barriers{
+-            VkImageMemoryBarrier{
+-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+-                .pNext = nullptr,
+-                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+-                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+-                                 VK_ACCESS_TRANSFER_WRITE_BIT,
+-                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+-                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+-                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+-                .image = src_image,
+-                .subresourceRange = range,
+-            },
+-        };
+-        const std::array post_barriers{
+-            VkImageMemoryBarrier{
+-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+-                .pNext = nullptr,
+-                .srcAccessMask = 0,
+-                .dstAccessMask = 0,
+-                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+-                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+-                .image = src_image,
+-                .subresourceRange = range,
+-            },
+-        };
+-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+-                               0, {}, {}, pre_barriers);
+-        cmdbuf.CopyImageToBuffer(src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst_buffer,
+-                                 buffer_copy_info);
+-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+-                               0, WRITE_BARRIER, nullptr, post_barriers);
+-    });
+-    if (is_rescaled) {
+-        image->ScaleUp(true);
++    const u32 buffer_size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);
++    static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
++    const auto post_op = IS_IMAGE_UPLOAD ? VideoCommon::ObtainBufferOperation::DoNothing
++                                         : VideoCommon::ObtainBufferOperation::MarkAsWritten;
++    const auto [buffer, offset] =
++        buffer_cache.ObtainBuffer(buffer_operand.address, buffer_size, sync_info, post_op);
++
++    const auto [image, copy] = texture_cache.DmaBufferImageCopy(
++        copy_info, buffer_operand, image_operand, image_id, IS_IMAGE_UPLOAD);
++    const std::span copy_span{&copy, 1};
++
++    if constexpr (IS_IMAGE_UPLOAD) {
++        image->UploadMemory(buffer->Handle(), offset, copy_span);
++    } else {
++        image->DownloadMemory(buffer->Handle(), offset, copy_span);
+     }
+     return true;
+ }
+ 
++bool AccelerateDMA::ImageToBuffer(const Tegra::DMA::ImageCopy& copy_info,
++                                  const Tegra::DMA::ImageOperand& image_operand,
++                                  const Tegra::DMA::BufferOperand& buffer_operand) {
++    return DmaBufferImageCopy<false>(copy_info, buffer_operand, image_operand);
++}
++
+ bool AccelerateDMA::BufferToImage(const Tegra::DMA::ImageCopy& copy_info,
+-                                  const Tegra::DMA::BufferOperand& src,
+-                                  const Tegra::DMA::ImageOperand& dst) {
+-    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+-    auto query_image = texture_cache.ObtainImage(dst, true);
+-    if (!query_image) {
+-        return false;
+-    }
+-    auto* image = query_image->first;
+-    auto [level, base] = query_image->second;
+-    const u32 buffer_size = static_cast<u32>(src.pitch * src.height);
+-    const auto [buffer, offset] = buffer_cache.ObtainBuffer(
+-        src.address, buffer_size, VideoCommon::ObtainBufferSynchronize::FullSynchronize,
+-        VideoCommon::ObtainBufferOperation::DoNothing);
+-    const bool is_rescaled = image->IsRescaled();
+-    if (is_rescaled) {
+-        image->ScaleDown(true);
+-    }
+-    VkImageSubresourceLayers subresources{
+-        .aspectMask = image->AspectMask(),
+-        .mipLevel = level,
+-        .baseArrayLayer = base,
+-        .layerCount = 1,
+-    };
+-    const u32 bpp = VideoCore::Surface::BytesPerBlock(image->info.format);
+-    const auto convert = [old_bpp = dst.bytes_per_pixel, bpp](u32 value) {
+-        return (old_bpp * value) / bpp;
+-    };
+-    const u32 base_x = convert(dst.params.origin.x.Value());
+-    const u32 base_y = dst.params.origin.y.Value();
+-    const u32 length_x = convert(copy_info.length_x);
+-    const u32 length_y = copy_info.length_y;
+-    VkOffset3D image_offset{
+-        .x = static_cast<s32>(base_x),
+-        .y = static_cast<s32>(base_y),
+-        .z = 0,
+-    };
+-    VkExtent3D image_extent{
+-        .width = length_x,
+-        .height = length_y,
+-        .depth = 1,
+-    };
+-    auto buff_info(src);
+-    buff_info.pitch = convert(src.pitch);
+-    scheduler.RequestOutsideRenderPassOperationContext();
+-    scheduler.Record([dst_image = image->Handle(), src_buffer = buffer->Handle(),
+-                      buffer_offset = offset, subresources, image_offset, image_extent,
+-                      buff_info](vk::CommandBuffer cmdbuf) {
+-        const std::array buffer_copy_info{
+-            VkBufferImageCopy{
+-                .bufferOffset = buffer_offset,
+-                .bufferRowLength = buff_info.pitch,
+-                .bufferImageHeight = buff_info.height,
+-                .imageSubresource = subresources,
+-                .imageOffset = image_offset,
+-                .imageExtent = image_extent,
+-            },
+-        };
+-        const VkImageSubresourceRange range{
+-            .aspectMask = subresources.aspectMask,
+-            .baseMipLevel = subresources.mipLevel,
+-            .levelCount = 1,
+-            .baseArrayLayer = subresources.baseArrayLayer,
+-            .layerCount = 1,
+-        };
+-        static constexpr VkMemoryBarrier READ_BARRIER{
+-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+-            .pNext = nullptr,
+-            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+-        };
+-        const std::array pre_barriers{
+-            VkImageMemoryBarrier{
+-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+-                .pNext = nullptr,
+-                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+-                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+-                                 VK_ACCESS_TRANSFER_WRITE_BIT,
+-                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+-                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+-                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+-                .image = dst_image,
+-                .subresourceRange = range,
+-            },
+-        };
+-        const std::array post_barriers{
+-            VkImageMemoryBarrier{
+-                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+-                .pNext = nullptr,
+-                .srcAccessMask = 0,
+-                .dstAccessMask = 0,
+-                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+-                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+-                .image = dst_image,
+-                .subresourceRange = range,
+-            },
+-        };
+-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+-                               0, READ_BARRIER, {}, pre_barriers);
+-        cmdbuf.CopyBufferToImage(src_buffer, dst_image, VK_IMAGE_LAYOUT_GENERAL, buffer_copy_info);
+-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+-                               0, nullptr, nullptr, post_barriers);
+-    });
+-    if (is_rescaled) {
+-        image->ScaleUp();
+-    }
+-    return true;
++                                  const Tegra::DMA::BufferOperand& buffer_operand,
++                                  const Tegra::DMA::ImageOperand& image_operand) {
++    return DmaBufferImageCopy<true>(copy_info, buffer_operand, image_operand);
+ }
+ 
+ void RasterizerVulkan::UpdateDynamicStates() {
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index 7746c54345b6..1659fbc13807 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -59,6 +59,11 @@ class AccelerateDMA : public Tegra::Engines::AccelerateDMAInterface {
+                        const Tegra::DMA::ImageOperand& dst) override;
+ 
+ private:
++    template <bool IS_IMAGE_UPLOAD>
++    bool DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
++                            const Tegra::DMA::BufferOperand& src,
++                            const Tegra::DMA::ImageOperand& dst);
++
+     BufferCache& buffer_cache;
+     TextureCache& texture_cache;
+     Scheduler& scheduler;
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 8a204f93fae3..bf6389ff11d7 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -1312,15 +1312,16 @@ Image::Image(const VideoCommon::NullImageParams& params) : VideoCommon::ImageBas
+ 
+ Image::~Image() = default;
+ 
+-void Image::UploadMemory(const StagingBufferRef& map, std::span<const BufferImageCopy> copies) {
++void Image::UploadMemory(VkBuffer buffer, VkDeviceSize offset,
++                         std::span<const VideoCommon::BufferImageCopy> copies) {
+     // TODO: Move this to another API
+     const bool is_rescaled = True(flags & ImageFlagBits::Rescaled);
+     if (is_rescaled) {
+         ScaleDown(true);
+     }
+     scheduler->RequestOutsideRenderPassOperationContext();
+-    std::vector vk_copies = TransformBufferImageCopies(copies, map.offset, aspect_mask);
+-    const VkBuffer src_buffer = map.buffer;
++    std::vector vk_copies = TransformBufferImageCopies(copies, offset, aspect_mask);
++    const VkBuffer src_buffer = buffer;
+     const VkImage vk_image = *original_image;
+     const VkImageAspectFlags vk_aspect_mask = aspect_mask;
+     const bool is_initialized = std::exchange(initialized, true);
+@@ -1333,14 +1334,19 @@ void Image::UploadMemory(const StagingBufferRef& map, std::span<const BufferImag
+     }
+ }
+ 
+-void Image::DownloadMemory(const StagingBufferRef& map, std::span<const BufferImageCopy> copies) {
++void Image::UploadMemory(const StagingBufferRef& map, std::span<const BufferImageCopy> copies) {
++    UploadMemory(map.buffer, map.offset, copies);
++}
++
++void Image::DownloadMemory(VkBuffer buffer, VkDeviceSize offset,
++                           std::span<const VideoCommon::BufferImageCopy> copies) {
+     const bool is_rescaled = True(flags & ImageFlagBits::Rescaled);
+     if (is_rescaled) {
+         ScaleDown();
+     }
+-    std::vector vk_copies = TransformBufferImageCopies(copies, map.offset, aspect_mask);
++    std::vector vk_copies = TransformBufferImageCopies(copies, offset, aspect_mask);
+     scheduler->RequestOutsideRenderPassOperationContext();
+-    scheduler->Record([buffer = map.buffer, image = *original_image, aspect_mask = aspect_mask,
++    scheduler->Record([buffer, image = *original_image, aspect_mask = aspect_mask,
+                        vk_copies](vk::CommandBuffer cmdbuf) {
+         const VkImageMemoryBarrier read_barrier{
+             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+@@ -1395,6 +1401,10 @@ void Image::DownloadMemory(const StagingBufferRef& map, std::span<const BufferIm
+     }
+ }
+ 
++void Image::DownloadMemory(const StagingBufferRef& map, std::span<const BufferImageCopy> copies) {
++    DownloadMemory(map.buffer, map.offset, copies);
++}
++
+ bool Image::IsRescaled() const noexcept {
+     return True(flags & ImageFlagBits::Rescaled);
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 0ce39616f23d..d5ee23f8ddfa 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -132,9 +132,15 @@ class Image : public VideoCommon::ImageBase {
+     Image(Image&&) = default;
+     Image& operator=(Image&&) = default;
+ 
++    void UploadMemory(VkBuffer buffer, VkDeviceSize offset,
++                      std::span<const VideoCommon::BufferImageCopy> copies);
++
+     void UploadMemory(const StagingBufferRef& map,
+                       std::span<const VideoCommon::BufferImageCopy> copies);
+ 
++    void DownloadMemory(VkBuffer buffer, VkDeviceSize offset,
++                        std::span<const VideoCommon::BufferImageCopy> copies);
++
+     void DownloadMemory(const StagingBufferRef& map,
+                         std::span<const VideoCommon::BufferImageCopy> copies);
+ 
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 3353384345ff..8e8b9a5e66e1 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -744,6 +744,25 @@ void TextureCache<P>::PopAsyncFlushes() {
+     }
+ }
+ 
++template <class P>
++ImageId TextureCache<P>::DmaImageId(const Tegra::DMA::ImageOperand& operand) {
++    const ImageInfo dst_info(operand);
++    const ImageId dst_id = FindDMAImage(dst_info, operand.address);
++    if (!dst_id) {
++        return NULL_IMAGE_ID;
++    }
++    const auto& image = slot_images[dst_id];
++    if (False(image.flags & ImageFlagBits::GpuModified)) {
++        // No need to waste time on an image that's synced with guest
++        return NULL_IMAGE_ID;
++    }
++    const auto base = image.TryFindBase(operand.address);
++    if (!base) {
++        return NULL_IMAGE_ID;
++    }
++    return dst_id;
++}
++
+ template <class P>
+ bool TextureCache<P>::IsRescaling() const noexcept {
+     return is_rescaling;
+@@ -771,6 +790,49 @@ bool TextureCache<P>::IsRegionGpuModified(VAddr addr, size_t size) {
+     return is_modified;
+ }
+ 
++template <class P>
++std::pair<typename TextureCache<P>::Image*, BufferImageCopy> TextureCache<P>::DmaBufferImageCopy(
++    const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& buffer_operand,
++    const Tegra::DMA::ImageOperand& image_operand, ImageId image_id, bool modifies_image) {
++    const auto [level, base] = PrepareDmaImage(image_id, image_operand.address, modifies_image);
++    auto* image = &slot_images[image_id];
++    const u32 buffer_size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);
++    const u32 bpp = VideoCore::Surface::BytesPerBlock(image->info.format);
++    const auto convert = [old_bpp = image_operand.bytes_per_pixel, bpp](u32 value) {
++        return (old_bpp * value) / bpp;
++    };
++    const u32 base_x = convert(image_operand.params.origin.x.Value());
++    const u32 base_y = image_operand.params.origin.y.Value();
++    const u32 length_x = convert(copy_info.length_x);
++    const u32 length_y = copy_info.length_y;
++
++    const BufferImageCopy copy{
++        .buffer_offset = 0,
++        .buffer_size = buffer_size,
++        .buffer_row_length = convert(buffer_operand.pitch),
++        .buffer_image_height = buffer_operand.height,
++        .image_subresource =
++            {
++                .base_level = static_cast<s32>(level),
++                .base_layer = static_cast<s32>(base),
++                .num_layers = 1,
++            },
++        .image_offset =
++            {
++                .x = static_cast<s32>(base_x),
++                .y = static_cast<s32>(base_y),
++                .z = 0,
++            },
++        .image_extent =
++            {
++                .width = length_x,
++                .height = length_y,
++                .depth = 1,
++            },
++    };
++    return {image, copy};
++}
++
+ template <class P>
+ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+     if (False(image.flags & ImageFlagBits::CpuModified)) {
+@@ -1405,26 +1467,14 @@ ImageId TextureCache<P>::FindDMAImage(const ImageInfo& info, GPUVAddr gpu_addr)
+ }
+ 
+ template <class P>
+-std::optional<std::pair<typename TextureCache<P>::Image*, std::pair<u32, u32>>>
+-TextureCache<P>::ObtainImage(const Tegra::DMA::ImageOperand& operand, bool mark_as_modified) {
+-    ImageInfo dst_info(operand);
+-    ImageId dst_id = FindDMAImage(dst_info, operand.address);
+-    if (!dst_id) {
+-        return std::nullopt;
+-    }
+-    auto& image = slot_images[dst_id];
+-    auto base = image.TryFindBase(operand.address);
+-    if (!base) {
+-        return std::nullopt;
+-    }
+-    if (False(image.flags & ImageFlagBits::GpuModified)) {
+-        // No need to waste time on an image that's synced with guest
+-        return std::nullopt;
+-    }
++std::pair<u32, u32> TextureCache<P>::PrepareDmaImage(ImageId dst_id, GPUVAddr base_addr,
++                                                     bool mark_as_modified) {
++    const auto& image = slot_images[dst_id];
++    const auto base = image.TryFindBase(base_addr);
+     PrepareImage(dst_id, mark_as_modified, false);
+-    auto& new_image = slot_images[dst_id];
++    const auto& new_image = slot_images[dst_id];
+     lru_cache.Touch(new_image.lru_index, frame_tick);
+-    return std::make_pair(&new_image, std::make_pair(base->level, base->layer));
++    return std::make_pair(base->level, base->layer);
+ }
+ 
+ template <class P>
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 848a5d9ea348..5a5b4179c502 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -209,8 +209,11 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     /// Pop asynchronous downloads
+     void PopAsyncFlushes();
+ 
+-    [[nodiscard]] std::optional<std::pair<Image*, std::pair<u32, u32>>> ObtainImage(
+-        const Tegra::DMA::ImageOperand& operand, bool mark_as_modified);
++    [[nodiscard]] ImageId DmaImageId(const Tegra::DMA::ImageOperand& operand);
++
++    [[nodiscard]] std::pair<Image*, BufferImageCopy> DmaBufferImageCopy(
++        const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& buffer_operand,
++        const Tegra::DMA::ImageOperand& image_operand, ImageId image_id, bool modifies_image);
+ 
+     /// Return true when a CPU region is modified from the GPU
+     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size);
+@@ -386,6 +389,9 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     /// Returns true if the current clear parameters clear the whole image of a given image view
+     [[nodiscard]] bool IsFullClear(ImageViewId id);
+ 
++    [[nodiscard]] std::pair<u32, u32> PrepareDmaImage(ImageId dst_id, GPUVAddr base_addr,
++                                                      bool mark_as_modified);
++
+     bool ImageCanRescale(ImageBase& image);
+     void InvalidateScale(Image& image);
+     bool ScaleUp(Image& image);

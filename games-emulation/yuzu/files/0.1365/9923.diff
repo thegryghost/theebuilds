@@ -1,0 +1,250 @@
+diff --git a/src/core/hle/kernel/k_address_arbiter.cpp b/src/core/hle/kernel/k_address_arbiter.cpp
+index fb86451ea5dc..a4c16eca9d4d 100644
+--- a/src/core/hle/kernel/k_address_arbiter.cpp
++++ b/src/core/hle/kernel/k_address_arbiter.cpp
+@@ -237,10 +237,11 @@ Result KAddressArbiter::SignalAndModifyByWaitingCountIfEqual(VAddr addr, s32 val
+ Result KAddressArbiter::WaitIfLessThan(VAddr addr, s32 value, bool decrement, s64 timeout) {
+     // Prepare to wait.
+     KThread* cur_thread = GetCurrentThreadPointer(kernel);
++    KHardwareTimer* timer{};
+     ThreadQueueImplForKAddressArbiter wait_queue(kernel, std::addressof(thread_tree));
+ 
+     {
+-        KScopedSchedulerLockAndSleep slp{kernel, cur_thread, timeout};
++        KScopedSchedulerLockAndSleep slp{kernel, std::addressof(timer), cur_thread, timeout};
+ 
+         // Check that the thread isn't terminating.
+         if (cur_thread->IsTerminationRequested()) {
+@@ -279,6 +280,7 @@ Result KAddressArbiter::WaitIfLessThan(VAddr addr, s32 value, bool decrement, s6
+         thread_tree.insert(*cur_thread);
+ 
+         // Wait for the thread to finish.
++        wait_queue.SetHardwareTimer(timer);
+         cur_thread->BeginWait(std::addressof(wait_queue));
+         cur_thread->SetWaitReasonForDebugging(ThreadWaitReasonForDebugging::Arbitration);
+     }
+@@ -290,10 +292,11 @@ Result KAddressArbiter::WaitIfLessThan(VAddr addr, s32 value, bool decrement, s6
+ Result KAddressArbiter::WaitIfEqual(VAddr addr, s32 value, s64 timeout) {
+     // Prepare to wait.
+     KThread* cur_thread = GetCurrentThreadPointer(kernel);
++    KHardwareTimer* timer{};
+     ThreadQueueImplForKAddressArbiter wait_queue(kernel, std::addressof(thread_tree));
+ 
+     {
+-        KScopedSchedulerLockAndSleep slp{kernel, cur_thread, timeout};
++        KScopedSchedulerLockAndSleep slp{kernel, std::addressof(timer), cur_thread, timeout};
+ 
+         // Check that the thread isn't terminating.
+         if (cur_thread->IsTerminationRequested()) {
+@@ -325,6 +328,7 @@ Result KAddressArbiter::WaitIfEqual(VAddr addr, s32 value, s64 timeout) {
+         thread_tree.insert(*cur_thread);
+ 
+         // Wait for the thread to finish.
++        wait_queue.SetHardwareTimer(timer);
+         cur_thread->BeginWait(std::addressof(wait_queue));
+         cur_thread->SetWaitReasonForDebugging(ThreadWaitReasonForDebugging::Arbitration);
+     }
+diff --git a/src/core/hle/kernel/k_condition_variable.cpp b/src/core/hle/kernel/k_condition_variable.cpp
+index f40cf92b18a1..458f4c94eac3 100644
+--- a/src/core/hle/kernel/k_condition_variable.cpp
++++ b/src/core/hle/kernel/k_condition_variable.cpp
+@@ -266,11 +266,12 @@ void KConditionVariable::Signal(u64 cv_key, s32 count) {
+ Result KConditionVariable::Wait(VAddr addr, u64 key, u32 value, s64 timeout) {
+     // Prepare to wait.
+     KThread* cur_thread = GetCurrentThreadPointer(kernel);
++    KHardwareTimer* timer{};
+     ThreadQueueImplForKConditionVariableWaitConditionVariable wait_queue(
+         kernel, std::addressof(thread_tree));
+ 
+     {
+-        KScopedSchedulerLockAndSleep slp(kernel, cur_thread, timeout);
++        KScopedSchedulerLockAndSleep slp(kernel, std::addressof(timer), cur_thread, timeout);
+ 
+         // Check that the thread isn't terminating.
+         if (cur_thread->IsTerminationRequested()) {
+@@ -320,6 +321,7 @@ Result KConditionVariable::Wait(VAddr addr, u64 key, u32 value, s64 timeout) {
+         thread_tree.insert(*cur_thread);
+ 
+         // Begin waiting.
++        wait_queue.SetHardwareTimer(timer);
+         cur_thread->BeginWait(std::addressof(wait_queue));
+         cur_thread->SetWaitReasonForDebugging(ThreadWaitReasonForDebugging::ConditionVar);
+         cur_thread->SetMutexWaitAddressForDebugging(addr);
+diff --git a/src/core/hle/kernel/k_light_condition_variable.cpp b/src/core/hle/kernel/k_light_condition_variable.cpp
+index cade99cfd472..8fce2bc71229 100644
+--- a/src/core/hle/kernel/k_light_condition_variable.cpp
++++ b/src/core/hle/kernel/k_light_condition_variable.cpp
+@@ -40,13 +40,14 @@ class ThreadQueueImplForKLightConditionVariable final : public KThreadQueue {
+ void KLightConditionVariable::Wait(KLightLock* lock, s64 timeout, bool allow_terminating_thread) {
+     // Create thread queue.
+     KThread* owner = GetCurrentThreadPointer(kernel);
++    KHardwareTimer* timer{};
+ 
+     ThreadQueueImplForKLightConditionVariable wait_queue(kernel, std::addressof(wait_list),
+                                                          allow_terminating_thread);
+ 
+     // Sleep the thread.
+     {
+-        KScopedSchedulerLockAndSleep lk(kernel, owner, timeout);
++        KScopedSchedulerLockAndSleep lk(kernel, std::addressof(timer), owner, timeout);
+ 
+         if (!allow_terminating_thread && owner->IsTerminationRequested()) {
+             lk.CancelSleep();
+@@ -59,6 +60,7 @@ void KLightConditionVariable::Wait(KLightLock* lock, s64 timeout, bool allow_ter
+         wait_list.push_back(*owner);
+ 
+         // Begin waiting.
++        wait_queue.SetHardwareTimer(timer);
+         owner->BeginWait(std::addressof(wait_queue));
+     }
+ 
+diff --git a/src/core/hle/kernel/k_scoped_scheduler_lock_and_sleep.h b/src/core/hle/kernel/k_scoped_scheduler_lock_and_sleep.h
+index 76db65a4d99d..14b83a819eec 100644
+--- a/src/core/hle/kernel/k_scoped_scheduler_lock_and_sleep.h
++++ b/src/core/hle/kernel/k_scoped_scheduler_lock_and_sleep.h
+@@ -13,16 +13,22 @@ namespace Kernel {
+ 
+ class [[nodiscard]] KScopedSchedulerLockAndSleep {
+ public:
+-    explicit KScopedSchedulerLockAndSleep(KernelCore& kernel_, KThread* t, s64 timeout)
+-        : kernel(kernel_), thread(t), timeout_tick(timeout) {
++    explicit KScopedSchedulerLockAndSleep(KernelCore& kernel_, KHardwareTimer** out_timer,
++                                          KThread* t, s64 timeout)
++        : kernel(kernel_), timeout_tick(timeout), thread(t), timer() {
+         // Lock the scheduler.
+         kernel.GlobalSchedulerContext().scheduler_lock.Lock();
++
++        // Set our timer only if the time is positive.
++        timer = (timeout_tick > 0) ? std::addressof(kernel.HardwareTimer()) : nullptr;
++
++        *out_timer = timer;
+     }
+ 
+     ~KScopedSchedulerLockAndSleep() {
+         // Register the sleep.
+         if (timeout_tick > 0) {
+-            kernel.HardwareTimer().RegisterTask(thread, timeout_tick);
++            timer->RegisterTask(thread, timeout_tick);
+         }
+ 
+         // Unlock the scheduler.
+@@ -35,8 +41,9 @@ class [[nodiscard]] KScopedSchedulerLockAndSleep {
+ 
+ private:
+     KernelCore& kernel;
+-    KThread* thread{};
+     s64 timeout_tick{};
++    KThread* thread{};
++    KHardwareTimer* timer{};
+ };
+ 
+ } // namespace Kernel
+diff --git a/src/core/hle/kernel/k_synchronization_object.cpp b/src/core/hle/kernel/k_synchronization_object.cpp
+index 802dca04669f..40fd0c0388c8 100644
+--- a/src/core/hle/kernel/k_synchronization_object.cpp
++++ b/src/core/hle/kernel/k_synchronization_object.cpp
+@@ -79,12 +79,13 @@ Result KSynchronizationObject::Wait(KernelCore& kernel_ctx, s32* out_index,
+ 
+     // Prepare for wait.
+     KThread* thread = GetCurrentThreadPointer(kernel_ctx);
++    KHardwareTimer* timer{};
+     ThreadQueueImplForKSynchronizationObjectWait wait_queue(kernel_ctx, objects,
+                                                             thread_nodes.data(), num_objects);
+ 
+     {
+         // Setup the scheduling lock and sleep.
+-        KScopedSchedulerLockAndSleep slp(kernel_ctx, thread, timeout);
++        KScopedSchedulerLockAndSleep slp(kernel_ctx, std::addressof(timer), thread, timeout);
+ 
+         // Check if the thread should terminate.
+         if (thread->IsTerminationRequested()) {
+@@ -131,6 +132,7 @@ Result KSynchronizationObject::Wait(KernelCore& kernel_ctx, s32* out_index,
+         thread->SetSyncedIndex(-1);
+ 
+         // Wait for an object to be signaled.
++        wait_queue.SetHardwareTimer(timer);
+         thread->BeginWait(std::addressof(wait_queue));
+         thread->SetWaitReasonForDebugging(ThreadWaitReasonForDebugging::Synchronization);
+     }
+diff --git a/src/core/hle/kernel/k_thread.cpp b/src/core/hle/kernel/k_thread.cpp
+index 8c403f5fddfe..96b90ffef0b3 100644
+--- a/src/core/hle/kernel/k_thread.cpp
++++ b/src/core/hle/kernel/k_thread.cpp
+@@ -1268,9 +1268,10 @@ Result KThread::Sleep(s64 timeout) {
+     ASSERT(timeout > 0);
+ 
+     ThreadQueueImplForKThreadSleep wait_queue_(kernel);
++    KHardwareTimer* timer{};
+     {
+         // Setup the scheduling lock and sleep.
+-        KScopedSchedulerLockAndSleep slp(kernel, this, timeout);
++        KScopedSchedulerLockAndSleep slp(kernel, std::addressof(timer), this, timeout);
+ 
+         // Check if the thread should terminate.
+         if (this->IsTerminationRequested()) {
+@@ -1279,6 +1280,7 @@ Result KThread::Sleep(s64 timeout) {
+         }
+ 
+         // Wait for the sleep to end.
++        wait_queue_.SetHardwareTimer(timer);
+         this->BeginWait(std::addressof(wait_queue_));
+         SetWaitReasonForDebugging(ThreadWaitReasonForDebugging::Sleep);
+     }
+diff --git a/src/core/hle/kernel/k_thread_queue.cpp b/src/core/hle/kernel/k_thread_queue.cpp
+index 5f1dc97eb621..fe648447bc1e 100644
+--- a/src/core/hle/kernel/k_thread_queue.cpp
++++ b/src/core/hle/kernel/k_thread_queue.cpp
+@@ -22,7 +22,9 @@ void KThreadQueue::EndWait(KThread* waiting_thread, Result wait_result) {
+     waiting_thread->ClearWaitQueue();
+ 
+     // Cancel the thread task.
+-    kernel.HardwareTimer().CancelTask(waiting_thread);
++    if (m_hardware_timer != nullptr) {
++        m_hardware_timer->CancelTask(waiting_thread);
++    }
+ }
+ 
+ void KThreadQueue::CancelWait(KThread* waiting_thread, Result wait_result, bool cancel_timer_task) {
+@@ -36,8 +38,8 @@ void KThreadQueue::CancelWait(KThread* waiting_thread, Result wait_result, bool
+     waiting_thread->ClearWaitQueue();
+ 
+     // Cancel the thread task.
+-    if (cancel_timer_task) {
+-        kernel.HardwareTimer().CancelTask(waiting_thread);
++    if (cancel_timer_task && m_hardware_timer != nullptr) {
++        m_hardware_timer->CancelTask(waiting_thread);
+     }
+ }
+ 
+diff --git a/src/core/hle/kernel/k_thread_queue.h b/src/core/hle/kernel/k_thread_queue.h
+index 8d76ece818a7..01e330e2e6f2 100644
+--- a/src/core/hle/kernel/k_thread_queue.h
++++ b/src/core/hle/kernel/k_thread_queue.h
+@@ -8,11 +8,17 @@
+ 
+ namespace Kernel {
+ 
++class KHardwareTimer;
++
+ class KThreadQueue {
+ public:
+-    explicit KThreadQueue(KernelCore& kernel_) : kernel{kernel_} {}
++    explicit KThreadQueue(KernelCore& kernel_) : kernel{kernel_}, m_hardware_timer{} {}
+     virtual ~KThreadQueue() = default;
+ 
++    void SetHardwareTimer(KHardwareTimer* timer) {
++        m_hardware_timer = timer;
++    }
++
+     virtual void NotifyAvailable(KThread* waiting_thread, KSynchronizationObject* signaled_object,
+                                  Result wait_result);
+     virtual void EndWait(KThread* waiting_thread, Result wait_result);
+@@ -20,7 +26,7 @@ class KThreadQueue {
+ 
+ private:
+     KernelCore& kernel;
+-    KThread::WaiterList wait_list{};
++    KHardwareTimer* m_hardware_timer{};
+ };
+ 
+ class KThreadQueueWithoutEndWait : public KThreadQueue {

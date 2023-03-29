@@ -1,0 +1,12 @@
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 3353384345ff..0660766fc779 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1244,6 +1244,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, VA
+         auto copies = MakeShrinkImageCopies(new_info, overlap.info, base, up_scale, down_shift);
+         if (overlap.info.num_samples != new_image.info.num_samples) {
+             runtime.CopyImageMSAA(new_image, overlap, std::move(copies));
++            continue;
+         } else {
+             runtime.CopyImage(new_image, overlap, std::move(copies));
+         }

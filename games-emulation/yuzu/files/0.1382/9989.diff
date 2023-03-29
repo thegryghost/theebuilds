@@ -1,0 +1,26 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 61c95444fd18..47e11b6eb6cf 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -210,7 +210,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
+ # =======================================================================
+ 
+ # Enforce the search mode of non-required packages for better and shorter failure messages
+-find_package(Boost 1.81.0 REQUIRED context)
++find_package(Boost 1.79.0 EXACT REQUIRED COMPONENTS context)
+ find_package(enet 1.3 MODULE)
+ find_package(fmt 9 REQUIRED)
+ find_package(inih 52 MODULE COMPONENTS INIReader)
+diff --git a/vcpkg.json b/vcpkg.json
+index 9aadd367cc40..0352dab77f58 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -1,7 +1,7 @@
+ {
+     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+     "name": "yuzu",
+-    "builtin-baseline": "a7b6122f6b6504d16d96117336a0562693579933",
++    "builtin-baseline": "acc3bcf76b84ae5041c86ab55fe138ae7b8255c7",
+     "version": "1.0",
+     "dependencies": [
+         "boost-algorithm",

@@ -1,0 +1,133 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 0eca8e90e7c9..312a49f42d27 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -126,6 +126,17 @@ else()
+         add_compile_options("-stdlib=libc++")
+     endif()
+ 
++    # GCC bugs
++    if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "12" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
++        # These diagnostics would be great if they worked, but are just completely broken
++        # and produce bogus errors on external libraries like fmt.
++        add_compile_options(
++            -Wno-array-bounds
++            -Wno-stringop-overread
++            -Wno-stringop-overflow
++        )
++    endif()
++
+     # Set file offset size to 64 bits.
+     #
+     # On modern Unixes, this is typically already the case. The lone exception is
+diff --git a/src/common/intrusive_red_black_tree.h b/src/common/intrusive_red_black_tree.h
+index 5f6b34e821b2..bc2940fa0a57 100644
+--- a/src/common/intrusive_red_black_tree.h
++++ b/src/common/intrusive_red_black_tree.h
+@@ -96,10 +96,6 @@ class IntrusiveRedBlackTreeImpl {
+             return m_node == rhs.m_node;
+         }
+ 
+-        constexpr bool operator!=(const Iterator& rhs) const {
+-            return !(*this == rhs);
+-        }
+-
+         constexpr pointer operator->() const {
+             return m_node;
+         }
+@@ -324,10 +320,6 @@ class IntrusiveRedBlackTree {
+             return m_impl == rhs.m_impl;
+         }
+ 
+-        constexpr bool operator!=(const Iterator& rhs) const {
+-            return !(*this == rhs);
+-        }
+-
+         constexpr pointer operator->() const {
+             return Traits::GetParent(std::addressof(*m_impl));
+         }
+diff --git a/src/common/typed_address.h b/src/common/typed_address.h
+index cf7bbeae1bbe..64f4a07c20c4 100644
+--- a/src/common/typed_address.h
++++ b/src/common/typed_address.h
+@@ -116,7 +116,6 @@ class TypedAddress {
+ 
+     // Comparison operators.
+     constexpr bool operator==(const TypedAddress&) const = default;
+-    constexpr bool operator!=(const TypedAddress&) const = default;
+     constexpr auto operator<=>(const TypedAddress&) const = default;
+ 
+     // For convenience, also define comparison operators versus uint64_t.
+@@ -124,10 +123,6 @@ class TypedAddress {
+         return m_address == rhs;
+     }
+ 
+-    constexpr inline bool operator!=(uint64_t rhs) const {
+-        return m_address != rhs;
+-    }
+-
+     // Allow getting the address explicitly, for use in accessors.
+     constexpr inline uint64_t GetValue() const {
+         return m_address;
+diff --git a/src/core/internal_network/socket_proxy.h b/src/core/internal_network/socket_proxy.h
+index 9421492bc063..6e991fa386e4 100644
+--- a/src/core/internal_network/socket_proxy.h
++++ b/src/core/internal_network/socket_proxy.h
+@@ -16,9 +16,6 @@ namespace Network {
+ 
+ class ProxySocket : public SocketBase {
+ public:
+-    YUZU_NON_COPYABLE(ProxySocket);
+-    YUZU_NON_MOVEABLE(ProxySocket);
+-
+     explicit ProxySocket(RoomNetwork& room_network_) noexcept;
+     ~ProxySocket() override;
+ 
+diff --git a/src/core/internal_network/sockets.h b/src/core/internal_network/sockets.h
+index 4c7489258445..11e479e5090b 100644
+--- a/src/core/internal_network/sockets.h
++++ b/src/core/internal_network/sockets.h
+@@ -36,13 +36,10 @@ class SocketBase {
+ 
+     SocketBase() = default;
+     explicit SocketBase(SOCKET fd_) : fd{fd_} {}
+-
+     virtual ~SocketBase() = default;
+ 
+-    virtual SocketBase& operator=(const SocketBase&) = delete;
+-
+-    // Avoid closing sockets implicitly
+-    virtual SocketBase& operator=(SocketBase&&) noexcept = delete;
++    YUZU_NON_COPYABLE(SocketBase);
++    YUZU_NON_MOVEABLE(SocketBase);
+ 
+     virtual Errno Initialize(Domain domain, Type type, Protocol protocol) = 0;
+ 
+@@ -109,14 +106,8 @@ class Socket : public SocketBase {
+ 
+     ~Socket() override;
+ 
+-    Socket(const Socket&) = delete;
+-    Socket& operator=(const Socket&) = delete;
+-
+     Socket(Socket&& rhs) noexcept;
+ 
+-    // Avoid closing sockets implicitly
+-    Socket& operator=(Socket&&) noexcept = delete;
+-
+     Errno Initialize(Domain domain, Type type, Protocol protocol) override;
+ 
+     Errno Close() override;
+diff --git a/src/web_service/verify_login.cpp b/src/web_service/verify_login.cpp
+index 050080278b1a..d5b7161cbe0f 100644
+--- a/src/web_service/verify_login.cpp
++++ b/src/web_service/verify_login.cpp
+@@ -21,7 +21,7 @@ bool VerifyLogin(const std::string& host, const std::string& username, const std
+         return username.empty();
+     }
+ 
+-    return username == *iter;
++    return *iter == username;
+ }
+ 
+ } // namespace WebService

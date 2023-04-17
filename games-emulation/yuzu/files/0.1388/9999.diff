@@ -1,0 +1,204 @@
+diff --git a/src/core/hle/service/hid/controllers/npad.cpp b/src/core/hle/service/hid/controllers/npad.cpp
+index ba6f04d8d387..714e67c000cc 100644
+--- a/src/core/hle/service/hid/controllers/npad.cpp
++++ b/src/core/hle/service/hid/controllers/npad.cpp
+@@ -819,12 +819,12 @@ Controller_NPad::NpadCommunicationMode Controller_NPad::GetNpadCommunicationMode
+     return communication_mode;
+ }
+ 
+-Result Controller_NPad::SetNpadMode(Core::HID::NpadIdType npad_id,
+-                                    NpadJoyDeviceType npad_device_type,
+-                                    NpadJoyAssignmentMode assignment_mode) {
++bool Controller_NPad::SetNpadMode(Core::HID::NpadIdType& new_npad_id, Core::HID::NpadIdType npad_id,
++                                  NpadJoyDeviceType npad_device_type,
++                                  NpadJoyAssignmentMode assignment_mode) {
+     if (!IsNpadIdValid(npad_id)) {
+         LOG_ERROR(Service_HID, "Invalid NpadIdType npad_id:{}", npad_id);
+-        return InvalidNpadId;
++        return false;
+     }
+ 
+     auto& controller = GetControllerFromNpadIdType(npad_id);
+@@ -833,7 +833,7 @@ Result Controller_NPad::SetNpadMode(Core::HID::NpadIdType npad_id,
+     }
+ 
+     if (!controller.device->IsConnected()) {
+-        return ResultSuccess;
++        return false;
+     }
+ 
+     if (assignment_mode == NpadJoyAssignmentMode::Dual) {
+@@ -842,52 +842,52 @@ Result Controller_NPad::SetNpadMode(Core::HID::NpadIdType npad_id,
+             controller.is_dual_left_connected = true;
+             controller.is_dual_right_connected = false;
+             UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconDual, npad_id, true);
+-            return ResultSuccess;
++            return false;
+         }
+         if (controller.device->GetNpadStyleIndex() == Core::HID::NpadStyleIndex::JoyconRight) {
+             DisconnectNpad(npad_id);
+             controller.is_dual_left_connected = false;
+             controller.is_dual_right_connected = true;
+             UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconDual, npad_id, true);
+-            return ResultSuccess;
++            return false;
+         }
+-        return ResultSuccess;
++        return false;
+     }
+ 
+     // This is for NpadJoyAssignmentMode::Single
+ 
+     // Only JoyconDual get affected by this function
+     if (controller.device->GetNpadStyleIndex() != Core::HID::NpadStyleIndex::JoyconDual) {
+-        return ResultSuccess;
++        return false;
+     }
+ 
+     if (controller.is_dual_left_connected && !controller.is_dual_right_connected) {
+         DisconnectNpad(npad_id);
+         UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconLeft, npad_id, true);
+-        return ResultSuccess;
++        return false;
+     }
+     if (!controller.is_dual_left_connected && controller.is_dual_right_connected) {
+         DisconnectNpad(npad_id);
+         UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconRight, npad_id, true);
+-        return ResultSuccess;
++        return false;
+     }
+ 
+     // We have two controllers connected to the same npad_id we need to split them
+-    const auto npad_id_2 = hid_core.GetFirstDisconnectedNpadId();
+-    auto& controller_2 = GetControllerFromNpadIdType(npad_id_2);
++    new_npad_id = hid_core.GetFirstDisconnectedNpadId();
++    auto& controller_2 = GetControllerFromNpadIdType(new_npad_id);
+     DisconnectNpad(npad_id);
+     if (npad_device_type == NpadJoyDeviceType::Left) {
+         UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconLeft, npad_id, true);
+         controller_2.is_dual_left_connected = false;
+         controller_2.is_dual_right_connected = true;
+-        UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconDual, npad_id_2, true);
++        UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconDual, new_npad_id, true);
+     } else {
+         UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconRight, npad_id, true);
+         controller_2.is_dual_left_connected = true;
+         controller_2.is_dual_right_connected = false;
+-        UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconDual, npad_id_2, true);
++        UpdateControllerAt(Core::HID::NpadStyleIndex::JoyconDual, new_npad_id, true);
+     }
+-    return ResultSuccess;
++    return true;
+ }
+ 
+ bool Controller_NPad::VibrateControllerAtIndex(Core::HID::NpadIdType npad_id,
+diff --git a/src/core/hle/service/hid/controllers/npad.h b/src/core/hle/service/hid/controllers/npad.h
+index a5998c45377a..9cfe298f141f 100644
+--- a/src/core/hle/service/hid/controllers/npad.h
++++ b/src/core/hle/service/hid/controllers/npad.h
+@@ -102,8 +102,8 @@ class Controller_NPad final : public ControllerBase {
+     void SetNpadCommunicationMode(NpadCommunicationMode communication_mode_);
+     NpadCommunicationMode GetNpadCommunicationMode() const;
+ 
+-    Result SetNpadMode(Core::HID::NpadIdType npad_id, NpadJoyDeviceType npad_device_type,
+-                       NpadJoyAssignmentMode assignment_mode);
++    bool SetNpadMode(Core::HID::NpadIdType& new_npad_id, Core::HID::NpadIdType npad_id,
++                     NpadJoyDeviceType npad_device_type, NpadJoyAssignmentMode assignment_mode);
+ 
+     bool VibrateControllerAtIndex(Core::HID::NpadIdType npad_id, std::size_t device_index,
+                                   const Core::HID::VibrationValue& vibration_value);
+diff --git a/src/core/hle/service/hid/hid.cpp b/src/core/hle/service/hid/hid.cpp
+index 4529ad643ff9..87e7b864a1f0 100644
+--- a/src/core/hle/service/hid/hid.cpp
++++ b/src/core/hle/service/hid/hid.cpp
+@@ -302,7 +302,7 @@ Hid::Hid(Core::System& system_)
+         {130, &Hid::SwapNpadAssignment, "SwapNpadAssignment"},
+         {131, &Hid::IsUnintendedHomeButtonInputProtectionEnabled, "IsUnintendedHomeButtonInputProtectionEnabled"},
+         {132, &Hid::EnableUnintendedHomeButtonInputProtection, "EnableUnintendedHomeButtonInputProtection"},
+-        {133, nullptr, "SetNpadJoyAssignmentModeSingleWithDestination"},
++        {133, &Hid::SetNpadJoyAssignmentModeSingleWithDestination, "SetNpadJoyAssignmentModeSingleWithDestination"},
+         {134, &Hid::SetNpadAnalogStickUseCenterClamp, "SetNpadAnalogStickUseCenterClamp"},
+         {135, &Hid::SetNpadCaptureButtonAssignment, "SetNpadCaptureButtonAssignment"},
+         {136, &Hid::ClearNpadCaptureButtonAssignment, "ClearNpadCaptureButtonAssignment"},
+@@ -1180,8 +1180,10 @@ void Hid::SetNpadJoyAssignmentModeSingleByDefault(HLERequestContext& ctx) {
+ 
+     const auto parameters{rp.PopRaw<Parameters>()};
+ 
++    Core::HID::NpadIdType new_npad_id{};
+     auto& controller = GetAppletResource()->GetController<Controller_NPad>(HidController::NPad);
+-    controller.SetNpadMode(parameters.npad_id, Controller_NPad::NpadJoyDeviceType::Left,
++    controller.SetNpadMode(new_npad_id, parameters.npad_id,
++                           Controller_NPad::NpadJoyDeviceType::Left,
+                            Controller_NPad::NpadJoyAssignmentMode::Single);
+ 
+     LOG_INFO(Service_HID, "called, npad_id={}, applet_resource_user_id={}", parameters.npad_id,
+@@ -1203,8 +1205,9 @@ void Hid::SetNpadJoyAssignmentModeSingle(HLERequestContext& ctx) {
+ 
+     const auto parameters{rp.PopRaw<Parameters>()};
+ 
++    Core::HID::NpadIdType new_npad_id{};
+     auto& controller = GetAppletResource()->GetController<Controller_NPad>(HidController::NPad);
+-    controller.SetNpadMode(parameters.npad_id, parameters.npad_joy_device_type,
++    controller.SetNpadMode(new_npad_id, parameters.npad_id, parameters.npad_joy_device_type,
+                            Controller_NPad::NpadJoyAssignmentMode::Single);
+ 
+     LOG_INFO(Service_HID, "called, npad_id={}, applet_resource_user_id={}, npad_joy_device_type={}",
+@@ -1226,8 +1229,10 @@ void Hid::SetNpadJoyAssignmentModeDual(HLERequestContext& ctx) {
+ 
+     const auto parameters{rp.PopRaw<Parameters>()};
+ 
++    Core::HID::NpadIdType new_npad_id{};
+     auto& controller = GetAppletResource()->GetController<Controller_NPad>(HidController::NPad);
+-    controller.SetNpadMode(parameters.npad_id, {}, Controller_NPad::NpadJoyAssignmentMode::Dual);
++    controller.SetNpadMode(new_npad_id, parameters.npad_id, {},
++                           Controller_NPad::NpadJoyAssignmentMode::Dual);
+ 
+     LOG_INFO(Service_HID, "called, npad_id={}, applet_resource_user_id={}", parameters.npad_id,
+              parameters.applet_resource_user_id);
+@@ -1369,6 +1374,34 @@ void Hid::EnableUnintendedHomeButtonInputProtection(HLERequestContext& ctx) {
+     rb.Push(result);
+ }
+ 
++void Hid::SetNpadJoyAssignmentModeSingleWithDestination(HLERequestContext& ctx) {
++    IPC::RequestParser rp{ctx};
++    struct Parameters {
++        Core::HID::NpadIdType npad_id;
++        INSERT_PADDING_WORDS_NOINIT(1);
++        u64 applet_resource_user_id;
++        Controller_NPad::NpadJoyDeviceType npad_joy_device_type;
++    };
++    static_assert(sizeof(Parameters) == 0x18, "Parameters has incorrect size.");
++
++    const auto parameters{rp.PopRaw<Parameters>()};
++
++    Core::HID::NpadIdType new_npad_id{};
++    auto& controller = GetAppletResource()->GetController<Controller_NPad>(HidController::NPad);
++    const auto is_reassigned =
++        controller.SetNpadMode(new_npad_id, parameters.npad_id, parameters.npad_joy_device_type,
++                               Controller_NPad::NpadJoyAssignmentMode::Single);
++
++    LOG_INFO(Service_HID, "called, npad_id={}, applet_resource_user_id={}, npad_joy_device_type={}",
++             parameters.npad_id, parameters.applet_resource_user_id,
++             parameters.npad_joy_device_type);
++
++    IPC::ResponseBuilder rb{ctx, 4};
++    rb.Push(ResultSuccess);
++    rb.Push(is_reassigned);
++    rb.PushEnum(new_npad_id);
++}
++
+ void Hid::SetNpadAnalogStickUseCenterClamp(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+     struct Parameters {
+diff --git a/src/core/hle/service/hid/hid.h b/src/core/hle/service/hid/hid.h
+index c69e5f3fba37..f247b83c25ff 100644
+--- a/src/core/hle/service/hid/hid.h
++++ b/src/core/hle/service/hid/hid.h
+@@ -151,6 +151,7 @@ class Hid final : public ServiceFramework<Hid> {
+     void SwapNpadAssignment(HLERequestContext& ctx);
+     void IsUnintendedHomeButtonInputProtectionEnabled(HLERequestContext& ctx);
+     void EnableUnintendedHomeButtonInputProtection(HLERequestContext& ctx);
++    void SetNpadJoyAssignmentModeSingleWithDestination(HLERequestContext& ctx);
+     void SetNpadAnalogStickUseCenterClamp(HLERequestContext& ctx);
+     void SetNpadCaptureButtonAssignment(HLERequestContext& ctx);
+     void ClearNpadCaptureButtonAssignment(HLERequestContext& ctx);

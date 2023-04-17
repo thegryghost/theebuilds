@@ -1,0 +1,43 @@
+diff --git a/src/audio_core/sink/sink_stream.cpp b/src/audio_core/sink/sink_stream.cpp
+index f99dbd8ec769..13ba26e74dbb 100644
+--- a/src/audio_core/sink/sink_stream.cpp
++++ b/src/audio_core/sink/sink_stream.cpp
+@@ -252,8 +252,7 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
+ 
+     {
+         std::scoped_lock lk{sample_count_lock};
+-        last_sample_count_update_time =
+-            Core::Timing::CyclesToUs(system.CoreTiming().GetClockTicks());
++        last_sample_count_update_time = system.CoreTiming().GetGlobalTimeNs();
+         min_played_sample_count = max_played_sample_count;
+         max_played_sample_count += actual_frames_written;
+     }
+@@ -261,12 +260,13 @@ void SinkStream::ProcessAudioOutAndRender(std::span<s16> output_buffer, std::siz
+ 
+ u64 SinkStream::GetExpectedPlayedSampleCount() {
+     std::scoped_lock lk{sample_count_lock};
+-    auto cur_time{Core::Timing::CyclesToUs(system.CoreTiming().GetClockTicks())};
++    auto cur_time{system.CoreTiming().GetGlobalTimeNs()};
+     auto time_delta{cur_time - last_sample_count_update_time};
+     auto exp_played_sample_count{min_played_sample_count +
+                                  (TargetSampleRate * time_delta) / std::chrono::seconds{1}};
+ 
+-    return std::min<u64>(exp_played_sample_count, max_played_sample_count);
++    // Add 15ms of latency in sample reporting to allow for some leeway in scheduler timings
++    return std::min<u64>(exp_played_sample_count, max_played_sample_count) + TargetSampleCount * 3;
+ }
+ 
+ void SinkStream::WaitFreeSpace() {
+diff --git a/src/audio_core/sink/sink_stream.h b/src/audio_core/sink/sink_stream.h
+index 23e289c7bd09..21b5b40a1c0a 100644
+--- a/src/audio_core/sink/sink_stream.h
++++ b/src/audio_core/sink/sink_stream.h
+@@ -246,7 +246,7 @@ class SinkStream {
+     /// Maximum number of total samples that can be played since the last callback
+     u64 max_played_sample_count{};
+     /// The time the two above tracking variables were last written to
+-    std::chrono::microseconds last_sample_count_update_time{};
++    std::chrono::nanoseconds last_sample_count_update_time{};
+     /// Set by the audio render/in/out system which uses this stream
+     f32 system_volume{1.0f};
+     /// Set via IAudioDevice service calls

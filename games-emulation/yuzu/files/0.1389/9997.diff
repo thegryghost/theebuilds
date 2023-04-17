@@ -1,0 +1,212 @@
+diff --git a/src/core/frontend/applets/controller.cpp b/src/core/frontend/applets/controller.cpp
+index 8e586e9384ab..3300d4f79790 100644
+--- a/src/core/frontend/applets/controller.cpp
++++ b/src/core/frontend/applets/controller.cpp
+@@ -71,7 +71,7 @@ void DefaultControllerApplet::ReconfigureControllers(ReconfigureCallback callbac
+         }
+     }
+ 
+-    callback();
++    callback(true);
+ }
+ 
+ } // namespace Core::Frontend
+diff --git a/src/core/frontend/applets/controller.h b/src/core/frontend/applets/controller.h
+index 5c488387df0f..19a2db6bf5f8 100644
+--- a/src/core/frontend/applets/controller.h
++++ b/src/core/frontend/applets/controller.h
+@@ -37,7 +37,7 @@ struct ControllerParameters {
+ 
+ class ControllerApplet : public Applet {
+ public:
+-    using ReconfigureCallback = std::function<void()>;
++    using ReconfigureCallback = std::function<void(bool)>;
+ 
+     virtual ~ControllerApplet();
+ 
+diff --git a/src/core/hle/service/am/applets/applet_controller.cpp b/src/core/hle/service/am/applets/applet_controller.cpp
+index 2d1d115d74d7..9840d2547b75 100644
+--- a/src/core/hle/service/am/applets/applet_controller.cpp
++++ b/src/core/hle/service/am/applets/applet_controller.cpp
+@@ -224,7 +224,8 @@ void Controller::Execute() {
+                   parameters.allow_dual_joycons, parameters.allow_left_joycon,
+                   parameters.allow_right_joycon);
+ 
+-        frontend.ReconfigureControllers([this] { ConfigurationComplete(); }, parameters);
++        frontend.ReconfigureControllers(
++            [this](bool is_success) { ConfigurationComplete(is_success); }, parameters);
+         break;
+     }
+     case ControllerSupportMode::ShowControllerStrapGuide:
+@@ -232,16 +233,16 @@ void Controller::Execute() {
+     case ControllerSupportMode::ShowControllerKeyRemappingForSystem:
+         UNIMPLEMENTED_MSG("ControllerSupportMode={} is not implemented",
+                           controller_private_arg.mode);
+-        ConfigurationComplete();
++        ConfigurationComplete(true);
+         break;
+     default: {
+-        ConfigurationComplete();
++        ConfigurationComplete(true);
+         break;
+     }
+     }
+ }
+ 
+-void Controller::ConfigurationComplete() {
++void Controller::ConfigurationComplete(bool is_success) {
+     ControllerSupportResultInfo result_info{};
+ 
+     // If enable_single_mode is enabled, player_count is 1 regardless of any other parameters.
+@@ -250,7 +251,8 @@ void Controller::ConfigurationComplete() {
+ 
+     result_info.selected_id = static_cast<u32>(system.HIDCore().GetFirstNpadId());
+ 
+-    result_info.result = 0;
++    result_info.result =
++        is_success ? ControllerSupportResult::Success : ControllerSupportResult::Cancel;
+ 
+     LOG_DEBUG(Service_HID, "Result Info: player_count={}, selected_id={}, result={}",
+               result_info.player_count, result_info.selected_id, result_info.result);
+diff --git a/src/core/hle/service/am/applets/applet_controller.h b/src/core/hle/service/am/applets/applet_controller.h
+index 1fbabee11bcf..f6c64f633147 100644
+--- a/src/core/hle/service/am/applets/applet_controller.h
++++ b/src/core/hle/service/am/applets/applet_controller.h
+@@ -48,6 +48,11 @@ enum class ControllerSupportCaller : u8 {
+     MaxControllerSupportCaller,
+ };
+ 
++enum class ControllerSupportResult : u32 {
++    Success = 0,
++    Cancel = 2,
++};
++
+ struct ControllerSupportArgPrivate {
+     u32 arg_private_size{};
+     u32 arg_size{};
+@@ -112,7 +117,7 @@ struct ControllerSupportResultInfo {
+     s8 player_count{};
+     INSERT_PADDING_BYTES(3);
+     u32 selected_id{};
+-    u32 result{};
++    ControllerSupportResult result{};
+ };
+ static_assert(sizeof(ControllerSupportResultInfo) == 0xC,
+               "ControllerSupportResultInfo has incorrect size.");
+@@ -131,7 +136,7 @@ class Controller final : public Applet {
+     void Execute() override;
+     Result RequestExit() override;
+ 
+-    void ConfigurationComplete();
++    void ConfigurationComplete(bool is_success);
+ 
+ private:
+     const Core::Frontend::ControllerApplet& frontend;
+diff --git a/src/yuzu/applets/qt_controller.cpp b/src/yuzu/applets/qt_controller.cpp
+index 79018a7f6853..00aafb8f8f3a 100644
+--- a/src/yuzu/applets/qt_controller.cpp
++++ b/src/yuzu/applets/qt_controller.cpp
+@@ -300,7 +300,7 @@ bool QtControllerSelectorDialog::CheckIfParametersMet() {
+     if (num_connected_players < min_supported_players ||
+         num_connected_players > max_supported_players) {
+         parameters_met = false;
+-        ui->buttonBox->setEnabled(parameters_met);
++        ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(parameters_met);
+         return parameters_met;
+     }
+ 
+@@ -327,7 +327,7 @@ bool QtControllerSelectorDialog::CheckIfParametersMet() {
+     }();
+ 
+     parameters_met = all_controllers_compatible;
+-    ui->buttonBox->setEnabled(parameters_met);
++    ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(parameters_met);
+     return parameters_met;
+ }
+ 
+@@ -697,8 +697,8 @@ void QtControllerSelector::ReconfigureControllers(
+     emit MainWindowReconfigureControllers(parameters);
+ }
+ 
+-void QtControllerSelector::MainWindowReconfigureFinished() {
++void QtControllerSelector::MainWindowReconfigureFinished(bool is_success) {
+     if (callback) {
+-        callback();
++        callback(is_success);
+     }
+ }
+diff --git a/src/yuzu/applets/qt_controller.h b/src/yuzu/applets/qt_controller.h
+index 2ef7e488f326..2fdc358579e4 100644
+--- a/src/yuzu/applets/qt_controller.h
++++ b/src/yuzu/applets/qt_controller.h
+@@ -167,7 +167,7 @@ class QtControllerSelector final : public QObject, public Core::Frontend::Contro
+     void MainWindowRequestExit() const;
+ 
+ private:
+-    void MainWindowReconfigureFinished();
++    void MainWindowReconfigureFinished(bool is_success);
+ 
+     mutable ReconfigureCallback callback;
+ };
+diff --git a/src/yuzu/applets/qt_controller.ui b/src/yuzu/applets/qt_controller.ui
+index f5eccba70b35..729e921ee7c5 100644
+--- a/src/yuzu/applets/qt_controller.ui
++++ b/src/yuzu/applets/qt_controller.ui
+@@ -2629,7 +2629,7 @@
+             <bool>true</bool>
+            </property>
+            <property name="standardButtons">
+-            <set>QDialogButtonBox::Ok</set>
++            <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+            </property>
+           </widget>
+          </item>
+@@ -2649,5 +2649,11 @@
+    <receiver>QtControllerSelectorDialog</receiver>
+    <slot>accept()</slot>
+   </connection>
++  <connection>
++   <sender>buttonBox</sender>
++   <signal>rejected()</signal>
++   <receiver>QtControllerSelectorDialog</receiver>
++   <slot>reject()</slot>
++  </connection>
+  </connections>
+ </ui>
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index 0c60a90cb99e..2ebfef551606 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -634,15 +634,16 @@ void GMainWindow::ControllerSelectorReconfigureControllers(
+                                       Qt::WindowStaysOnTopHint | Qt::WindowTitleHint |
+                                       Qt::WindowSystemMenuHint);
+     controller_applet->setWindowModality(Qt::WindowModal);
+-    controller_applet->exec();
+-
+-    emit ControllerSelectorReconfigureFinished();
++    bool is_success = controller_applet->exec() != QDialog::Rejected;
+ 
+     // Don't forget to apply settings.
++    system->HIDCore().DisableAllControllerConfiguration();
+     system->ApplySettings();
+     config->Save();
+ 
+     UpdateStatusButtons();
++
++    emit ControllerSelectorReconfigureFinished(is_success);
+ }
+ 
+ void GMainWindow::ControllerSelectorRequestExit() {
+diff --git a/src/yuzu/main.h b/src/yuzu/main.h
+index a99938eaa68a..58a65bd33e59 100644
+--- a/src/yuzu/main.h
++++ b/src/yuzu/main.h
+@@ -165,7 +165,7 @@ class GMainWindow : public QMainWindow {
+ 
+     void AmiiboSettingsFinished(bool is_success, const std::string& name);
+ 
+-    void ControllerSelectorReconfigureFinished();
++    void ControllerSelectorReconfigureFinished(bool is_success);
+ 
+     void ErrorDisplayFinished();
+ 

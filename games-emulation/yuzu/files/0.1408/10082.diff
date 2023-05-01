@@ -1,0 +1,535 @@
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 614d61db45e3..89c93ad3e6a5 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -222,6 +222,9 @@ void Maxwell3D::ProcessMacro(u32 method, const u32* base_start, u32 amount, bool
+ }
+ 
+ void Maxwell3D::RefreshParametersImpl() {
++    if (!Settings::IsGPULevelHigh()) {
++        return;
++    }
+     size_t current_index = 0;
+     for (auto& segment : macro_segments) {
+         if (segment.first == 0) {
+diff --git a/src/video_core/renderer_opengl/gl_rasterizer.cpp b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+index 90e35e307dce..4993d4709862 100644
+--- a/src/video_core/renderer_opengl/gl_rasterizer.cpp
++++ b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+@@ -1287,8 +1287,7 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
+     }
+     const u32 buffer_size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);
+     static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
+-    const auto post_op = IS_IMAGE_UPLOAD ? VideoCommon::ObtainBufferOperation::DoNothing
+-                                         : VideoCommon::ObtainBufferOperation::MarkAsWritten;
++    const auto post_op = VideoCommon::ObtainBufferOperation::DoNothing;
+     const auto [buffer, offset] =
+         buffer_cache.ObtainBuffer(buffer_operand.address, buffer_size, sync_info, post_op);
+ 
+@@ -1299,7 +1298,8 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
+     if constexpr (IS_IMAGE_UPLOAD) {
+         image->UploadMemory(buffer->Handle(), offset, copy_span);
+     } else {
+-        image->DownloadMemory(buffer->Handle(), offset, copy_span);
++        texture_cache.DownloadImageIntoBuffer(image, buffer->Handle(), offset, copy_span,
++                                              buffer_operand.address, buffer_size);
+     }
+     return true;
+ }
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.cpp b/src/video_core/renderer_opengl/gl_texture_cache.cpp
+index 0b9c4a904deb..670d8cafd908 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_texture_cache.cpp
+@@ -801,32 +801,34 @@ void Image::UploadMemory(const ImageBufferMap& map,
+     UploadMemory(map.buffer, map.offset, copies);
+ }
+ 
+-void Image::DownloadMemory(GLuint buffer_handle, size_t buffer_offset,
++void Image::DownloadMemory(std::span<GLuint> buffer_handles, size_t buffer_offset,
+                            std::span<const VideoCommon::BufferImageCopy> copies) {
+     const bool is_rescaled = True(flags & ImageFlagBits::Rescaled);
+     if (is_rescaled) {
+         ScaleDown();
+     }
+     glMemoryBarrier(GL_PIXEL_BUFFER_BARRIER_BIT); // TODO: Move this to its own API
+-    glBindBuffer(GL_PIXEL_PACK_BUFFER, buffer_handle);
+-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
++    for (auto buffer_handle : buffer_handles) {
++        glBindBuffer(GL_PIXEL_PACK_BUFFER, buffer_handle);
++        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+ 
+-    u32 current_row_length = std::numeric_limits<u32>::max();
+-    u32 current_image_height = std::numeric_limits<u32>::max();
++        u32 current_row_length = std::numeric_limits<u32>::max();
++        u32 current_image_height = std::numeric_limits<u32>::max();
+ 
+-    for (const VideoCommon::BufferImageCopy& copy : copies) {
+-        if (copy.image_subresource.base_level >= gl_num_levels) {
+-            continue;
+-        }
+-        if (current_row_length != copy.buffer_row_length) {
+-            current_row_length = copy.buffer_row_length;
+-            glPixelStorei(GL_PACK_ROW_LENGTH, current_row_length);
+-        }
+-        if (current_image_height != copy.buffer_image_height) {
+-            current_image_height = copy.buffer_image_height;
+-            glPixelStorei(GL_PACK_IMAGE_HEIGHT, current_image_height);
++        for (const VideoCommon::BufferImageCopy& copy : copies) {
++            if (copy.image_subresource.base_level >= gl_num_levels) {
++                continue;
++            }
++            if (current_row_length != copy.buffer_row_length) {
++                current_row_length = copy.buffer_row_length;
++                glPixelStorei(GL_PACK_ROW_LENGTH, current_row_length);
++            }
++            if (current_image_height != copy.buffer_image_height) {
++                current_image_height = copy.buffer_image_height;
++                glPixelStorei(GL_PACK_IMAGE_HEIGHT, current_image_height);
++            }
++            CopyImageToBuffer(copy, buffer_offset);
+         }
+-        CopyImageToBuffer(copy, buffer_offset);
+     }
+     if (is_rescaled) {
+         ScaleUp(true);
+@@ -835,7 +837,10 @@ void Image::DownloadMemory(GLuint buffer_handle, size_t buffer_offset,
+ 
+ void Image::DownloadMemory(ImageBufferMap& map,
+                            std::span<const VideoCommon::BufferImageCopy> copies) {
+-    DownloadMemory(map.buffer, map.offset, copies);
++    std::array buffers{
++        map.buffer,
++    };
++    DownloadMemory(buffers, map.offset, copies);
+ }
+ 
+ GLuint Image::StorageHandle() noexcept {
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.h b/src/video_core/renderer_opengl/gl_texture_cache.h
+index 911e4607aa98..67d6910b41bf 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.h
++++ b/src/video_core/renderer_opengl/gl_texture_cache.h
+@@ -212,7 +212,7 @@ class Image : public VideoCommon::ImageBase {
+     void UploadMemory(const ImageBufferMap& map,
+                       std::span<const VideoCommon::BufferImageCopy> copies);
+ 
+-    void DownloadMemory(GLuint buffer_handle, size_t buffer_offset,
++    void DownloadMemory(std::span<GLuint> buffer_handle, size_t buffer_offset,
+                         std::span<const VideoCommon::BufferImageCopy> copies);
+ 
+     void DownloadMemory(ImageBufferMap& map, std::span<const VideoCommon::BufferImageCopy> copies);
+@@ -376,6 +376,7 @@ struct TextureCacheParams {
+     using Sampler = OpenGL::Sampler;
+     using Framebuffer = OpenGL::Framebuffer;
+     using AsyncBuffer = u32;
++    using BufferType = GLuint;
+ };
+ 
+ using TextureCache = VideoCommon::TextureCache<TextureCacheParams>;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 673ab478e34d..2559a3aa712c 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -781,8 +781,7 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
+     }
+     const u32 buffer_size = static_cast<u32>(buffer_operand.pitch * buffer_operand.height);
+     static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
+-    const auto post_op = IS_IMAGE_UPLOAD ? VideoCommon::ObtainBufferOperation::DoNothing
+-                                         : VideoCommon::ObtainBufferOperation::MarkAsWritten;
++    const auto post_op = VideoCommon::ObtainBufferOperation::DoNothing;
+     const auto [buffer, offset] =
+         buffer_cache.ObtainBuffer(buffer_operand.address, buffer_size, sync_info, post_op);
+ 
+@@ -793,7 +792,8 @@ bool AccelerateDMA::DmaBufferImageCopy(const Tegra::DMA::ImageCopy& copy_info,
+     if constexpr (IS_IMAGE_UPLOAD) {
+         image->UploadMemory(buffer->Handle(), offset, copy_span);
+     } else {
+-        image->DownloadMemory(buffer->Handle(), offset, copy_span);
++        texture_cache.DownloadImageIntoBuffer(image, buffer->Handle(), offset, copy_span,
++                                              buffer_operand.address, buffer_size);
+     }
+     return true;
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index ae15f69765ad..da3841bb34c2 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -1,10 +1,11 @@
+-// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #include <algorithm>
+ #include <array>
+ #include <span>
+ #include <vector>
++#include <boost/container/small_vector.hpp>
+ 
+ #include "common/bit_cast.h"
+ #include "common/bit_util.h"
+@@ -1341,16 +1342,22 @@ void Image::UploadMemory(const StagingBufferRef& map, std::span<const BufferImag
+     UploadMemory(map.buffer, map.offset, copies);
+ }
+ 
+-void Image::DownloadMemory(VkBuffer buffer, VkDeviceSize offset,
++void Image::DownloadMemory(std::span<VkBuffer> buffers_span, std::span<VkDeviceSize> offsets_span,
+                            std::span<const VideoCommon::BufferImageCopy> copies) {
+     const bool is_rescaled = True(flags & ImageFlagBits::Rescaled);
+     if (is_rescaled) {
+         ScaleDown();
+     }
+-    std::vector vk_copies = TransformBufferImageCopies(copies, offset, aspect_mask);
++    boost::container::small_vector<VkBuffer, 1> buffers_vector{};
++    boost::container::small_vector<std::vector<VkBufferImageCopy>, 1> vk_copies;
++    for (size_t index = 0; index < buffers_span.size(); index++) {
++        buffers_vector.emplace_back(buffers_span[index]);
++        vk_copies.emplace_back(
++            TransformBufferImageCopies(copies, offsets_span[index], aspect_mask));
++    }
+     scheduler->RequestOutsideRenderPassOperationContext();
+-    scheduler->Record([buffer, image = *original_image, aspect_mask = aspect_mask,
+-                       vk_copies](vk::CommandBuffer cmdbuf) {
++    scheduler->Record([buffers = std::move(buffers_vector), image = *original_image,
++                       aspect_mask = aspect_mask, vk_copies](vk::CommandBuffer cmdbuf) {
+         const VkImageMemoryBarrier read_barrier{
+             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+             .pNext = nullptr,
+@@ -1369,6 +1376,20 @@ void Image::DownloadMemory(VkBuffer buffer, VkDeviceSize offset,
+                 .layerCount = VK_REMAINING_ARRAY_LAYERS,
+             },
+         };
++        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                               0, read_barrier);
++
++        for (size_t index = 0; index < buffers.size(); index++) {
++            cmdbuf.CopyImageToBuffer(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffers[index],
++                                     vk_copies[index]);
++        }
++
++        const VkMemoryBarrier memory_write_barrier{
++            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
++            .pNext = nullptr,
++            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
++            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++        };
+         const VkImageMemoryBarrier image_write_barrier{
+             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+             .pNext = nullptr,
+@@ -1387,15 +1408,6 @@ void Image::DownloadMemory(VkBuffer buffer, VkDeviceSize offset,
+                 .layerCount = VK_REMAINING_ARRAY_LAYERS,
+             },
+         };
+-        const VkMemoryBarrier memory_write_barrier{
+-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+-            .pNext = nullptr,
+-            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+-        };
+-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+-                               0, read_barrier);
+-        cmdbuf.CopyImageToBuffer(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, vk_copies);
+         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                0, memory_write_barrier, nullptr, image_write_barrier);
+     });
+@@ -1405,7 +1417,13 @@ void Image::DownloadMemory(VkBuffer buffer, VkDeviceSize offset,
+ }
+ 
+ void Image::DownloadMemory(const StagingBufferRef& map, std::span<const BufferImageCopy> copies) {
+-    DownloadMemory(map.buffer, map.offset, copies);
++    std::array buffers{
++        map.buffer,
++    };
++    std::array offsets{
++        map.offset,
++    };
++    DownloadMemory(buffers, offsets, copies);
+ }
+ 
+ bool Image::IsRescaled() const noexcept {
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index d5ee23f8ddfa..bdaf43ba4b89 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -1,5 +1,5 @@
+-// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #pragma once
+ 
+@@ -138,7 +138,7 @@ class Image : public VideoCommon::ImageBase {
+     void UploadMemory(const StagingBufferRef& map,
+                       std::span<const VideoCommon::BufferImageCopy> copies);
+ 
+-    void DownloadMemory(VkBuffer buffer, VkDeviceSize offset,
++    void DownloadMemory(std::span<VkBuffer> buffers, std::span<VkDeviceSize> offsets,
+                         std::span<const VideoCommon::BufferImageCopy> copies);
+ 
+     void DownloadMemory(const StagingBufferRef& map,
+@@ -371,6 +371,7 @@ struct TextureCacheParams {
+     using Sampler = Vulkan::Sampler;
+     using Framebuffer = Vulkan::Framebuffer;
+     using AsyncBuffer = Vulkan::StagingBufferRef;
++    using BufferType = VkBuffer;
+ };
+ 
+ using TextureCache = VideoCommon::TextureCache<TextureCacheParams>;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index ed5c768d8f24..c57470786b46 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1,4 +1,4 @@
+-// SPDX-FileCopyrightText: 2021 yuzu Emulator Project
++// SPDX-FileCopyrightText: 2023 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #pragma once
+@@ -661,27 +661,41 @@ template <class P>
+ void TextureCache<P>::CommitAsyncFlushes() {
+     // This is intentionally passing the value by copy
+     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+-        const std::span<const ImageId> download_ids = uncommitted_downloads;
++        auto& download_ids = uncommitted_downloads;
+         if (download_ids.empty()) {
+             committed_downloads.emplace_back(std::move(uncommitted_downloads));
+             uncommitted_downloads.clear();
+-            async_buffers.emplace_back(std::optional<AsyncBuffer>{});
++            async_buffers.emplace_back(std::move(uncommitted_async_buffers));
++            uncommitted_async_buffers.clear();
+             return;
+         }
+         size_t total_size_bytes = 0;
+-        for (const ImageId image_id : download_ids) {
+-            total_size_bytes += slot_images[image_id].unswizzled_size_bytes;
++        size_t last_async_buffer_id = uncommitted_async_buffers.size();
++        bool any_none_dma = false;
++        for (PendingDownload& download_info : download_ids) {
++            if (download_info.is_swizzle) {
++                total_size_bytes +=
++                    Common::AlignUp(slot_images[download_info.object_id].unswizzled_size_bytes, 64);
++                any_none_dma = true;
++                download_info.async_buffer_id = last_async_buffer_id;
++            }
+         }
+-        auto download_map = runtime.DownloadStagingBuffer(total_size_bytes, true);
+-        for (const ImageId image_id : download_ids) {
+-            Image& image = slot_images[image_id];
+-            const auto copies = FullDownloadCopies(image.info);
+-            image.DownloadMemory(download_map, copies);
+-            download_map.offset += Common::AlignUp(image.unswizzled_size_bytes, 64);
++        if (any_none_dma) {
++            auto download_map = runtime.DownloadStagingBuffer(total_size_bytes, true);
++            for (const PendingDownload& download_info : download_ids) {
++                if (download_info.is_swizzle) {
++                    Image& image = slot_images[download_info.object_id];
++                    const auto copies = FullDownloadCopies(image.info);
++                    image.DownloadMemory(download_map, copies);
++                    download_map.offset += Common::AlignUp(image.unswizzled_size_bytes, 64);
++                }
++            }
++            uncommitted_async_buffers.emplace_back(download_map);
+         }
+-        async_buffers.emplace_back(download_map);
+     }
+     committed_downloads.emplace_back(std::move(uncommitted_downloads));
++    async_buffers.emplace_back(std::move(uncommitted_async_buffers));
++    uncommitted_async_buffers.clear();
+     uncommitted_downloads.clear();
+ }
+ 
+@@ -691,39 +705,57 @@ void TextureCache<P>::PopAsyncFlushes() {
+         return;
+     }
+     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+-        const std::span<const ImageId> download_ids = committed_downloads.front();
++        const auto& download_ids = committed_downloads.front();
+         if (download_ids.empty()) {
+             committed_downloads.pop_front();
+             async_buffers.pop_front();
+             return;
+         }
+-        auto download_map = *async_buffers.front();
+-        std::span<u8> download_span = download_map.mapped_span;
++        auto download_map = std::move(async_buffers.front());
+         for (size_t i = download_ids.size(); i > 0; i--) {
+-            const ImageBase& image = slot_images[download_ids[i - 1]];
+-            const auto copies = FullDownloadCopies(image.info);
+-            download_map.offset -= Common::AlignUp(image.unswizzled_size_bytes, 64);
+-            std::span<u8> download_span_alt = download_span.subspan(download_map.offset);
+-            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span_alt,
+-                         swizzle_data_buffer);
++            auto& download_info = download_ids[i - 1];
++            auto& download_buffer = download_map[download_info.async_buffer_id];
++            if (download_info.is_swizzle) {
++                const ImageBase& image = slot_images[download_info.object_id];
++                const auto copies = FullDownloadCopies(image.info);
++                download_buffer.offset -= Common::AlignUp(image.unswizzled_size_bytes, 64);
++                std::span<u8> download_span =
++                    download_buffer.mapped_span.subspan(download_buffer.offset);
++                SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span,
++                             swizzle_data_buffer);
++            } else {
++                const BufferDownload& buffer_info = slot_buffer_downloads[download_info.object_id];
++                std::span<u8> download_span =
++                    download_buffer.mapped_span.subspan(download_buffer.offset);
++                gpu_memory->WriteBlockUnsafe(buffer_info.address, download_span.data(),
++                                             buffer_info.size);
++                slot_buffer_downloads.erase(download_info.object_id);
++            }
++        }
++        for (auto& download_buffer : download_map) {
++            runtime.FreeDeferredStagingBuffer(download_buffer);
+         }
+-        runtime.FreeDeferredStagingBuffer(download_map);
+         committed_downloads.pop_front();
+         async_buffers.pop_front();
+     } else {
+-        const std::span<const ImageId> download_ids = committed_downloads.front();
++        const auto& download_ids = committed_downloads.front();
+         if (download_ids.empty()) {
+             committed_downloads.pop_front();
+             return;
+         }
+         size_t total_size_bytes = 0;
+-        for (const ImageId image_id : download_ids) {
+-            total_size_bytes += slot_images[image_id].unswizzled_size_bytes;
++        for (const PendingDownload& download_info : download_ids) {
++            if (download_info.is_swizzle) {
++                total_size_bytes += slot_images[download_info.object_id].unswizzled_size_bytes;
++            }
+         }
+         auto download_map = runtime.DownloadStagingBuffer(total_size_bytes);
+         const size_t original_offset = download_map.offset;
+-        for (const ImageId image_id : download_ids) {
+-            Image& image = slot_images[image_id];
++        for (const PendingDownload& download_info : download_ids) {
++            if (download_info.is_swizzle) {
++                continue;
++            }
++            Image& image = slot_images[download_info.object_id];
+             const auto copies = FullDownloadCopies(image.info);
+             image.DownloadMemory(download_map, copies);
+             download_map.offset += image.unswizzled_size_bytes;
+@@ -732,8 +764,11 @@ void TextureCache<P>::PopAsyncFlushes() {
+         runtime.Finish();
+         download_map.offset = original_offset;
+         std::span<u8> download_span = download_map.mapped_span;
+-        for (const ImageId image_id : download_ids) {
+-            const ImageBase& image = slot_images[image_id];
++        for (const PendingDownload& download_info : download_ids) {
++            if (download_info.is_swizzle) {
++                continue;
++            }
++            const ImageBase& image = slot_images[download_info.object_id];
+             const auto copies = FullDownloadCopies(image.info);
+             SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span,
+                          swizzle_data_buffer);
+@@ -833,6 +868,34 @@ std::pair<typename TextureCache<P>::Image*, BufferImageCopy> TextureCache<P>::Dm
+     return {image, copy};
+ }
+ 
++template <class P>
++void TextureCache<P>::DownloadImageIntoBuffer(typename TextureCache<P>::Image* image,
++                                              typename TextureCache<P>::BufferType buffer,
++                                              size_t buffer_offset,
++                                              std::span<const VideoCommon::BufferImageCopy> copies,
++                                              GPUVAddr address, size_t size) {
++    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
++        auto slot = slot_buffer_downloads.insert(address, size);
++        uncommitted_downloads.emplace_back(false, uncommitted_async_buffers.size(), slot);
++        auto download_map = runtime.DownloadStagingBuffer(size, true);
++        uncommitted_async_buffers.emplace_back(download_map);
++        std::array buffers{
++            buffer,
++            download_map.buffer,
++        };
++        std::array buffer_offsets{
++            buffer_offset,
++            download_map.offset,
++        };
++        image->DownloadMemory(buffers, buffer_offsets, copies);
++    } else {
++        std::array buffers{
++            buffer,
++        };
++        image->DownloadMemory(buffers, buffer_offset, copies);
++    }
++}
++
+ template <class P>
+ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+     if (False(image.flags & ImageFlagBits::CpuModified)) {
+@@ -2209,7 +2272,7 @@ void TextureCache<P>::BindRenderTarget(ImageViewId* old_id, ImageViewId new_id)
+     if (new_id) {
+         const ImageViewBase& old_view = slot_image_views[new_id];
+         if (True(old_view.flags & ImageViewFlagBits::PreemtiveDownload)) {
+-            uncommitted_downloads.push_back(old_view.image_id);
++            uncommitted_downloads.emplace_back(true, 0, old_view.image_id);
+         }
+     }
+     *old_id = new_id;
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 5a5b4179c502..d5bba3379327 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -1,4 +1,4 @@
+-// SPDX-FileCopyrightText: 2021 yuzu Emulator Project
++// SPDX-FileCopyrightText: 2023 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #pragma once
+@@ -119,6 +119,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     using Sampler = typename P::Sampler;
+     using Framebuffer = typename P::Framebuffer;
+     using AsyncBuffer = typename P::AsyncBuffer;
++    using BufferType = typename P::BufferType;
+ 
+     struct BlitImages {
+         ImageId dst_id;
+@@ -215,6 +216,10 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+         const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& buffer_operand,
+         const Tegra::DMA::ImageOperand& image_operand, ImageId image_id, bool modifies_image);
+ 
++    void DownloadImageIntoBuffer(Image* image, BufferType buffer, size_t buffer_offset,
++                                 std::span<const VideoCommon::BufferImageCopy> copies,
++                                 GPUVAddr address = 0, size_t size = 0);
++
+     /// Return true when a CPU region is modified from the GPU
+     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size);
+ 
+@@ -424,17 +429,31 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     u64 critical_memory;
+     size_t critical_gc;
+ 
++    struct BufferDownload {
++        GPUVAddr address;
++        size_t size;
++    };
++
++    struct PendingDownload {
++        bool is_swizzle;
++        size_t async_buffer_id;
++        SlotId object_id;
++    };
++
+     SlotVector<Image> slot_images;
+     SlotVector<ImageMapView> slot_map_views;
+     SlotVector<ImageView> slot_image_views;
+     SlotVector<ImageAlloc> slot_image_allocs;
+     SlotVector<Sampler> slot_samplers;
+     SlotVector<Framebuffer> slot_framebuffers;
++    SlotVector<BufferDownload> slot_buffer_downloads;
+ 
+     // TODO: This data structure is not optimal and it should be reworked
+-    std::vector<ImageId> uncommitted_downloads;
+-    std::deque<std::vector<ImageId>> committed_downloads;
+-    std::deque<std::optional<AsyncBuffer>> async_buffers;
++
++    std::vector<PendingDownload> uncommitted_downloads;
++    std::deque<std::vector<PendingDownload>> committed_downloads;
++    std::vector<AsyncBuffer> uncommitted_async_buffers;
++    std::deque<std::vector<AsyncBuffer>> async_buffers;
+ 
+     struct LRUItemParams {
+         using ObjectType = ImageId;

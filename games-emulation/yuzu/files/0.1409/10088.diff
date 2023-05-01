@@ -1,0 +1,776 @@
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 4323106326fb..a9667463f7f5 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -462,7 +462,7 @@ struct Memory::Impl {
+         }
+ 
+         if (Settings::IsFastmemEnabled()) {
+-            const bool is_read_enable = Settings::IsGPULevelHigh() || !cached;
++            const bool is_read_enable = !Settings::IsGPULevelExtreme() || !cached;
+             system.DeviceMemory().buffer.Protect(vaddr, size, is_read_enable, !cached);
+         }
+ 
+diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
+index c390ac91bc84..19bbdd547ae1 100644
+--- a/src/video_core/fence_manager.h
++++ b/src/video_core/fence_manager.h
+@@ -4,13 +4,20 @@
+ #pragma once
+ 
+ #include <algorithm>
++#include <condition_variable>
+ #include <cstring>
+ #include <deque>
+ #include <functional>
+ #include <memory>
++#include <mutex>
++#include <thread>
+ #include <queue>
+ 
+ #include "common/common_types.h"
++#include "common/microprofile.h"
++#include "common/scope_exit.h"
++#include "common/settings.h"
++#include "common/thread.h"
+ #include "video_core/delayed_destruction_ring.h"
+ #include "video_core/gpu.h"
+ #include "video_core/host1x/host1x.h"
+@@ -23,15 +30,26 @@ class FenceBase {
+ public:
+     explicit FenceBase(bool is_stubbed_) : is_stubbed{is_stubbed_} {}
+ 
++    bool IsStubbed() const {
++        return is_stubbed;
++    }
++
+ protected:
+     bool is_stubbed;
+ };
+ 
+-template <typename TFence, typename TTextureCache, typename TTBufferCache, typename TQueryCache>
++template <typename Traits>
+ class FenceManager {
++    using TFence = typename Traits::FenceType;
++    using TTextureCache = typename Traits::TextureCacheType;
++    using TBufferCache = typename Traits::BufferCacheType;
++    using TQueryCache = typename Traits::QueryCacheType;
++    static constexpr bool can_async_check = Traits::HAS_ASYNC_CHECK;
++
+ public:
+     /// Notify the fence manager about a new frame
+     void TickFrame() {
++        std::unique_lock lock(ring_guard);
+         delayed_destruction_ring.Tick();
+     }
+ 
+@@ -46,17 +64,32 @@ class FenceManager {
+     }
+ 
+     void SignalFence(std::function<void()>&& func) {
+-        TryReleasePendingFences();
++        bool delay_fence = Settings::IsGPULevelHigh();
++        if constexpr (!can_async_check) {
++            TryReleasePendingFences<false>();
++        }
+         const bool should_flush = ShouldFlush();
+         CommitAsyncFlushes();
+-        uncommitted_operations.emplace_back(std::move(func));
+-        CommitOperations();
+         TFence new_fence = CreateFence(!should_flush);
+-        fences.push(new_fence);
++        if constexpr (can_async_check) {
++            guard.lock();
++        }
++        if (delay_fence) {
++            uncommitted_operations.emplace_back(std::move(func));
++        }
++        pending_operations.emplace_back(std::move(uncommitted_operations));
+         QueueFence(new_fence);
++        if (!delay_fence) {
++            func();
++        }
++        fences.push(std::move(new_fence));
+         if (should_flush) {
+             rasterizer.FlushCommands();
+         }
++        if constexpr (can_async_check) {
++            guard.unlock();
++            cv.notify_all();
++        }
+     }
+ 
+     void SignalSyncPoint(u32 value) {
+@@ -66,29 +99,30 @@ class FenceManager {
+     }
+ 
+     void WaitPendingFences() {
+-        while (!fences.empty()) {
+-            TFence& current_fence = fences.front();
+-            if (ShouldWait()) {
+-                WaitFence(current_fence);
+-            }
+-            PopAsyncFlushes();
+-            auto operations = std::move(pending_operations.front());
+-            pending_operations.pop_front();
+-            for (auto& operation : operations) {
+-                operation();
+-            }
+-            PopFence();
++        if constexpr (!can_async_check) {
++            TryReleasePendingFences<true>();
+         }
+     }
+ 
+ protected:
+     explicit FenceManager(VideoCore::RasterizerInterface& rasterizer_, Tegra::GPU& gpu_,
+-                          TTextureCache& texture_cache_, TTBufferCache& buffer_cache_,
++                          TTextureCache& texture_cache_, TBufferCache& buffer_cache_,
+                           TQueryCache& query_cache_)
+         : rasterizer{rasterizer_}, gpu{gpu_}, syncpoint_manager{gpu.Host1x().GetSyncpointManager()},
+-          texture_cache{texture_cache_}, buffer_cache{buffer_cache_}, query_cache{query_cache_} {}
++          texture_cache{texture_cache_}, buffer_cache{buffer_cache_}, query_cache{query_cache_} {
++        if constexpr (can_async_check) {
++            fence_thread =
++                std::jthread([this](std::stop_token token) { ReleaseThreadFunc(token); });
++        }
++    }
+ 
+-    virtual ~FenceManager() = default;
++    virtual ~FenceManager() {
++        if constexpr (can_async_check) {
++            fence_thread.request_stop();
++            cv.notify_all();
++            fence_thread.join();
++        }
++    }
+ 
+     /// Creates a Fence Interface, does not create a backend fence if 'is_stubbed' is
+     /// true
+@@ -104,15 +138,20 @@ class FenceManager {
+     Tegra::GPU& gpu;
+     Tegra::Host1x::SyncpointManager& syncpoint_manager;
+     TTextureCache& texture_cache;
+-    TTBufferCache& buffer_cache;
++    TBufferCache& buffer_cache;
+     TQueryCache& query_cache;
+ 
+ private:
++    template <bool force_wait>
+     void TryReleasePendingFences() {
+         while (!fences.empty()) {
+             TFence& current_fence = fences.front();
+             if (ShouldWait() && !IsFenceSignaled(current_fence)) {
+-                return;
++                if constexpr (force_wait) {
++                    WaitFence(current_fence);
++                } else {
++                    return;
++                }
+             }
+             PopAsyncFlushes();
+             auto operations = std::move(pending_operations.front());
+@@ -120,7 +159,49 @@ class FenceManager {
+             for (auto& operation : operations) {
+                 operation();
+             }
+-            PopFence();
++            {
++                std::unique_lock lock(ring_guard);
++                delayed_destruction_ring.Push(std::move(current_fence));
++            }
++            fences.pop();
++        }
++    }
++
++    void ReleaseThreadFunc(std::stop_token stop_token) {
++        std::string name = "GPUFencingThread";
++        MicroProfileOnThreadCreate(name.c_str());
++
++        // Cleanup
++        SCOPE_EXIT({ MicroProfileOnThreadExit(); });
++
++        Common::SetCurrentThreadName(name.c_str());
++        Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
++
++        TFence current_fence;
++        std::deque<std::function<void()>> current_operations;
++        while (!stop_token.stop_requested()) {
++            {
++                std::unique_lock lock(guard);
++                cv.wait(lock, [&] { return stop_token.stop_requested() || !fences.empty(); });
++                if (stop_token.stop_requested()) [[unlikely]] {
++                    return;
++                }
++                current_fence = std::move(fences.front());
++                current_operations = std::move(pending_operations.front());
++                fences.pop();
++                pending_operations.pop_front();
++            }
++            if (!current_fence->IsStubbed()) {
++                WaitFence(current_fence);
++            }
++            PopAsyncFlushes();
++            for (auto& operation : current_operations) {
++                operation();
++            }
++            {
++                std::unique_lock lock(ring_guard);
++                delayed_destruction_ring.Push(std::move(current_fence));
++            }
+         }
+     }
+ 
+@@ -154,19 +235,16 @@ class FenceManager {
+         query_cache.CommitAsyncFlushes();
+     }
+ 
+-    void PopFence() {
+-        delayed_destruction_ring.Push(std::move(fences.front()));
+-        fences.pop();
+-    }
+-
+-    void CommitOperations() {
+-        pending_operations.emplace_back(std::move(uncommitted_operations));
+-    }
+-
+     std::queue<TFence> fences;
+     std::deque<std::function<void()>> uncommitted_operations;
+     std::deque<std::deque<std::function<void()>>> pending_operations;
+ 
++    std::mutex guard;
++    std::mutex ring_guard;
++    std::condition_variable cv;
++
++    std::jthread fence_thread;
++
+     DelayedDestructionRing<TFence, 6> delayed_destruction_ring;
+ };
+ 
+diff --git a/src/video_core/query_cache.h b/src/video_core/query_cache.h
+index 8906ba6d8a3f..9c6f57817588 100644
+--- a/src/video_core/query_cache.h
++++ b/src/video_core/query_cache.h
+@@ -6,6 +6,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <cstring>
++#include <functional>
+ #include <iterator>
+ #include <list>
+ #include <memory>
+@@ -17,13 +18,19 @@
+ 
+ #include "common/assert.h"
+ #include "common/settings.h"
++#include "core/memory.h"
+ #include "video_core/control/channel_state_cache.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/rasterizer_interface.h"
++#include "video_core/texture_cache/slot_vector.h"
+ 
+ namespace VideoCommon {
+ 
++using AsyncJobId = SlotId;
++
++static constexpr AsyncJobId NULL_ASYNC_JOB_ID{0};
++
+ template <class QueryCache, class HostCounter>
+ class CounterStreamBase {
+ public:
+@@ -93,9 +100,13 @@ class CounterStreamBase {
+ template <class QueryCache, class CachedQuery, class CounterStream, class HostCounter>
+ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
+ public:
+-    explicit QueryCacheBase(VideoCore::RasterizerInterface& rasterizer_)
+-        : rasterizer{rasterizer_}, streams{{CounterStream{static_cast<QueryCache&>(*this),
+-                                                          VideoCore::QueryType::SamplesPassed}}} {}
++    explicit QueryCacheBase(VideoCore::RasterizerInterface& rasterizer_,
++                            Core::Memory::Memory& cpu_memory_)
++        : rasterizer{rasterizer_},
++          cpu_memory{cpu_memory_}, streams{{CounterStream{static_cast<QueryCache&>(*this),
++                                                          VideoCore::QueryType::SamplesPassed}}} {
++        (void)slot_async_jobs.insert(); // Null value
++    }
+ 
+     void InvalidateRegion(VAddr addr, std::size_t size) {
+         std::unique_lock lock{mutex};
+@@ -126,10 +137,15 @@ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::Chann
+             query = Register(type, *cpu_addr, host_ptr, timestamp.has_value());
+         }
+ 
+-        query->BindCounter(Stream(type).Current(), timestamp);
+-        if (Settings::values.use_asynchronous_gpu_emulation.GetValue()) {
+-            AsyncFlushQuery(*cpu_addr);
++        auto result = query->BindCounter(Stream(type).Current(), timestamp);
++        if (result) {
++            auto async_job_id = query->GetAsyncJob();
++            auto& async_job = slot_async_jobs[async_job_id];
++            async_job.collected = true;
++            async_job.value = *result;
++            query->SetAsyncJob(NULL_ASYNC_JOB_ID);
+         }
++        AsyncFlushQuery(query, timestamp, lock);
+     }
+ 
+     /// Updates counters from GPU state. Expected to be called once per draw, clear or dispatch.
+@@ -173,15 +189,18 @@ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::Chann
+     }
+ 
+     void CommitAsyncFlushes() {
++        std::unique_lock lock{mutex};
+         committed_flushes.push_back(uncommitted_flushes);
+         uncommitted_flushes.reset();
+     }
+ 
+     bool HasUncommittedFlushes() const {
++        std::unique_lock lock{mutex};
+         return uncommitted_flushes != nullptr;
+     }
+ 
+     bool ShouldWaitAsyncFlushes() const {
++        std::unique_lock lock{mutex};
+         if (committed_flushes.empty()) {
+             return false;
+         }
+@@ -189,6 +208,7 @@ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::Chann
+     }
+ 
+     void PopAsyncFlushes() {
++        std::unique_lock lock{mutex};
+         if (committed_flushes.empty()) {
+             return;
+         }
+@@ -197,15 +217,25 @@ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::Chann
+             committed_flushes.pop_front();
+             return;
+         }
+-        for (VAddr query_address : *flush_list) {
+-            FlushAndRemoveRegion(query_address, 4);
++        for (AsyncJobId async_job_id : *flush_list) {
++            AsyncJob& async_job = slot_async_jobs[async_job_id];
++            if (!async_job.collected) {
++                FlushAndRemoveRegion(async_job.query_location, 2, true);
++            }
+         }
+         committed_flushes.pop_front();
+     }
+ 
+ private:
++    struct AsyncJob {
++        bool collected = false;
++        u64 value = 0;
++        VAddr query_location = 0;
++        std::optional<u64> timestamp{};
++    };
++
+     /// Flushes a memory range to guest memory and removes it from the cache.
+-    void FlushAndRemoveRegion(VAddr addr, std::size_t size) {
++    void FlushAndRemoveRegion(VAddr addr, std::size_t size, bool async = false) {
+         const u64 addr_begin = addr;
+         const u64 addr_end = addr_begin + size;
+         const auto in_range = [addr_begin, addr_end](const CachedQuery& query) {
+@@ -226,7 +256,16 @@ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::Chann
+                     continue;
+                 }
+                 rasterizer.UpdatePagesCachedCount(query.GetCpuAddr(), query.SizeInBytes(), -1);
+-                query.Flush();
++                AsyncJobId async_job_id = query.GetAsyncJob();
++                auto flush_result = query.Flush(async);
++                if (async_job_id == NULL_ASYNC_JOB_ID) {
++                    ASSERT_MSG(false, "This should not be reachable at all");
++                    continue;
++                }
++                AsyncJob& async_job = slot_async_jobs[async_job_id];
++                async_job.collected = true;
++                async_job.value = flush_result;
++                query.SetAsyncJob(NULL_ASYNC_JOB_ID);
+             }
+             std::erase_if(contents, in_range);
+         }
+@@ -253,26 +292,54 @@ class QueryCacheBase : public VideoCommon::ChannelSetupCaches<VideoCommon::Chann
+         return found != std::end(contents) ? &*found : nullptr;
+     }
+ 
+-    void AsyncFlushQuery(VAddr addr) {
+-        if (!uncommitted_flushes) {
+-            uncommitted_flushes = std::make_shared<std::vector<VAddr>>();
++    void AsyncFlushQuery(CachedQuery* query, std::optional<u64> timestamp,
++                         std::unique_lock<std::recursive_mutex>& lock) {
++        const AsyncJobId new_async_job_id = slot_async_jobs.insert();
++        {
++            AsyncJob& async_job = slot_async_jobs[new_async_job_id];
++            query->SetAsyncJob(new_async_job_id);
++            async_job.query_location = query->GetCpuAddr();
++            async_job.collected = false;
++
++            if (!uncommitted_flushes) {
++                uncommitted_flushes = std::make_shared<std::vector<AsyncJobId>>();
++            }
++            uncommitted_flushes->push_back(new_async_job_id);
+         }
+-        uncommitted_flushes->push_back(addr);
++        lock.unlock();
++        std::function<void()> operation([this, new_async_job_id, timestamp] {
++            std::unique_lock local_lock{mutex};
++            AsyncJob& async_job = slot_async_jobs[new_async_job_id];
++            if (timestamp) {
++                u64 timestamp_value = *timestamp;
++                cpu_memory.WriteBlockUnsafe(async_job.query_location + sizeof(u64),
++                                            &timestamp_value, sizeof(8));
++                cpu_memory.WriteBlockUnsafe(async_job.query_location, &async_job.value, sizeof(8));
++            } else {
++                u32 small_value = static_cast<u32>(async_job.value);
++                cpu_memory.WriteBlockUnsafe(async_job.query_location, &small_value, sizeof(u32));
++            }
++            slot_async_jobs.erase(new_async_job_id);
++        });
++        rasterizer.SyncOperation(std::move(operation));
+     }
+ 
+     static constexpr std::uintptr_t YUZU_PAGESIZE = 4096;
+     static constexpr unsigned YUZU_PAGEBITS = 12;
+ 
++    SlotVector<AsyncJob> slot_async_jobs;
++
+     VideoCore::RasterizerInterface& rasterizer;
++    Core::Memory::Memory& cpu_memory;
+ 
+-    std::recursive_mutex mutex;
++    mutable std::recursive_mutex mutex;
+ 
+     std::unordered_map<u64, std::vector<CachedQuery>> cached_queries;
+ 
+     std::array<CounterStream, VideoCore::NumQueryTypes> streams;
+ 
+-    std::shared_ptr<std::vector<VAddr>> uncommitted_flushes{};
+-    std::list<std::shared_ptr<std::vector<VAddr>>> committed_flushes;
++    std::shared_ptr<std::vector<AsyncJobId>> uncommitted_flushes{};
++    std::list<std::shared_ptr<std::vector<AsyncJobId>>> committed_flushes;
+ };
+ 
+ template <class QueryCache, class HostCounter>
+@@ -291,12 +358,12 @@ class HostCounterBase {
+     virtual ~HostCounterBase() = default;
+ 
+     /// Returns the current value of the query.
+-    u64 Query() {
++    u64 Query(bool async = false) {
+         if (result) {
+             return *result;
+         }
+ 
+-        u64 value = BlockingQuery() + base_result;
++        u64 value = BlockingQuery(async) + base_result;
+         if (dependency) {
+             value += dependency->Query();
+             dependency = nullptr;
+@@ -317,7 +384,7 @@ class HostCounterBase {
+ 
+ protected:
+     /// Returns the value of query from the backend API blocking as needed.
+-    virtual u64 BlockingQuery() const = 0;
++    virtual u64 BlockingQuery(bool async = false) const = 0;
+ 
+ private:
+     std::shared_ptr<HostCounter> dependency; ///< Counter to add to this value.
+@@ -340,26 +407,33 @@ class CachedQueryBase {
+     CachedQueryBase& operator=(const CachedQueryBase&) = delete;
+ 
+     /// Flushes the query to guest memory.
+-    virtual void Flush() {
++    virtual u64 Flush(bool async = false) {
+         // When counter is nullptr it means that it's just been reset. We are supposed to write a
+         // zero in these cases.
+-        const u64 value = counter ? counter->Query() : 0;
++        const u64 value = counter ? counter->Query(async) : 0;
++        if (async) {
++            return value;
++        }
+         std::memcpy(host_ptr, &value, sizeof(u64));
+ 
+         if (timestamp) {
+             std::memcpy(host_ptr + TIMESTAMP_OFFSET, &*timestamp, sizeof(u64));
+         }
++        return value;
+     }
+ 
+     /// Binds a counter to this query.
+-    void BindCounter(std::shared_ptr<HostCounter> counter_, std::optional<u64> timestamp_) {
++    std::optional<u64> BindCounter(std::shared_ptr<HostCounter> counter_,
++                                   std::optional<u64> timestamp_) {
++        std::optional<u64> result{};
+         if (counter) {
+             // If there's an old counter set it means the query is being rewritten by the game.
+             // To avoid losing the data forever, flush here.
+-            Flush();
++            result = std::make_optional(Flush());
+         }
+         counter = std::move(counter_);
+         timestamp = timestamp_;
++        return result;
+     }
+ 
+     VAddr GetCpuAddr() const noexcept {
+@@ -374,6 +448,14 @@ class CachedQueryBase {
+         return with_timestamp ? LARGE_QUERY_SIZE : SMALL_QUERY_SIZE;
+     }
+ 
++    void SetAsyncJob(AsyncJobId assigned_async_job_) {
++        assigned_async_job = assigned_async_job_;
++    }
++
++    AsyncJobId GetAsyncJob() const {
++        return assigned_async_job;
++    }
++
+ protected:
+     /// Returns true when querying the counter may potentially block.
+     bool WaitPending() const noexcept {
+@@ -389,6 +471,7 @@ class CachedQueryBase {
+     u8* host_ptr;                         ///< Writable host pointer.
+     std::shared_ptr<HostCounter> counter; ///< Host counter to query, owns the dependency tree.
+     std::optional<u64> timestamp;         ///< Timestamp to flush to guest memory.
++    AsyncJobId assigned_async_job;
+ };
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/renderer_opengl/gl_fence_manager.h b/src/video_core/renderer_opengl/gl_fence_manager.h
+index f1446e732a43..e21b19dcc8a8 100644
+--- a/src/video_core/renderer_opengl/gl_fence_manager.h
++++ b/src/video_core/renderer_opengl/gl_fence_manager.h
+@@ -30,7 +30,17 @@ class GLInnerFence : public VideoCommon::FenceBase {
+ };
+ 
+ using Fence = std::shared_ptr<GLInnerFence>;
+-using GenericFenceManager = VideoCommon::FenceManager<Fence, TextureCache, BufferCache, QueryCache>;
++
++struct FenceManagerParams {
++    using FenceType = Fence;
++    using BufferCacheType = BufferCache;
++    using TextureCacheType = TextureCache;
++    using QueryCacheType = QueryCache;
++
++    static constexpr bool HAS_ASYNC_CHECK = false;
++};
++
++using GenericFenceManager = VideoCommon::FenceManager<FenceManagerParams>;
+ 
+ class FenceManagerOpenGL final : public GenericFenceManager {
+ public:
+diff --git a/src/video_core/renderer_opengl/gl_query_cache.cpp b/src/video_core/renderer_opengl/gl_query_cache.cpp
+index 5070db441799..99d7347f5c5c 100644
+--- a/src/video_core/renderer_opengl/gl_query_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_query_cache.cpp
+@@ -26,8 +26,8 @@ constexpr GLenum GetTarget(VideoCore::QueryType type) {
+ 
+ } // Anonymous namespace
+ 
+-QueryCache::QueryCache(RasterizerOpenGL& rasterizer_)
+-    : QueryCacheBase(rasterizer_), gl_rasterizer{rasterizer_} {}
++QueryCache::QueryCache(RasterizerOpenGL& rasterizer_, Core::Memory::Memory& cpu_memory_)
++    : QueryCacheBase(rasterizer_, cpu_memory_), gl_rasterizer{rasterizer_} {}
+ 
+ QueryCache::~QueryCache() = default;
+ 
+@@ -74,7 +74,7 @@ void HostCounter::EndQuery() {
+     glEndQuery(GetTarget(type));
+ }
+ 
+-u64 HostCounter::BlockingQuery() const {
++u64 HostCounter::BlockingQuery([[maybe_unused]] bool async) const {
+     GLint64 value;
+     glGetQueryObjecti64v(query.handle, GL_QUERY_RESULT, &value);
+     return static_cast<u64>(value);
+@@ -96,7 +96,7 @@ CachedQuery& CachedQuery::operator=(CachedQuery&& rhs) noexcept {
+     return *this;
+ }
+ 
+-void CachedQuery::Flush() {
++u64 CachedQuery::Flush([[maybe_unused]] bool async) {
+     // Waiting for a query while another query of the same target is enabled locks Nvidia's driver.
+     // To avoid this disable and re-enable keeping the dependency stream.
+     // But we only have to do this if we have pending waits to be done.
+@@ -106,11 +106,13 @@ void CachedQuery::Flush() {
+         stream.Update(false);
+     }
+ 
+-    VideoCommon::CachedQueryBase<HostCounter>::Flush();
++    auto result = VideoCommon::CachedQueryBase<HostCounter>::Flush();
+ 
+     if (slice_counter) {
+         stream.Update(true);
+     }
++
++    return result;
+ }
+ 
+ } // namespace OpenGL
+diff --git a/src/video_core/renderer_opengl/gl_query_cache.h b/src/video_core/renderer_opengl/gl_query_cache.h
+index 14ce59990be2..872513f22624 100644
+--- a/src/video_core/renderer_opengl/gl_query_cache.h
++++ b/src/video_core/renderer_opengl/gl_query_cache.h
+@@ -28,7 +28,7 @@ using CounterStream = VideoCommon::CounterStreamBase<QueryCache, HostCounter>;
+ class QueryCache final
+     : public VideoCommon::QueryCacheBase<QueryCache, CachedQuery, CounterStream, HostCounter> {
+ public:
+-    explicit QueryCache(RasterizerOpenGL& rasterizer_);
++    explicit QueryCache(RasterizerOpenGL& rasterizer_, Core::Memory::Memory& cpu_memory_);
+     ~QueryCache();
+ 
+     OGLQuery AllocateQuery(VideoCore::QueryType type);
+@@ -51,7 +51,7 @@ class HostCounter final : public VideoCommon::HostCounterBase<QueryCache, HostCo
+     void EndQuery();
+ 
+ private:
+-    u64 BlockingQuery() const override;
++    u64 BlockingQuery(bool async = false) const override;
+ 
+     QueryCache& cache;
+     const VideoCore::QueryType type;
+@@ -70,7 +70,7 @@ class CachedQuery final : public VideoCommon::CachedQueryBase<HostCounter> {
+     CachedQuery(const CachedQuery&) = delete;
+     CachedQuery& operator=(const CachedQuery&) = delete;
+ 
+-    void Flush() override;
++    u64 Flush(bool async = false) override;
+ 
+ private:
+     QueryCache* cache;
+diff --git a/src/video_core/renderer_opengl/gl_rasterizer.cpp b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+index 90e35e307dce..967aa4306e14 100644
+--- a/src/video_core/renderer_opengl/gl_rasterizer.cpp
++++ b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+@@ -63,7 +63,7 @@ RasterizerOpenGL::RasterizerOpenGL(Core::Frontend::EmuWindow& emu_window_, Tegra
+       buffer_cache(*this, cpu_memory_, buffer_cache_runtime),
+       shader_cache(*this, emu_window_, device, texture_cache, buffer_cache, program_manager,
+                    state_tracker, gpu.ShaderNotify()),
+-      query_cache(*this), accelerate_dma(buffer_cache, texture_cache),
++      query_cache(*this, cpu_memory_), accelerate_dma(buffer_cache, texture_cache),
+       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache),
+       blit_image(program_manager_) {}
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_fence_manager.cpp b/src/video_core/renderer_vulkan/vk_fence_manager.cpp
+index 0214b103a7cb..fad9e383247e 100644
+--- a/src/video_core/renderer_vulkan/vk_fence_manager.cpp
++++ b/src/video_core/renderer_vulkan/vk_fence_manager.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include "video_core/renderer_vulkan/vk_buffer_cache.h"
+ #include "video_core/renderer_vulkan/vk_fence_manager.h"
++#include "video_core/renderer_vulkan/vk_query_cache.h"
+ #include "video_core/renderer_vulkan/vk_scheduler.h"
+ #include "video_core/renderer_vulkan/vk_texture_cache.h"
+ #include "video_core/vulkan_common/vulkan_device.h"
+diff --git a/src/video_core/renderer_vulkan/vk_fence_manager.h b/src/video_core/renderer_vulkan/vk_fence_manager.h
+index 7fe2afcd9125..145359d4e75e 100644
+--- a/src/video_core/renderer_vulkan/vk_fence_manager.h
++++ b/src/video_core/renderer_vulkan/vk_fence_manager.h
+@@ -40,7 +40,16 @@ class InnerFence : public VideoCommon::FenceBase {
+ };
+ using Fence = std::shared_ptr<InnerFence>;
+ 
+-using GenericFenceManager = VideoCommon::FenceManager<Fence, TextureCache, BufferCache, QueryCache>;
++struct FenceManagerParams {
++    using FenceType = Fence;
++    using BufferCacheType = BufferCache;
++    using TextureCacheType = TextureCache;
++    using QueryCacheType = QueryCache;
++
++    static constexpr bool HAS_ASYNC_CHECK = true;
++};
++
++using GenericFenceManager = VideoCommon::FenceManager<FenceManagerParams>;
+ 
+ class FenceManager final : public GenericFenceManager {
+ public:
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 929c8ece66de..d67490449a33 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -66,9 +66,10 @@ void QueryPool::Reserve(std::pair<VkQueryPool, u32> query) {
+     }
+ }
+ 
+-QueryCache::QueryCache(VideoCore::RasterizerInterface& rasterizer_, const Device& device_,
++QueryCache::QueryCache(VideoCore::RasterizerInterface& rasterizer_,
++                       Core::Memory::Memory& cpu_memory_, const Device& device_,
+                        Scheduler& scheduler_)
+-    : QueryCacheBase{rasterizer_}, device{device_}, scheduler{scheduler_},
++    : QueryCacheBase{rasterizer_, cpu_memory_}, device{device_}, scheduler{scheduler_},
+       query_pools{
+           QueryPool{device_, scheduler_, QueryType::SamplesPassed},
+       } {}
+@@ -98,8 +99,10 @@ HostCounter::HostCounter(QueryCache& cache_, std::shared_ptr<HostCounter> depend
+       query{cache_.AllocateQuery(type_)}, tick{cache_.GetScheduler().CurrentTick()} {
+     const vk::Device* logical = &cache.GetDevice().GetLogical();
+     cache.GetScheduler().Record([logical, query = query](vk::CommandBuffer cmdbuf) {
++        const bool use_precise = Settings::IsGPULevelHigh();
+         logical->ResetQueryPool(query.first, query.second, 1);
+-        cmdbuf.BeginQuery(query.first, query.second, VK_QUERY_CONTROL_PRECISE_BIT);
++        cmdbuf.BeginQuery(query.first, query.second,
++                          use_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+     });
+ }
+ 
+@@ -112,8 +115,10 @@ void HostCounter::EndQuery() {
+         [query = query](vk::CommandBuffer cmdbuf) { cmdbuf.EndQuery(query.first, query.second); });
+ }
+ 
+-u64 HostCounter::BlockingQuery() const {
+-    cache.GetScheduler().Wait(tick);
++u64 HostCounter::BlockingQuery(bool async) const {
++    if (!async) {
++        cache.GetScheduler().Wait(tick);
++    }
+     u64 data;
+     const VkResult query_result = cache.GetDevice().GetLogical().GetQueryResults(
+         query.first, query.second, 1, sizeof(data), &data, sizeof(data),
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.h b/src/video_core/renderer_vulkan/vk_query_cache.h
+index 26762ee09766..c1b9552eb417 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.h
++++ b/src/video_core/renderer_vulkan/vk_query_cache.h
+@@ -52,7 +52,8 @@ class QueryPool final : public ResourcePool {
+ class QueryCache final
+     : public VideoCommon::QueryCacheBase<QueryCache, CachedQuery, CounterStream, HostCounter> {
+ public:
+-    explicit QueryCache(VideoCore::RasterizerInterface& rasterizer_, const Device& device_,
++    explicit QueryCache(VideoCore::RasterizerInterface& rasterizer_,
++                        Core::Memory::Memory& cpu_memory_, const Device& device_,
+                         Scheduler& scheduler_);
+     ~QueryCache();
+ 
+@@ -83,7 +84,7 @@ class HostCounter final : public VideoCommon::HostCounterBase<QueryCache, HostCo
+     void EndQuery();
+ 
+ private:
+-    u64 BlockingQuery() const override;
++    u64 BlockingQuery(bool async = false) const override;
+ 
+     QueryCache& cache;
+     const VideoCore::QueryType type;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 673ab478e34d..2d5ef89f0c07 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -172,7 +172,8 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
+       buffer_cache(*this, cpu_memory_, buffer_cache_runtime),
+       pipeline_cache(*this, device, scheduler, descriptor_pool, update_descriptor_queue,
+                      render_pass_cache, buffer_cache, texture_cache, gpu.ShaderNotify()),
+-      query_cache{*this, device, scheduler}, accelerate_dma(buffer_cache, texture_cache, scheduler),
++      query_cache{*this, cpu_memory_, device, scheduler},
++      accelerate_dma(buffer_cache, texture_cache, scheduler),
+       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
+       wfi_event(device.GetLogical().CreateEvent()) {
+     scheduler.SetQueryCache(query_cache);
+@@ -675,7 +676,8 @@ bool RasterizerVulkan::AccelerateConditionalRendering() {
+     const GPUVAddr condition_address{maxwell3d->regs.render_enable.Address()};
+     Maxwell::ReportSemaphore::Compare cmp;
+     if (gpu_memory->IsMemoryDirty(condition_address, sizeof(cmp),
+-                                  VideoCommon::CacheType::BufferCache)) {
++                                  VideoCommon::CacheType::BufferCache |
++                                      VideoCommon::CacheType::QueryCache)) {
+         return true;
+     }
+     return false;

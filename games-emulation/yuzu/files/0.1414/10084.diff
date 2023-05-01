@@ -1,0 +1,4546 @@
+diff --git a/src/tests/CMakeLists.txt b/src/tests/CMakeLists.txt
+index 39b774c98452..1e158f3759ae 100644
+--- a/src/tests/CMakeLists.txt
++++ b/src/tests/CMakeLists.txt
+@@ -15,7 +15,7 @@ add_executable(tests
+     core/core_timing.cpp
+     core/internal_network/network.cpp
+     precompiled_headers.h
+-    video_core/buffer_base.cpp
++    video_core/memory_tracker.cpp
+     input_common/calibration_configuration_job.cpp
+ )
+ 
+diff --git a/src/tests/video_core/buffer_base.cpp b/src/tests/video_core/buffer_base.cpp
+deleted file mode 100644
+index 734dbf4b69e0..000000000000
+--- a/src/tests/video_core/buffer_base.cpp
++++ /dev/null
+@@ -1,549 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#include <stdexcept>
+-#include <unordered_map>
+-
+-#include <catch2/catch_test_macros.hpp>
+-
+-#include "common/alignment.h"
+-#include "common/common_types.h"
+-#include "video_core/buffer_cache/buffer_base.h"
+-
+-namespace {
+-using VideoCommon::BufferBase;
+-using Range = std::pair<u64, u64>;
+-
+-constexpr u64 PAGE = 4096;
+-constexpr u64 WORD = 4096 * 64;
+-
+-constexpr VAddr c = 0x1328914000;
+-
+-class RasterizerInterface {
+-public:
+-    void UpdatePagesCachedCount(VAddr addr, u64 size, int delta) {
+-        const u64 page_start{addr >> Core::Memory::YUZU_PAGEBITS};
+-        const u64 page_end{(addr + size + Core::Memory::YUZU_PAGESIZE - 1) >>
+-                           Core::Memory::YUZU_PAGEBITS};
+-        for (u64 page = page_start; page < page_end; ++page) {
+-            int& value = page_table[page];
+-            value += delta;
+-            if (value < 0) {
+-                throw std::logic_error{"negative page"};
+-            }
+-            if (value == 0) {
+-                page_table.erase(page);
+-            }
+-        }
+-    }
+-
+-    [[nodiscard]] int Count(VAddr addr) const noexcept {
+-        const auto it = page_table.find(addr >> Core::Memory::YUZU_PAGEBITS);
+-        return it == page_table.end() ? 0 : it->second;
+-    }
+-
+-    [[nodiscard]] unsigned Count() const noexcept {
+-        unsigned count = 0;
+-        for (const auto& [index, value] : page_table) {
+-            count += value;
+-        }
+-        return count;
+-    }
+-
+-private:
+-    std::unordered_map<u64, int> page_table;
+-};
+-} // Anonymous namespace
+-
+-TEST_CASE("BufferBase: Small buffer", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    REQUIRE(rasterizer.Count() == 0);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    REQUIRE(rasterizer.Count() == WORD / PAGE);
+-    REQUIRE(buffer.ModifiedCpuRegion(c, WORD) == Range{0, 0});
+-
+-    buffer.MarkRegionAsCpuModified(c + PAGE, 1);
+-    REQUIRE(buffer.ModifiedCpuRegion(c, WORD) == Range{PAGE * 1, PAGE * 2});
+-}
+-
+-TEST_CASE("BufferBase: Large buffer", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 32);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 32);
+-    buffer.MarkRegionAsCpuModified(c + 4096, WORD * 4);
+-    REQUIRE(buffer.ModifiedCpuRegion(c, WORD + PAGE * 2) == Range{PAGE, WORD + PAGE * 2});
+-    REQUIRE(buffer.ModifiedCpuRegion(c + PAGE * 2, PAGE * 6) == Range{PAGE * 2, PAGE * 8});
+-    REQUIRE(buffer.ModifiedCpuRegion(c, WORD * 32) == Range{PAGE, WORD * 4 + PAGE});
+-    REQUIRE(buffer.ModifiedCpuRegion(c + WORD * 4, PAGE) == Range{WORD * 4, WORD * 4 + PAGE});
+-    REQUIRE(buffer.ModifiedCpuRegion(c + WORD * 3 + PAGE * 63, PAGE) ==
+-            Range{WORD * 3 + PAGE * 63, WORD * 4});
+-
+-    buffer.MarkRegionAsCpuModified(c + WORD * 5 + PAGE * 6, PAGE);
+-    buffer.MarkRegionAsCpuModified(c + WORD * 5 + PAGE * 8, PAGE);
+-    REQUIRE(buffer.ModifiedCpuRegion(c + WORD * 5, WORD) ==
+-            Range{WORD * 5 + PAGE * 6, WORD * 5 + PAGE * 9});
+-
+-    buffer.UnmarkRegionAsCpuModified(c + WORD * 5 + PAGE * 8, PAGE);
+-    REQUIRE(buffer.ModifiedCpuRegion(c + WORD * 5, WORD) ==
+-            Range{WORD * 5 + PAGE * 6, WORD * 5 + PAGE * 7});
+-
+-    buffer.MarkRegionAsCpuModified(c + PAGE, WORD * 31 + PAGE * 63);
+-    REQUIRE(buffer.ModifiedCpuRegion(c, WORD * 32) == Range{PAGE, WORD * 32});
+-
+-    buffer.UnmarkRegionAsCpuModified(c + PAGE * 4, PAGE);
+-    buffer.UnmarkRegionAsCpuModified(c + PAGE * 6, PAGE);
+-
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 32);
+-    REQUIRE(buffer.ModifiedCpuRegion(c, WORD * 32) == Range{0, 0});
+-}
+-
+-TEST_CASE("BufferBase: Rasterizer counting", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, PAGE * 2);
+-    REQUIRE(rasterizer.Count() == 0);
+-    buffer.UnmarkRegionAsCpuModified(c, PAGE);
+-    REQUIRE(rasterizer.Count() == 1);
+-    buffer.MarkRegionAsCpuModified(c, PAGE * 2);
+-    REQUIRE(rasterizer.Count() == 0);
+-    buffer.UnmarkRegionAsCpuModified(c, PAGE);
+-    buffer.UnmarkRegionAsCpuModified(c + PAGE, PAGE);
+-    REQUIRE(rasterizer.Count() == 2);
+-    buffer.MarkRegionAsCpuModified(c, PAGE * 2);
+-    REQUIRE(rasterizer.Count() == 0);
+-}
+-
+-TEST_CASE("BufferBase: Basic range", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    buffer.MarkRegionAsCpuModified(c, PAGE);
+-    int num = 0;
+-    buffer.ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == 0U);
+-        REQUIRE(size == PAGE);
+-        ++num;
+-    });
+-    REQUIRE(num == 1U);
+-}
+-
+-TEST_CASE("BufferBase: Border upload", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 2);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 2);
+-    buffer.MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
+-    buffer.ForEachUploadRange(c, WORD * 2, [](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD - PAGE);
+-        REQUIRE(size == PAGE * 2);
+-    });
+-}
+-
+-TEST_CASE("BufferBase: Border upload range", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 2);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 2);
+-    buffer.MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
+-    buffer.ForEachUploadRange(c + WORD - PAGE, PAGE * 2, [](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD - PAGE);
+-        REQUIRE(size == PAGE * 2);
+-    });
+-    buffer.MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
+-    buffer.ForEachUploadRange(c + WORD - PAGE, PAGE, [](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD - PAGE);
+-        REQUIRE(size == PAGE);
+-    });
+-    buffer.ForEachUploadRange(c + WORD, PAGE, [](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD);
+-        REQUIRE(size == PAGE);
+-    });
+-}
+-
+-TEST_CASE("BufferBase: Border upload partial range", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 2);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 2);
+-    buffer.MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
+-    buffer.ForEachUploadRange(c + WORD - 1, 2, [](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD - PAGE);
+-        REQUIRE(size == PAGE * 2);
+-    });
+-    buffer.MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
+-    buffer.ForEachUploadRange(c + WORD - 1, 1, [](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD - PAGE);
+-        REQUIRE(size == PAGE);
+-    });
+-    buffer.ForEachUploadRange(c + WORD + 50, 1, [](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD);
+-        REQUIRE(size == PAGE);
+-    });
+-}
+-
+-TEST_CASE("BufferBase: Partial word uploads", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, 0x9d000);
+-    int num = 0;
+-    buffer.ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == 0U);
+-        REQUIRE(size == WORD);
+-        ++num;
+-    });
+-    REQUIRE(num == 1);
+-    buffer.ForEachUploadRange(c + WORD, WORD, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD);
+-        REQUIRE(size == WORD);
+-        ++num;
+-    });
+-    REQUIRE(num == 2);
+-    buffer.ForEachUploadRange(c + 0x79000, 0x24000, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD * 2);
+-        REQUIRE(size == PAGE * 0x1d);
+-        ++num;
+-    });
+-    REQUIRE(num == 3);
+-}
+-
+-TEST_CASE("BufferBase: Partial page upload", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    int num = 0;
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 2, PAGE);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 9, PAGE);
+-    buffer.ForEachUploadRange(c, PAGE * 3, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == PAGE * 2);
+-        REQUIRE(size == PAGE);
+-        ++num;
+-    });
+-    REQUIRE(num == 1);
+-    buffer.ForEachUploadRange(c + PAGE * 7, PAGE * 3, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == PAGE * 9);
+-        REQUIRE(size == PAGE);
+-        ++num;
+-    });
+-    REQUIRE(num == 2);
+-}
+-
+-TEST_CASE("BufferBase: Partial page upload with multiple words on the right") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 8);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 8);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 13, WORD * 7);
+-    int num = 0;
+-    buffer.ForEachUploadRange(c + PAGE * 10, WORD * 7, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == PAGE * 13);
+-        REQUIRE(size == WORD * 7 - PAGE * 3);
+-        ++num;
+-    });
+-    REQUIRE(num == 1);
+-    buffer.ForEachUploadRange(c + PAGE, WORD * 8, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD * 7 + PAGE * 10);
+-        REQUIRE(size == PAGE * 3);
+-        ++num;
+-    });
+-    REQUIRE(num == 2);
+-}
+-
+-TEST_CASE("BufferBase: Partial page upload with multiple words on the left", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 8);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 8);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 13, WORD * 7);
+-    int num = 0;
+-    buffer.ForEachUploadRange(c + PAGE * 16, WORD * 7, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == PAGE * 16);
+-        REQUIRE(size == WORD * 7 - PAGE * 3);
+-        ++num;
+-    });
+-    REQUIRE(num == 1);
+-    buffer.ForEachUploadRange(c + PAGE, WORD, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == PAGE * 13);
+-        REQUIRE(size == PAGE * 3);
+-        ++num;
+-    });
+-    REQUIRE(num == 2);
+-}
+-
+-TEST_CASE("BufferBase: Partial page upload with multiple words in the middle", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 8);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 8);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 13, PAGE * 140);
+-    int num = 0;
+-    buffer.ForEachUploadRange(c + PAGE * 16, WORD, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == PAGE * 16);
+-        REQUIRE(size == WORD);
+-        ++num;
+-    });
+-    REQUIRE(num == 1);
+-    buffer.ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == PAGE * 13);
+-        REQUIRE(size == PAGE * 3);
+-        ++num;
+-    });
+-    REQUIRE(num == 2);
+-    buffer.ForEachUploadRange(c, WORD * 8, [&](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD + PAGE * 16);
+-        REQUIRE(size == PAGE * 73);
+-        ++num;
+-    });
+-    REQUIRE(num == 3);
+-}
+-
+-TEST_CASE("BufferBase: Empty right bits", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 2048);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 2048);
+-    buffer.MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
+-    buffer.ForEachUploadRange(c, WORD * 2048, [](u64 offset, u64 size) {
+-        REQUIRE(offset == WORD - PAGE);
+-        REQUIRE(size == PAGE * 2);
+-    });
+-}
+-
+-TEST_CASE("BufferBase: Out of bound ranges 1", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    buffer.MarkRegionAsCpuModified(c, PAGE);
+-    int num = 0;
+-    buffer.ForEachUploadRange(c - WORD, WORD, [&](u64 offset, u64 size) { ++num; });
+-    buffer.ForEachUploadRange(c + WORD, WORD, [&](u64 offset, u64 size) { ++num; });
+-    buffer.ForEachUploadRange(c - PAGE, PAGE, [&](u64 offset, u64 size) { ++num; });
+-    REQUIRE(num == 0);
+-    buffer.ForEachUploadRange(c - PAGE, PAGE * 2, [&](u64 offset, u64 size) { ++num; });
+-    REQUIRE(num == 1);
+-    buffer.MarkRegionAsCpuModified(c, WORD);
+-    REQUIRE(rasterizer.Count() == 0);
+-}
+-
+-TEST_CASE("BufferBase: Out of bound ranges 2", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, 0x22000);
+-    REQUIRE_NOTHROW(buffer.UnmarkRegionAsCpuModified(c + 0x22000, PAGE));
+-    REQUIRE_NOTHROW(buffer.UnmarkRegionAsCpuModified(c + 0x28000, PAGE));
+-    REQUIRE(rasterizer.Count() == 0);
+-    REQUIRE_NOTHROW(buffer.UnmarkRegionAsCpuModified(c + 0x21100, PAGE - 0x100));
+-    REQUIRE(rasterizer.Count() == 1);
+-    REQUIRE_NOTHROW(buffer.UnmarkRegionAsCpuModified(c - 0x1000, PAGE * 2));
+-    buffer.UnmarkRegionAsCpuModified(c - 0x3000, PAGE * 2);
+-    buffer.UnmarkRegionAsCpuModified(c - 0x2000, PAGE * 2);
+-    REQUIRE(rasterizer.Count() == 2);
+-}
+-
+-TEST_CASE("BufferBase: Out of bound ranges 3", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, 0x310720);
+-    buffer.UnmarkRegionAsCpuModified(c, 0x310720);
+-    REQUIRE(rasterizer.Count(c) == 1);
+-    REQUIRE(rasterizer.Count(c + PAGE) == 1);
+-    REQUIRE(rasterizer.Count(c + WORD) == 1);
+-    REQUIRE(rasterizer.Count(c + WORD + PAGE) == 1);
+-}
+-
+-TEST_CASE("BufferBase: Sparse regions 1", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 1, PAGE);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 3, PAGE * 4);
+-    buffer.ForEachUploadRange(c, WORD, [i = 0](u64 offset, u64 size) mutable {
+-        static constexpr std::array<u64, 2> offsets{PAGE, PAGE * 3};
+-        static constexpr std::array<u64, 2> sizes{PAGE, PAGE * 4};
+-        REQUIRE(offset == offsets.at(i));
+-        REQUIRE(size == sizes.at(i));
+-        ++i;
+-    });
+-}
+-
+-TEST_CASE("BufferBase: Sparse regions 2", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, 0x22000);
+-    buffer.UnmarkRegionAsCpuModified(c, 0x22000);
+-    REQUIRE(rasterizer.Count() == 0x22);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 0x1B, PAGE);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 0x21, PAGE);
+-    buffer.ForEachUploadRange(c, WORD, [i = 0](u64 offset, u64 size) mutable {
+-        static constexpr std::array<u64, 2> offsets{PAGE * 0x1B, PAGE * 0x21};
+-        static constexpr std::array<u64, 2> sizes{PAGE, PAGE};
+-        REQUIRE(offset == offsets.at(i));
+-        REQUIRE(size == sizes.at(i));
+-        ++i;
+-    });
+-}
+-
+-TEST_CASE("BufferBase: Single page modified range", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, PAGE);
+-    REQUIRE(buffer.IsRegionCpuModified(c, PAGE));
+-    buffer.UnmarkRegionAsCpuModified(c, PAGE);
+-    REQUIRE(!buffer.IsRegionCpuModified(c, PAGE));
+-}
+-
+-TEST_CASE("BufferBase: Two page modified range", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, PAGE * 2);
+-    REQUIRE(buffer.IsRegionCpuModified(c, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c, PAGE * 2));
+-    buffer.UnmarkRegionAsCpuModified(c, PAGE);
+-    REQUIRE(!buffer.IsRegionCpuModified(c, PAGE));
+-}
+-
+-TEST_CASE("BufferBase: Multi word modified ranges", "[video_core]") {
+-    for (int offset = 0; offset < 4; ++offset) {
+-        const VAddr address = c + WORD * offset;
+-        RasterizerInterface rasterizer;
+-        BufferBase buffer(rasterizer, address, WORD * 4);
+-        REQUIRE(buffer.IsRegionCpuModified(address, PAGE));
+-        REQUIRE(buffer.IsRegionCpuModified(address + PAGE * 48, PAGE));
+-        REQUIRE(buffer.IsRegionCpuModified(address + PAGE * 56, PAGE));
+-
+-        buffer.UnmarkRegionAsCpuModified(address + PAGE * 32, PAGE);
+-        REQUIRE(buffer.IsRegionCpuModified(address + PAGE, WORD));
+-        REQUIRE(buffer.IsRegionCpuModified(address + PAGE * 31, PAGE));
+-        REQUIRE(!buffer.IsRegionCpuModified(address + PAGE * 32, PAGE));
+-        REQUIRE(buffer.IsRegionCpuModified(address + PAGE * 33, PAGE));
+-        REQUIRE(buffer.IsRegionCpuModified(address + PAGE * 31, PAGE * 2));
+-        REQUIRE(buffer.IsRegionCpuModified(address + PAGE * 32, PAGE * 2));
+-
+-        buffer.UnmarkRegionAsCpuModified(address + PAGE * 33, PAGE);
+-        REQUIRE(!buffer.IsRegionCpuModified(address + PAGE * 32, PAGE * 2));
+-    }
+-}
+-
+-TEST_CASE("BufferBase: Single page in large buffer", "[video_core]") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 16);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 16);
+-    REQUIRE(!buffer.IsRegionCpuModified(c, WORD * 16));
+-
+-    buffer.MarkRegionAsCpuModified(c + WORD * 12 + PAGE * 8, PAGE);
+-    REQUIRE(buffer.IsRegionCpuModified(c, WORD * 16));
+-    REQUIRE(buffer.IsRegionCpuModified(c + WORD * 10, WORD * 2));
+-    REQUIRE(buffer.IsRegionCpuModified(c + WORD * 11, WORD * 2));
+-    REQUIRE(buffer.IsRegionCpuModified(c + WORD * 12, WORD * 2));
+-    REQUIRE(buffer.IsRegionCpuModified(c + WORD * 12 + PAGE * 4, PAGE * 8));
+-    REQUIRE(buffer.IsRegionCpuModified(c + WORD * 12 + PAGE * 6, PAGE * 8));
+-    REQUIRE(!buffer.IsRegionCpuModified(c + WORD * 12 + PAGE * 6, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + WORD * 12 + PAGE * 7, PAGE * 2));
+-    REQUIRE(buffer.IsRegionCpuModified(c + WORD * 12 + PAGE * 8, PAGE * 2));
+-}
+-
+-TEST_CASE("BufferBase: Out of bounds region query") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 16);
+-    REQUIRE(!buffer.IsRegionCpuModified(c - PAGE, PAGE));
+-    REQUIRE(!buffer.IsRegionCpuModified(c - PAGE * 2, PAGE));
+-    REQUIRE(!buffer.IsRegionCpuModified(c + WORD * 16, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + WORD * 16 - PAGE, WORD * 64));
+-    REQUIRE(!buffer.IsRegionCpuModified(c + WORD * 16, WORD * 64));
+-}
+-
+-TEST_CASE("BufferBase: Wrap word regions") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD * 2);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD * 2);
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 63, PAGE * 2);
+-    REQUIRE(buffer.IsRegionCpuModified(c, WORD * 2));
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE * 62, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 63, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 64, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 63, PAGE * 2));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 63, PAGE * 8));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 60, PAGE * 8));
+-
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE * 127, WORD * 16));
+-    buffer.MarkRegionAsCpuModified(c + PAGE * 127, PAGE);
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 127, WORD * 16));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 127, PAGE));
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE * 126, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 126, PAGE * 2));
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE * 128, WORD * 16));
+-}
+-
+-TEST_CASE("BufferBase: Unaligned page region query") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    buffer.MarkRegionAsCpuModified(c + 4000, 1000);
+-    REQUIRE(buffer.IsRegionCpuModified(c, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + 4000, 1000));
+-    REQUIRE(buffer.IsRegionCpuModified(c + 4000, 1));
+-}
+-
+-TEST_CASE("BufferBase: Cached write") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    buffer.CachedCpuWrite(c + PAGE, PAGE);
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    buffer.FlushCachedWrites();
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    buffer.MarkRegionAsCpuModified(c, WORD);
+-    REQUIRE(rasterizer.Count() == 0);
+-}
+-
+-TEST_CASE("BufferBase: Multiple cached write") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    buffer.CachedCpuWrite(c + PAGE, PAGE);
+-    buffer.CachedCpuWrite(c + PAGE * 3, PAGE);
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE * 3, PAGE));
+-    buffer.FlushCachedWrites();
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE * 3, PAGE));
+-    buffer.MarkRegionAsCpuModified(c, WORD);
+-    REQUIRE(rasterizer.Count() == 0);
+-}
+-
+-TEST_CASE("BufferBase: Cached write unmarked") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    buffer.CachedCpuWrite(c + PAGE, PAGE);
+-    buffer.UnmarkRegionAsCpuModified(c + PAGE, PAGE);
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    buffer.FlushCachedWrites();
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    buffer.MarkRegionAsCpuModified(c, WORD);
+-    REQUIRE(rasterizer.Count() == 0);
+-}
+-
+-TEST_CASE("BufferBase: Cached write iterated") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    buffer.CachedCpuWrite(c + PAGE, PAGE);
+-    int num = 0;
+-    buffer.ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) { ++num; });
+-    REQUIRE(num == 0);
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    buffer.FlushCachedWrites();
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    buffer.MarkRegionAsCpuModified(c, WORD);
+-    REQUIRE(rasterizer.Count() == 0);
+-}
+-
+-TEST_CASE("BufferBase: Cached write downloads") {
+-    RasterizerInterface rasterizer;
+-    BufferBase buffer(rasterizer, c, WORD);
+-    buffer.UnmarkRegionAsCpuModified(c, WORD);
+-    REQUIRE(rasterizer.Count() == 64);
+-    buffer.CachedCpuWrite(c + PAGE, PAGE);
+-    REQUIRE(rasterizer.Count() == 63);
+-    buffer.MarkRegionAsGpuModified(c + PAGE, PAGE);
+-    int num = 0;
+-    buffer.ForEachDownloadRangeAndClear(c, WORD, [&](u64 offset, u64 size) { ++num; });
+-    buffer.ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) { ++num; });
+-    REQUIRE(num == 0);
+-    REQUIRE(!buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    REQUIRE(!buffer.IsRegionGpuModified(c + PAGE, PAGE));
+-    buffer.FlushCachedWrites();
+-    REQUIRE(buffer.IsRegionCpuModified(c + PAGE, PAGE));
+-    REQUIRE(!buffer.IsRegionGpuModified(c + PAGE, PAGE));
+-    buffer.MarkRegionAsCpuModified(c, WORD);
+-    REQUIRE(rasterizer.Count() == 0);
+-}
+diff --git a/src/tests/video_core/memory_tracker.cpp b/src/tests/video_core/memory_tracker.cpp
+new file mode 100644
+index 000000000000..3981907a22c3
+--- /dev/null
++++ b/src/tests/video_core/memory_tracker.cpp
+@@ -0,0 +1,549 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include <memory>
++#include <stdexcept>
++#include <unordered_map>
++
++#include <catch2/catch_test_macros.hpp>
++
++#include "common/alignment.h"
++#include "common/common_types.h"
++#include "video_core/buffer_cache/memory_tracker_base.h"
++
++namespace {
++using Range = std::pair<u64, u64>;
++
++constexpr u64 PAGE = 4096;
++constexpr u64 WORD = 4096 * 64;
++constexpr u64 HIGH_PAGE_BITS = 22;
++constexpr u64 HIGH_PAGE_SIZE = 1ULL << HIGH_PAGE_BITS;
++
++constexpr VAddr c = 16 * HIGH_PAGE_SIZE;
++
++class RasterizerInterface {
++public:
++    void UpdatePagesCachedCount(VAddr addr, u64 size, int delta) {
++        const u64 page_start{addr >> Core::Memory::YUZU_PAGEBITS};
++        const u64 page_end{(addr + size + Core::Memory::YUZU_PAGESIZE - 1) >>
++                           Core::Memory::YUZU_PAGEBITS};
++        for (u64 page = page_start; page < page_end; ++page) {
++            int& value = page_table[page];
++            value += delta;
++            if (value < 0) {
++                throw std::logic_error{"negative page"};
++            }
++            if (value == 0) {
++                page_table.erase(page);
++            }
++        }
++    }
++
++    [[nodiscard]] int Count(VAddr addr) const noexcept {
++        const auto it = page_table.find(addr >> Core::Memory::YUZU_PAGEBITS);
++        return it == page_table.end() ? 0 : it->second;
++    }
++
++    [[nodiscard]] unsigned Count() const noexcept {
++        unsigned count = 0;
++        for (const auto& [index, value] : page_table) {
++            count += value;
++        }
++        return count;
++    }
++
++private:
++    std::unordered_map<u64, int> page_table;
++};
++} // Anonymous namespace
++
++using MemoryTracker = VideoCommon::MemoryTrackerBase<RasterizerInterface>;
++
++TEST_CASE("MemoryTracker: Small region", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    REQUIRE(rasterizer.Count() == 0);
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    REQUIRE(rasterizer.Count() == WORD / PAGE);
++    REQUIRE(memory_track->ModifiedCpuRegion(c, WORD) == Range{0, 0});
++
++    memory_track->MarkRegionAsCpuModified(c + PAGE, 1);
++    REQUIRE(memory_track->ModifiedCpuRegion(c, WORD) == Range{c + PAGE * 1, c + PAGE * 2});
++}
++
++TEST_CASE("MemoryTracker: Large region", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 32);
++    memory_track->MarkRegionAsCpuModified(c + 4096, WORD * 4);
++    REQUIRE(memory_track->ModifiedCpuRegion(c, WORD + PAGE * 2) ==
++            Range{c + PAGE, c + WORD + PAGE * 2});
++    REQUIRE(memory_track->ModifiedCpuRegion(c + PAGE * 2, PAGE * 6) ==
++            Range{c + PAGE * 2, c + PAGE * 8});
++    REQUIRE(memory_track->ModifiedCpuRegion(c, WORD * 32) == Range{c + PAGE, c + WORD * 4 + PAGE});
++    REQUIRE(memory_track->ModifiedCpuRegion(c + WORD * 4, PAGE) ==
++            Range{c + WORD * 4, c + WORD * 4 + PAGE});
++    REQUIRE(memory_track->ModifiedCpuRegion(c + WORD * 3 + PAGE * 63, PAGE) ==
++            Range{c + WORD * 3 + PAGE * 63, c + WORD * 4});
++
++    memory_track->MarkRegionAsCpuModified(c + WORD * 5 + PAGE * 6, PAGE);
++    memory_track->MarkRegionAsCpuModified(c + WORD * 5 + PAGE * 8, PAGE);
++    REQUIRE(memory_track->ModifiedCpuRegion(c + WORD * 5, WORD) ==
++            Range{c + WORD * 5 + PAGE * 6, c + WORD * 5 + PAGE * 9});
++
++    memory_track->UnmarkRegionAsCpuModified(c + WORD * 5 + PAGE * 8, PAGE);
++    REQUIRE(memory_track->ModifiedCpuRegion(c + WORD * 5, WORD) ==
++            Range{c + WORD * 5 + PAGE * 6, c + WORD * 5 + PAGE * 7});
++
++    memory_track->MarkRegionAsCpuModified(c + PAGE, WORD * 31 + PAGE * 63);
++    REQUIRE(memory_track->ModifiedCpuRegion(c, WORD * 32) == Range{c + PAGE, c + WORD * 32});
++
++    memory_track->UnmarkRegionAsCpuModified(c + PAGE * 4, PAGE);
++    memory_track->UnmarkRegionAsCpuModified(c + PAGE * 6, PAGE);
++
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 32);
++    REQUIRE(memory_track->ModifiedCpuRegion(c, WORD * 32) == Range{0, 0});
++}
++
++TEST_CASE("MemoryTracker: Rasterizer counting", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    REQUIRE(rasterizer.Count() == 0);
++    memory_track->UnmarkRegionAsCpuModified(c, PAGE);
++    REQUIRE(rasterizer.Count() == 1);
++    memory_track->MarkRegionAsCpuModified(c, PAGE * 2);
++    REQUIRE(rasterizer.Count() == 0);
++    memory_track->UnmarkRegionAsCpuModified(c, PAGE);
++    memory_track->UnmarkRegionAsCpuModified(c + PAGE, PAGE);
++    REQUIRE(rasterizer.Count() == 2);
++    memory_track->MarkRegionAsCpuModified(c, PAGE * 2);
++    REQUIRE(rasterizer.Count() == 0);
++}
++
++TEST_CASE("MemoryTracker: Basic range", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    memory_track->MarkRegionAsCpuModified(c, PAGE);
++    int num = 0;
++    memory_track->ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c);
++        REQUIRE(size == PAGE);
++        ++num;
++    });
++    REQUIRE(num == 1U);
++}
++
++TEST_CASE("MemoryTracker: Border upload", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 2);
++    memory_track->MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
++    memory_track->ForEachUploadRange(c, WORD * 2, [](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD - PAGE);
++        REQUIRE(size == PAGE * 2);
++    });
++}
++
++TEST_CASE("MemoryTracker: Border upload range", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 2);
++    memory_track->MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
++    memory_track->ForEachUploadRange(c + WORD - PAGE, PAGE * 2, [](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD - PAGE);
++        REQUIRE(size == PAGE * 2);
++    });
++    memory_track->MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
++    memory_track->ForEachUploadRange(c + WORD - PAGE, PAGE, [](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD - PAGE);
++        REQUIRE(size == PAGE);
++    });
++    memory_track->ForEachUploadRange(c + WORD, PAGE, [](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD);
++        REQUIRE(size == PAGE);
++    });
++}
++
++TEST_CASE("MemoryTracker: Border upload partial range", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 2);
++    memory_track->MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
++    memory_track->ForEachUploadRange(c + WORD - 1, 2, [](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD - PAGE);
++        REQUIRE(size == PAGE * 2);
++    });
++    memory_track->MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
++    memory_track->ForEachUploadRange(c + WORD - 1, 1, [](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD - PAGE);
++        REQUIRE(size == PAGE);
++    });
++    memory_track->ForEachUploadRange(c + WORD + 50, 1, [](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD);
++        REQUIRE(size == PAGE);
++    });
++}
++
++TEST_CASE("MemoryTracker: Partial word uploads", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    int num = 0;
++    memory_track->ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c);
++        REQUIRE(size == WORD);
++        ++num;
++    });
++    REQUIRE(num == 1);
++    memory_track->ForEachUploadRange(c + WORD, WORD, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD);
++        REQUIRE(size == WORD);
++        ++num;
++    });
++    REQUIRE(num == 2);
++    memory_track->ForEachUploadRange(c + 0x79000, 0x24000, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD * 2);
++        REQUIRE(size == PAGE * 0x1d);
++        ++num;
++    });
++    REQUIRE(num == 3);
++}
++
++TEST_CASE("MemoryTracker: Partial page upload", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    int num = 0;
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 2, PAGE);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 9, PAGE);
++    memory_track->ForEachUploadRange(c, PAGE * 3, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + PAGE * 2);
++        REQUIRE(size == PAGE);
++        ++num;
++    });
++    REQUIRE(num == 1);
++    memory_track->ForEachUploadRange(c + PAGE * 7, PAGE * 3, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + PAGE * 9);
++        REQUIRE(size == PAGE);
++        ++num;
++    });
++    REQUIRE(num == 2);
++}
++
++TEST_CASE("MemoryTracker: Partial page upload with multiple words on the right") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 9);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 13, WORD * 7);
++    int num = 0;
++    memory_track->ForEachUploadRange(c + PAGE * 10, WORD * 7, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + PAGE * 13);
++        REQUIRE(size == WORD * 7 - PAGE * 3);
++        ++num;
++    });
++    REQUIRE(num == 1);
++    memory_track->ForEachUploadRange(c + PAGE, WORD * 8, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD * 7 + PAGE * 10);
++        REQUIRE(size == PAGE * 3);
++        ++num;
++    });
++    REQUIRE(num == 2);
++}
++
++TEST_CASE("MemoryTracker: Partial page upload with multiple words on the left", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 8);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 13, WORD * 7);
++    int num = 0;
++    memory_track->ForEachUploadRange(c + PAGE * 16, WORD * 7, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + PAGE * 16);
++        REQUIRE(size == WORD * 7 - PAGE * 3);
++        ++num;
++    });
++    REQUIRE(num == 1);
++    memory_track->ForEachUploadRange(c + PAGE, WORD, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + PAGE * 13);
++        REQUIRE(size == PAGE * 3);
++        ++num;
++    });
++    REQUIRE(num == 2);
++}
++
++TEST_CASE("MemoryTracker: Partial page upload with multiple words in the middle", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 8);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 13, PAGE * 140);
++    int num = 0;
++    memory_track->ForEachUploadRange(c + PAGE * 16, WORD, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + PAGE * 16);
++        REQUIRE(size == WORD);
++        ++num;
++    });
++    REQUIRE(num == 1);
++    memory_track->ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + PAGE * 13);
++        REQUIRE(size == PAGE * 3);
++        ++num;
++    });
++    REQUIRE(num == 2);
++    memory_track->ForEachUploadRange(c, WORD * 8, [&](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD + PAGE * 16);
++        REQUIRE(size == PAGE * 73);
++        ++num;
++    });
++    REQUIRE(num == 3);
++}
++
++TEST_CASE("MemoryTracker: Empty right bits", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 2048);
++    memory_track->MarkRegionAsCpuModified(c + WORD - PAGE, PAGE * 2);
++    memory_track->ForEachUploadRange(c, WORD * 2048, [](u64 offset, u64 size) {
++        REQUIRE(offset == c + WORD - PAGE);
++        REQUIRE(size == PAGE * 2);
++    });
++}
++
++TEST_CASE("MemoryTracker: Out of bound ranges 1", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c - WORD, 3 * WORD);
++    memory_track->MarkRegionAsCpuModified(c, PAGE);
++    REQUIRE(rasterizer.Count() == (3 * WORD - PAGE) / PAGE);
++    int num = 0;
++    memory_track->ForEachUploadRange(c - WORD, WORD, [&](u64 offset, u64 size) { ++num; });
++    memory_track->ForEachUploadRange(c + WORD, WORD, [&](u64 offset, u64 size) { ++num; });
++    memory_track->ForEachUploadRange(c - PAGE, PAGE, [&](u64 offset, u64 size) { ++num; });
++    REQUIRE(num == 0);
++    memory_track->ForEachUploadRange(c - PAGE, PAGE * 2, [&](u64 offset, u64 size) { ++num; });
++    REQUIRE(num == 1);
++    memory_track->MarkRegionAsCpuModified(c, WORD);
++    REQUIRE(rasterizer.Count() == 2 * WORD / PAGE);
++}
++
++TEST_CASE("MemoryTracker: Out of bound ranges 2", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    REQUIRE_NOTHROW(memory_track->UnmarkRegionAsCpuModified(c + 0x22000, PAGE));
++    REQUIRE_NOTHROW(memory_track->UnmarkRegionAsCpuModified(c + 0x28000, PAGE));
++    REQUIRE(rasterizer.Count() == 2);
++    REQUIRE_NOTHROW(memory_track->UnmarkRegionAsCpuModified(c + 0x21100, PAGE - 0x100));
++    REQUIRE(rasterizer.Count() == 3);
++    REQUIRE_NOTHROW(memory_track->UnmarkRegionAsCpuModified(c - PAGE, PAGE * 2));
++    memory_track->UnmarkRegionAsCpuModified(c - PAGE * 3, PAGE * 2);
++    memory_track->UnmarkRegionAsCpuModified(c - PAGE * 2, PAGE * 2);
++    REQUIRE(rasterizer.Count() == 7);
++}
++
++TEST_CASE("MemoryTracker: Out of bound ranges 3", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, 0x310720);
++    REQUIRE(rasterizer.Count(c) == 1);
++    REQUIRE(rasterizer.Count(c + PAGE) == 1);
++    REQUIRE(rasterizer.Count(c + WORD) == 1);
++    REQUIRE(rasterizer.Count(c + WORD + PAGE) == 1);
++}
++
++TEST_CASE("MemoryTracker: Sparse regions 1", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 1, PAGE);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 3, PAGE * 4);
++    memory_track->ForEachUploadRange(c, WORD, [i = 0](u64 offset, u64 size) mutable {
++        static constexpr std::array<u64, 2> offsets{c + PAGE, c + PAGE * 3};
++        static constexpr std::array<u64, 2> sizes{PAGE, PAGE * 4};
++        REQUIRE(offset == offsets.at(i));
++        REQUIRE(size == sizes.at(i));
++        ++i;
++    });
++}
++
++TEST_CASE("MemoryTracker: Sparse regions 2", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, PAGE * 0x23);
++    REQUIRE(rasterizer.Count() == 0x23);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 0x1B, PAGE);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 0x21, PAGE);
++    memory_track->ForEachUploadRange(c, PAGE * 0x23, [i = 0](u64 offset, u64 size) mutable {
++        static constexpr std::array<u64, 3> offsets{c + PAGE * 0x1B, c + PAGE * 0x21};
++        static constexpr std::array<u64, 3> sizes{PAGE, PAGE};
++        REQUIRE(offset == offsets.at(i));
++        REQUIRE(size == sizes.at(i));
++        ++i;
++    });
++}
++
++TEST_CASE("MemoryTracker: Single page modified range", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    REQUIRE(memory_track->IsRegionCpuModified(c, PAGE));
++    memory_track->UnmarkRegionAsCpuModified(c, PAGE);
++    REQUIRE(!memory_track->IsRegionCpuModified(c, PAGE));
++}
++
++TEST_CASE("MemoryTracker: Two page modified range", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    REQUIRE(memory_track->IsRegionCpuModified(c, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c, PAGE * 2));
++    memory_track->UnmarkRegionAsCpuModified(c, PAGE);
++    REQUIRE(!memory_track->IsRegionCpuModified(c, PAGE));
++}
++
++TEST_CASE("MemoryTracker: Multi word modified ranges", "[video_core]") {
++    for (int offset = 0; offset < 4; ++offset) {
++        const VAddr address = c + WORD * offset;
++        RasterizerInterface rasterizer;
++        std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++        REQUIRE(memory_track->IsRegionCpuModified(address, PAGE));
++        REQUIRE(memory_track->IsRegionCpuModified(address + PAGE * 48, PAGE));
++        REQUIRE(memory_track->IsRegionCpuModified(address + PAGE * 56, PAGE));
++
++        memory_track->UnmarkRegionAsCpuModified(address + PAGE * 32, PAGE);
++        REQUIRE(memory_track->IsRegionCpuModified(address + PAGE, WORD));
++        REQUIRE(memory_track->IsRegionCpuModified(address + PAGE * 31, PAGE));
++        REQUIRE(!memory_track->IsRegionCpuModified(address + PAGE * 32, PAGE));
++        REQUIRE(memory_track->IsRegionCpuModified(address + PAGE * 33, PAGE));
++        REQUIRE(memory_track->IsRegionCpuModified(address + PAGE * 31, PAGE * 2));
++        REQUIRE(memory_track->IsRegionCpuModified(address + PAGE * 32, PAGE * 2));
++
++        memory_track->UnmarkRegionAsCpuModified(address + PAGE * 33, PAGE);
++        REQUIRE(!memory_track->IsRegionCpuModified(address + PAGE * 32, PAGE * 2));
++    }
++}
++
++TEST_CASE("MemoryTracker: Single page in large region", "[video_core]") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 16);
++    REQUIRE(!memory_track->IsRegionCpuModified(c, WORD * 16));
++
++    memory_track->MarkRegionAsCpuModified(c + WORD * 12 + PAGE * 8, PAGE);
++    REQUIRE(memory_track->IsRegionCpuModified(c, WORD * 16));
++    REQUIRE(!memory_track->IsRegionCpuModified(c + WORD * 10, WORD * 2));
++    REQUIRE(memory_track->IsRegionCpuModified(c + WORD * 11, WORD * 2));
++    REQUIRE(memory_track->IsRegionCpuModified(c + WORD * 12, WORD * 2));
++    REQUIRE(memory_track->IsRegionCpuModified(c + WORD * 12 + PAGE * 4, PAGE * 8));
++    REQUIRE(memory_track->IsRegionCpuModified(c + WORD * 12 + PAGE * 6, PAGE * 8));
++    REQUIRE(!memory_track->IsRegionCpuModified(c + WORD * 12 + PAGE * 6, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + WORD * 12 + PAGE * 7, PAGE * 2));
++    REQUIRE(memory_track->IsRegionCpuModified(c + WORD * 12 + PAGE * 8, PAGE * 2));
++}
++
++TEST_CASE("MemoryTracker: Wrap word regions") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD * 32);
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 63, PAGE * 2);
++    REQUIRE(memory_track->IsRegionCpuModified(c, WORD * 2));
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE * 62, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 63, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 64, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 63, PAGE * 2));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 63, PAGE * 8));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 60, PAGE * 8));
++
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE * 127, WORD * 16));
++    memory_track->MarkRegionAsCpuModified(c + PAGE * 127, PAGE);
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 127, WORD * 16));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 127, PAGE));
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE * 126, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 126, PAGE * 2));
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE * 128, WORD * 16));
++}
++
++TEST_CASE("MemoryTracker: Unaligned page region query") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    memory_track->MarkRegionAsCpuModified(c + 4000, 1000);
++    REQUIRE(memory_track->IsRegionCpuModified(c, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + 4000, 1000));
++    REQUIRE(memory_track->IsRegionCpuModified(c + 4000, 1));
++}
++
++TEST_CASE("MemoryTracker: Cached write") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    memory_track->CachedCpuWrite(c + PAGE, c + PAGE);
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    memory_track->FlushCachedWrites();
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    memory_track->MarkRegionAsCpuModified(c, WORD);
++    REQUIRE(rasterizer.Count() == 0);
++}
++
++TEST_CASE("MemoryTracker: Multiple cached write") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    memory_track->CachedCpuWrite(c + PAGE, PAGE);
++    memory_track->CachedCpuWrite(c + PAGE * 3, PAGE);
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE * 3, PAGE));
++    memory_track->FlushCachedWrites();
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE * 3, PAGE));
++    memory_track->MarkRegionAsCpuModified(c, WORD);
++    REQUIRE(rasterizer.Count() == 0);
++}
++
++TEST_CASE("MemoryTracker: Cached write unmarked") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    memory_track->CachedCpuWrite(c + PAGE, PAGE);
++    memory_track->UnmarkRegionAsCpuModified(c + PAGE, PAGE);
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    memory_track->FlushCachedWrites();
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    memory_track->MarkRegionAsCpuModified(c, WORD);
++    REQUIRE(rasterizer.Count() == 0);
++}
++
++TEST_CASE("MemoryTracker: Cached write iterated") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    memory_track->CachedCpuWrite(c + PAGE, PAGE);
++    int num = 0;
++    memory_track->ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) { ++num; });
++    REQUIRE(num == 0);
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    memory_track->FlushCachedWrites();
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    memory_track->MarkRegionAsCpuModified(c, WORD);
++    REQUIRE(rasterizer.Count() == 0);
++}
++
++TEST_CASE("MemoryTracker: Cached write downloads") {
++    RasterizerInterface rasterizer;
++    std::unique_ptr<MemoryTracker> memory_track(std::make_unique<MemoryTracker>(rasterizer));
++    memory_track->UnmarkRegionAsCpuModified(c, WORD);
++    REQUIRE(rasterizer.Count() == 64);
++    memory_track->CachedCpuWrite(c + PAGE, PAGE);
++    REQUIRE(rasterizer.Count() == 63);
++    memory_track->MarkRegionAsGpuModified(c + PAGE, PAGE);
++    int num = 0;
++    memory_track->ForEachDownloadRangeAndClear(c, WORD, [&](u64 offset, u64 size) { ++num; });
++    REQUIRE(num == 1);
++    num = 0;
++    memory_track->ForEachUploadRange(c, WORD, [&](u64 offset, u64 size) { ++num; });
++    REQUIRE(num == 0);
++    REQUIRE(!memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    REQUIRE(!memory_track->IsRegionGpuModified(c + PAGE, PAGE));
++    memory_track->FlushCachedWrites();
++    REQUIRE(memory_track->IsRegionCpuModified(c + PAGE, PAGE));
++    REQUIRE(!memory_track->IsRegionGpuModified(c + PAGE, PAGE));
++    memory_track->MarkRegionAsCpuModified(c, WORD);
++    REQUIRE(rasterizer.Count() == 0);
++}
+\ No newline at end of file
+diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
+index e904573d7318..92cab93f3a2e 100644
+--- a/src/video_core/CMakeLists.txt
++++ b/src/video_core/CMakeLists.txt
+@@ -11,8 +11,11 @@ endif()
+ 
+ add_library(video_core STATIC
+     buffer_cache/buffer_base.h
++    buffer_cache/buffer_cache_base.h
+     buffer_cache/buffer_cache.cpp
+     buffer_cache/buffer_cache.h
++    buffer_cache/memory_tracker_base.h
++    buffer_cache/word_manager.h
+     cache_types.h
+     cdma_pusher.cpp
+     cdma_pusher.h
+@@ -104,6 +107,7 @@ add_library(video_core STATIC
+     renderer_null/renderer_null.h
+     renderer_opengl/blit_image.cpp
+     renderer_opengl/blit_image.h
++    renderer_opengl/gl_buffer_cache_base.cpp
+     renderer_opengl/gl_buffer_cache.cpp
+     renderer_opengl/gl_buffer_cache.h
+     renderer_opengl/gl_compute_pipeline.cpp
+@@ -154,6 +158,7 @@ add_library(video_core STATIC
+     renderer_vulkan/renderer_vulkan.cpp
+     renderer_vulkan/vk_blit_screen.cpp
+     renderer_vulkan/vk_blit_screen.h
++    renderer_vulkan/vk_buffer_cache_base.cpp
+     renderer_vulkan/vk_buffer_cache.cpp
+     renderer_vulkan/vk_buffer_cache.h
+     renderer_vulkan/vk_command_pool.cpp
+diff --git a/src/video_core/buffer_cache/buffer_base.h b/src/video_core/buffer_cache/buffer_base.h
+index 1b4d63616da4..9cbd95c4b0c2 100644
+--- a/src/video_core/buffer_cache/buffer_base.h
++++ b/src/video_core/buffer_cache/buffer_base.h
+@@ -1,5 +1,5 @@
+-// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
++// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #pragma once
+ 
+@@ -11,9 +11,7 @@
+ #include "common/alignment.h"
+ #include "common/common_funcs.h"
+ #include "common/common_types.h"
+-#include "common/div_ceil.h"
+-#include "common/settings.h"
+-#include "core/memory.h"
++#include "video_core/buffer_cache/word_manager.h"
+ 
+ namespace VideoCommon {
+ 
+@@ -36,116 +34,12 @@ struct NullBufferParams {};
+  */
+ template <class RasterizerInterface>
+ class BufferBase {
+-    static constexpr u64 PAGES_PER_WORD = 64;
+-    static constexpr u64 BYTES_PER_PAGE = Core::Memory::YUZU_PAGESIZE;
+-    static constexpr u64 BYTES_PER_WORD = PAGES_PER_WORD * BYTES_PER_PAGE;
+-
+-    /// Vector tracking modified pages tightly packed with small vector optimization
+-    union WordsArray {
+-        /// Returns the pointer to the words state
+-        [[nodiscard]] const u64* Pointer(bool is_short) const noexcept {
+-            return is_short ? &stack : heap;
+-        }
+-
+-        /// Returns the pointer to the words state
+-        [[nodiscard]] u64* Pointer(bool is_short) noexcept {
+-            return is_short ? &stack : heap;
+-        }
+-
+-        u64 stack = 0; ///< Small buffers storage
+-        u64* heap;     ///< Not-small buffers pointer to the storage
+-    };
+-
+-    struct Words {
+-        explicit Words() = default;
+-        explicit Words(u64 size_bytes_) : size_bytes{size_bytes_} {
+-            if (IsShort()) {
+-                cpu.stack = ~u64{0};
+-                gpu.stack = 0;
+-                cached_cpu.stack = 0;
+-                untracked.stack = ~u64{0};
+-            } else {
+-                // Share allocation between CPU and GPU pages and set their default values
+-                const size_t num_words = NumWords();
+-                u64* const alloc = new u64[num_words * 4];
+-                cpu.heap = alloc;
+-                gpu.heap = alloc + num_words;
+-                cached_cpu.heap = alloc + num_words * 2;
+-                untracked.heap = alloc + num_words * 3;
+-                std::fill_n(cpu.heap, num_words, ~u64{0});
+-                std::fill_n(gpu.heap, num_words, 0);
+-                std::fill_n(cached_cpu.heap, num_words, 0);
+-                std::fill_n(untracked.heap, num_words, ~u64{0});
+-            }
+-            // Clean up tailing bits
+-            const u64 last_word_size = size_bytes % BYTES_PER_WORD;
+-            const u64 last_local_page = Common::DivCeil(last_word_size, BYTES_PER_PAGE);
+-            const u64 shift = (PAGES_PER_WORD - last_local_page) % PAGES_PER_WORD;
+-            const u64 last_word = (~u64{0} << shift) >> shift;
+-            cpu.Pointer(IsShort())[NumWords() - 1] = last_word;
+-            untracked.Pointer(IsShort())[NumWords() - 1] = last_word;
+-        }
+-
+-        ~Words() {
+-            Release();
+-        }
+-
+-        Words& operator=(Words&& rhs) noexcept {
+-            Release();
+-            size_bytes = rhs.size_bytes;
+-            cpu = rhs.cpu;
+-            gpu = rhs.gpu;
+-            cached_cpu = rhs.cached_cpu;
+-            untracked = rhs.untracked;
+-            rhs.cpu.heap = nullptr;
+-            return *this;
+-        }
+-
+-        Words(Words&& rhs) noexcept
+-            : size_bytes{rhs.size_bytes}, cpu{rhs.cpu}, gpu{rhs.gpu},
+-              cached_cpu{rhs.cached_cpu}, untracked{rhs.untracked} {
+-            rhs.cpu.heap = nullptr;
+-        }
+-
+-        Words& operator=(const Words&) = delete;
+-        Words(const Words&) = delete;
+-
+-        /// Returns true when the buffer fits in the small vector optimization
+-        [[nodiscard]] bool IsShort() const noexcept {
+-            return size_bytes <= BYTES_PER_WORD;
+-        }
+-
+-        /// Returns the number of words of the buffer
+-        [[nodiscard]] size_t NumWords() const noexcept {
+-            return Common::DivCeil(size_bytes, BYTES_PER_WORD);
+-        }
+-
+-        /// Release buffer resources
+-        void Release() {
+-            if (!IsShort()) {
+-                // CPU written words is the base for the heap allocation
+-                delete[] cpu.heap;
+-            }
+-        }
+-
+-        u64 size_bytes = 0;
+-        WordsArray cpu;
+-        WordsArray gpu;
+-        WordsArray cached_cpu;
+-        WordsArray untracked;
+-    };
+-
+-    enum class Type {
+-        CPU,
+-        GPU,
+-        CachedCPU,
+-        Untracked,
+-    };
+-
+ public:
+-    explicit BufferBase(RasterizerInterface& rasterizer_, VAddr cpu_addr_, u64 size_bytes)
+-        : rasterizer{&rasterizer_}, cpu_addr{Common::AlignDown(cpu_addr_, BYTES_PER_PAGE)},
+-          words(Common::AlignUp(size_bytes + (cpu_addr_ - cpu_addr), BYTES_PER_PAGE)) {}
++    static constexpr u64 BASE_PAGE_BITS = 16;
++    static constexpr u64 BASE_PAGE_SIZE = 1ULL << BASE_PAGE_BITS;
++
++    explicit BufferBase(RasterizerInterface& rasterizer_, VAddr cpu_addr_, u64 size_bytes_)
++        : cpu_addr{cpu_addr_}, size_bytes{size_bytes_} {}
+ 
+     explicit BufferBase(NullBufferParams) {}
+ 
+@@ -155,100 +49,6 @@ class BufferBase {
+     BufferBase& operator=(BufferBase&&) = default;
+     BufferBase(BufferBase&&) = default;
+ 
+-    /// Returns the inclusive CPU modified range in a begin end pair
+-    [[nodiscard]] std::pair<u64, u64> ModifiedCpuRegion(VAddr query_cpu_addr,
+-                                                        u64 query_size) const noexcept {
+-        const u64 offset = query_cpu_addr - cpu_addr;
+-        return ModifiedRegion<Type::CPU>(offset, query_size);
+-    }
+-
+-    /// Returns the inclusive GPU modified range in a begin end pair
+-    [[nodiscard]] std::pair<u64, u64> ModifiedGpuRegion(VAddr query_cpu_addr,
+-                                                        u64 query_size) const noexcept {
+-        const u64 offset = query_cpu_addr - cpu_addr;
+-        return ModifiedRegion<Type::GPU>(offset, query_size);
+-    }
+-
+-    /// Returns true if a region has been modified from the CPU
+-    [[nodiscard]] bool IsRegionCpuModified(VAddr query_cpu_addr, u64 query_size) const noexcept {
+-        const u64 offset = query_cpu_addr - cpu_addr;
+-        return IsRegionModified<Type::CPU>(offset, query_size);
+-    }
+-
+-    /// Returns true if a region has been modified from the GPU
+-    [[nodiscard]] bool IsRegionGpuModified(VAddr query_cpu_addr, u64 query_size) const noexcept {
+-        const u64 offset = query_cpu_addr - cpu_addr;
+-        return IsRegionModified<Type::GPU>(offset, query_size);
+-    }
+-
+-    /// Mark region as CPU modified, notifying the rasterizer about this change
+-    void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 size) {
+-        ChangeRegionState<Type::CPU, true>(dirty_cpu_addr, size);
+-    }
+-
+-    /// Unmark region as CPU modified, notifying the rasterizer about this change
+-    void UnmarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 size) {
+-        ChangeRegionState<Type::CPU, false>(dirty_cpu_addr, size);
+-    }
+-
+-    /// Mark region as modified from the host GPU
+-    void MarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 size) noexcept {
+-        ChangeRegionState<Type::GPU, true>(dirty_cpu_addr, size);
+-    }
+-
+-    /// Unmark region as modified from the host GPU
+-    void UnmarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 size) noexcept {
+-        ChangeRegionState<Type::GPU, false>(dirty_cpu_addr, size);
+-    }
+-
+-    /// Mark region as modified from the CPU
+-    /// but don't mark it as modified until FlusHCachedWrites is called.
+-    void CachedCpuWrite(VAddr dirty_cpu_addr, u64 size) {
+-        flags |= BufferFlagBits::CachedWrites;
+-        ChangeRegionState<Type::CachedCPU, true>(dirty_cpu_addr, size);
+-    }
+-
+-    /// Flushes cached CPU writes, and notify the rasterizer about the deltas
+-    void FlushCachedWrites() noexcept {
+-        flags &= ~BufferFlagBits::CachedWrites;
+-        const u64 num_words = NumWords();
+-        u64* const cached_words = Array<Type::CachedCPU>();
+-        u64* const untracked_words = Array<Type::Untracked>();
+-        u64* const cpu_words = Array<Type::CPU>();
+-        for (u64 word_index = 0; word_index < num_words; ++word_index) {
+-            const u64 cached_bits = cached_words[word_index];
+-            NotifyRasterizer<false>(word_index, untracked_words[word_index], cached_bits);
+-            untracked_words[word_index] |= cached_bits;
+-            cpu_words[word_index] |= cached_bits;
+-            if (!Settings::values.use_pessimistic_flushes) {
+-                cached_words[word_index] = 0;
+-            }
+-        }
+-    }
+-
+-    /// Call 'func' for each CPU modified range and unmark those pages as CPU modified
+-    template <typename Func>
+-    void ForEachUploadRange(VAddr query_cpu_range, u64 size, Func&& func) {
+-        ForEachModifiedRange<Type::CPU>(query_cpu_range, size, true, func);
+-    }
+-
+-    /// Call 'func' for each GPU modified range and unmark those pages as GPU modified
+-    template <typename Func>
+-    void ForEachDownloadRange(VAddr query_cpu_range, u64 size, bool clear, Func&& func) {
+-        ForEachModifiedRange<Type::GPU>(query_cpu_range, size, clear, func);
+-    }
+-
+-    template <typename Func>
+-    void ForEachDownloadRangeAndClear(VAddr query_cpu_range, u64 size, Func&& func) {
+-        ForEachModifiedRange<Type::GPU>(query_cpu_range, size, true, func);
+-    }
+-
+-    /// Call 'func' for each GPU modified range and unmark those pages as GPU modified
+-    template <typename Func>
+-    void ForEachDownloadRange(Func&& func) {
+-        ForEachModifiedRange<Type::GPU>(cpu_addr, SizeBytes(), true, func);
+-    }
+-
+     /// Mark buffer as picked
+     void Pick() noexcept {
+         flags |= BufferFlagBits::Picked;
+@@ -295,11 +95,6 @@ class BufferBase {
+         return static_cast<u32>(other_cpu_addr - cpu_addr);
+     }
+ 
+-    /// Returns the size in bytes of the buffer
+-    [[nodiscard]] u64 SizeBytes() const noexcept {
+-        return words.size_bytes;
+-    }
+-
+     size_t getLRUID() const noexcept {
+         return lru_id;
+     }
+@@ -308,305 +103,16 @@ class BufferBase {
+         lru_id = lru_id_;
+     }
+ 
+-private:
+-    template <Type type>
+-    u64* Array() noexcept {
+-        if constexpr (type == Type::CPU) {
+-            return words.cpu.Pointer(IsShort());
+-        } else if constexpr (type == Type::GPU) {
+-            return words.gpu.Pointer(IsShort());
+-        } else if constexpr (type == Type::CachedCPU) {
+-            return words.cached_cpu.Pointer(IsShort());
+-        } else if constexpr (type == Type::Untracked) {
+-            return words.untracked.Pointer(IsShort());
+-        }
+-    }
+-
+-    template <Type type>
+-    const u64* Array() const noexcept {
+-        if constexpr (type == Type::CPU) {
+-            return words.cpu.Pointer(IsShort());
+-        } else if constexpr (type == Type::GPU) {
+-            return words.gpu.Pointer(IsShort());
+-        } else if constexpr (type == Type::CachedCPU) {
+-            return words.cached_cpu.Pointer(IsShort());
+-        } else if constexpr (type == Type::Untracked) {
+-            return words.untracked.Pointer(IsShort());
+-        }
+-    }
+-
+-    /**
+-     * Change the state of a range of pages
+-     *
+-     * @param dirty_addr    Base address to mark or unmark as modified
+-     * @param size          Size in bytes to mark or unmark as modified
+-     */
+-    template <Type type, bool enable>
+-    void ChangeRegionState(u64 dirty_addr, s64 size) noexcept(type == Type::GPU) {
+-        const s64 difference = dirty_addr - cpu_addr;
+-        const u64 offset = std::max<s64>(difference, 0);
+-        size += std::min<s64>(difference, 0);
+-        if (offset >= SizeBytes() || size < 0) {
+-            return;
+-        }
+-        u64* const untracked_words = Array<Type::Untracked>();
+-        u64* const state_words = Array<type>();
+-        const u64 offset_end = std::min(offset + size, SizeBytes());
+-        const u64 begin_page_index = offset / BYTES_PER_PAGE;
+-        const u64 begin_word_index = begin_page_index / PAGES_PER_WORD;
+-        const u64 end_page_index = Common::DivCeil(offset_end, BYTES_PER_PAGE);
+-        const u64 end_word_index = Common::DivCeil(end_page_index, PAGES_PER_WORD);
+-        u64 page_index = begin_page_index % PAGES_PER_WORD;
+-        u64 word_index = begin_word_index;
+-        while (word_index < end_word_index) {
+-            const u64 next_word_first_page = (word_index + 1) * PAGES_PER_WORD;
+-            const u64 left_offset =
+-                std::min(next_word_first_page - end_page_index, PAGES_PER_WORD) % PAGES_PER_WORD;
+-            const u64 right_offset = page_index;
+-            u64 bits = ~u64{0};
+-            bits = (bits >> right_offset) << right_offset;
+-            bits = (bits << left_offset) >> left_offset;
+-            if constexpr (type == Type::CPU || type == Type::CachedCPU) {
+-                NotifyRasterizer<!enable>(word_index, untracked_words[word_index], bits);
+-            }
+-            if constexpr (enable) {
+-                state_words[word_index] |= bits;
+-                if constexpr (type == Type::CPU || type == Type::CachedCPU) {
+-                    untracked_words[word_index] |= bits;
+-                }
+-            } else {
+-                state_words[word_index] &= ~bits;
+-                if constexpr (type == Type::CPU || type == Type::CachedCPU) {
+-                    untracked_words[word_index] &= ~bits;
+-                }
+-            }
+-            page_index = 0;
+-            ++word_index;
+-        }
+-    }
+-
+-    /**
+-     * Notify rasterizer about changes in the CPU tracking state of a word in the buffer
+-     *
+-     * @param word_index   Index to the word to notify to the rasterizer
+-     * @param current_bits Current state of the word
+-     * @param new_bits     New state of the word
+-     *
+-     * @tparam add_to_rasterizer True when the rasterizer should start tracking the new pages
+-     */
+-    template <bool add_to_rasterizer>
+-    void NotifyRasterizer(u64 word_index, u64 current_bits, u64 new_bits) const {
+-        u64 changed_bits = (add_to_rasterizer ? current_bits : ~current_bits) & new_bits;
+-        VAddr addr = cpu_addr + word_index * BYTES_PER_WORD;
+-        while (changed_bits != 0) {
+-            const int empty_bits = std::countr_zero(changed_bits);
+-            addr += empty_bits * BYTES_PER_PAGE;
+-            changed_bits >>= empty_bits;
+-
+-            const u32 continuous_bits = std::countr_one(changed_bits);
+-            const u64 size = continuous_bits * BYTES_PER_PAGE;
+-            const VAddr begin_addr = addr;
+-            addr += size;
+-            changed_bits = continuous_bits < PAGES_PER_WORD ? (changed_bits >> continuous_bits) : 0;
+-            rasterizer->UpdatePagesCachedCount(begin_addr, size, add_to_rasterizer ? 1 : -1);
+-        }
+-    }
+-
+-    /**
+-     * Loop over each page in the given range, turn off those bits and notify the rasterizer if
+-     * needed. Call the given function on each turned off range.
+-     *
+-     * @param query_cpu_range Base CPU address to loop over
+-     * @param size            Size in bytes of the CPU range to loop over
+-     * @param func            Function to call for each turned off region
+-     */
+-    template <Type type, typename Func>
+-    void ForEachModifiedRange(VAddr query_cpu_range, s64 size, bool clear, Func&& func) {
+-        static_assert(type != Type::Untracked);
+-
+-        const s64 difference = query_cpu_range - cpu_addr;
+-        const u64 query_begin = std::max<s64>(difference, 0);
+-        size += std::min<s64>(difference, 0);
+-        if (query_begin >= SizeBytes() || size < 0) {
+-            return;
+-        }
+-        u64* const untracked_words = Array<Type::Untracked>();
+-        u64* const state_words = Array<type>();
+-        const u64 query_end = query_begin + std::min(static_cast<u64>(size), SizeBytes());
+-        u64* const words_begin = state_words + query_begin / BYTES_PER_WORD;
+-        u64* const words_end = state_words + Common::DivCeil(query_end, BYTES_PER_WORD);
+-
+-        const auto modified = [](u64 word) { return word != 0; };
+-        const auto first_modified_word = std::find_if(words_begin, words_end, modified);
+-        if (first_modified_word == words_end) {
+-            // Exit early when the buffer is not modified
+-            return;
+-        }
+-        const auto last_modified_word = std::find_if_not(first_modified_word, words_end, modified);
+-
+-        const u64 word_index_begin = std::distance(state_words, first_modified_word);
+-        const u64 word_index_end = std::distance(state_words, last_modified_word);
+-
+-        const unsigned local_page_begin = std::countr_zero(*first_modified_word);
+-        const unsigned local_page_end =
+-            static_cast<unsigned>(PAGES_PER_WORD) - std::countl_zero(last_modified_word[-1]);
+-        const u64 word_page_begin = word_index_begin * PAGES_PER_WORD;
+-        const u64 word_page_end = (word_index_end - 1) * PAGES_PER_WORD;
+-        const u64 query_page_begin = query_begin / BYTES_PER_PAGE;
+-        const u64 query_page_end = Common::DivCeil(query_end, BYTES_PER_PAGE);
+-        const u64 page_index_begin = std::max(word_page_begin + local_page_begin, query_page_begin);
+-        const u64 page_index_end = std::min(word_page_end + local_page_end, query_page_end);
+-        const u64 first_word_page_begin = page_index_begin % PAGES_PER_WORD;
+-        const u64 last_word_page_end = (page_index_end - 1) % PAGES_PER_WORD + 1;
+-
+-        u64 page_begin = first_word_page_begin;
+-        u64 current_base = 0;
+-        u64 current_size = 0;
+-        bool on_going = false;
+-        for (u64 word_index = word_index_begin; word_index < word_index_end; ++word_index) {
+-            const bool is_last_word = word_index + 1 == word_index_end;
+-            const u64 page_end = is_last_word ? last_word_page_end : PAGES_PER_WORD;
+-            const u64 right_offset = page_begin;
+-            const u64 left_offset = PAGES_PER_WORD - page_end;
+-            u64 bits = ~u64{0};
+-            bits = (bits >> right_offset) << right_offset;
+-            bits = (bits << left_offset) >> left_offset;
+-
+-            const u64 current_word = state_words[word_index] & bits;
+-            if (clear) {
+-                state_words[word_index] &= ~bits;
+-            }
+-
+-            if constexpr (type == Type::CPU) {
+-                const u64 current_bits = untracked_words[word_index] & bits;
+-                untracked_words[word_index] &= ~bits;
+-                NotifyRasterizer<true>(word_index, current_bits, ~u64{0});
+-            }
+-            // Exclude CPU modified pages when visiting GPU pages
+-            const u64 word = current_word & ~(type == Type::GPU ? untracked_words[word_index] : 0);
+-            u64 page = page_begin;
+-            page_begin = 0;
+-
+-            while (page < page_end) {
+-                const int empty_bits = std::countr_zero(word >> page);
+-                if (on_going && empty_bits != 0) {
+-                    InvokeModifiedRange(func, current_size, current_base);
+-                    current_size = 0;
+-                    on_going = false;
+-                }
+-                if (empty_bits == PAGES_PER_WORD) {
+-                    break;
+-                }
+-                page += empty_bits;
+-
+-                const int continuous_bits = std::countr_one(word >> page);
+-                if (!on_going && continuous_bits != 0) {
+-                    current_base = word_index * PAGES_PER_WORD + page;
+-                    on_going = true;
+-                }
+-                current_size += continuous_bits;
+-                page += continuous_bits;
+-            }
+-        }
+-        if (on_going && current_size > 0) {
+-            InvokeModifiedRange(func, current_size, current_base);
+-        }
+-    }
+-
+-    template <typename Func>
+-    void InvokeModifiedRange(Func&& func, u64 current_size, u64 current_base) {
+-        const u64 current_size_bytes = current_size * BYTES_PER_PAGE;
+-        const u64 offset_begin = current_base * BYTES_PER_PAGE;
+-        const u64 offset_end = std::min(offset_begin + current_size_bytes, SizeBytes());
+-        func(offset_begin, offset_end - offset_begin);
++    size_t SizeBytes() const {
++        return size_bytes;
+     }
+ 
+-    /**
+-     * Returns true when a region has been modified
+-     *
+-     * @param offset Offset in bytes from the start of the buffer
+-     * @param size   Size in bytes of the region to query for modifications
+-     */
+-    template <Type type>
+-    [[nodiscard]] bool IsRegionModified(u64 offset, u64 size) const noexcept {
+-        static_assert(type != Type::Untracked);
+-
+-        const u64* const untracked_words = Array<Type::Untracked>();
+-        const u64* const state_words = Array<type>();
+-        const u64 num_query_words = size / BYTES_PER_WORD + 1;
+-        const u64 word_begin = offset / BYTES_PER_WORD;
+-        const u64 word_end = std::min<u64>(word_begin + num_query_words, NumWords());
+-        const u64 page_limit = Common::DivCeil(offset + size, BYTES_PER_PAGE);
+-        u64 page_index = (offset / BYTES_PER_PAGE) % PAGES_PER_WORD;
+-        for (u64 word_index = word_begin; word_index < word_end; ++word_index, page_index = 0) {
+-            const u64 off_word = type == Type::GPU ? untracked_words[word_index] : 0;
+-            const u64 word = state_words[word_index] & ~off_word;
+-            if (word == 0) {
+-                continue;
+-            }
+-            const u64 page_end = std::min((word_index + 1) * PAGES_PER_WORD, page_limit);
+-            const u64 local_page_end = page_end % PAGES_PER_WORD;
+-            const u64 page_end_shift = (PAGES_PER_WORD - local_page_end) % PAGES_PER_WORD;
+-            if (((word >> page_index) << page_index) << page_end_shift != 0) {
+-                return true;
+-            }
+-        }
+-        return false;
+-    }
+-
+-    /**
+-     * Returns a begin end pair with the inclusive modified region
+-     *
+-     * @param offset Offset in bytes from the start of the buffer
+-     * @param size   Size in bytes of the region to query for modifications
+-     */
+-    template <Type type>
+-    [[nodiscard]] std::pair<u64, u64> ModifiedRegion(u64 offset, u64 size) const noexcept {
+-        static_assert(type != Type::Untracked);
+-
+-        const u64* const untracked_words = Array<Type::Untracked>();
+-        const u64* const state_words = Array<type>();
+-        const u64 num_query_words = size / BYTES_PER_WORD + 1;
+-        const u64 word_begin = offset / BYTES_PER_WORD;
+-        const u64 word_end = std::min<u64>(word_begin + num_query_words, NumWords());
+-        const u64 page_base = offset / BYTES_PER_PAGE;
+-        const u64 page_limit = Common::DivCeil(offset + size, BYTES_PER_PAGE);
+-        u64 begin = std::numeric_limits<u64>::max();
+-        u64 end = 0;
+-        for (u64 word_index = word_begin; word_index < word_end; ++word_index) {
+-            const u64 off_word = type == Type::GPU ? untracked_words[word_index] : 0;
+-            const u64 word = state_words[word_index] & ~off_word;
+-            if (word == 0) {
+-                continue;
+-            }
+-            const u64 local_page_begin = std::countr_zero(word);
+-            const u64 local_page_end = PAGES_PER_WORD - std::countl_zero(word);
+-            const u64 page_index = word_index * PAGES_PER_WORD;
+-            const u64 page_begin = std::max(page_index + local_page_begin, page_base);
+-            const u64 page_end = std::min(page_index + local_page_end, page_limit);
+-            begin = std::min(begin, page_begin);
+-            end = std::max(end, page_end);
+-        }
+-        static constexpr std::pair<u64, u64> EMPTY{0, 0};
+-        return begin < end ? std::make_pair(begin * BYTES_PER_PAGE, end * BYTES_PER_PAGE) : EMPTY;
+-    }
+-
+-    /// Returns the number of words of the buffer
+-    [[nodiscard]] size_t NumWords() const noexcept {
+-        return words.NumWords();
+-    }
+-
+-    /// Returns true when the buffer fits in the small vector optimization
+-    [[nodiscard]] bool IsShort() const noexcept {
+-        return words.IsShort();
+-    }
+-
+-    RasterizerInterface* rasterizer = nullptr;
++private:
+     VAddr cpu_addr = 0;
+-    Words words;
+     BufferFlagBits flags{};
+     int stream_score = 0;
+     size_t lru_id = SIZE_MAX;
++    size_t size_bytes = 0;
+ };
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/buffer_cache/buffer_cache.cpp b/src/video_core/buffer_cache/buffer_cache.cpp
+index a16308b60892..40db243d2933 100644
+--- a/src/video_core/buffer_cache/buffer_cache.cpp
++++ b/src/video_core/buffer_cache/buffer_cache.cpp
+@@ -1,5 +1,5 @@
+-// SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
++// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #include "common/microprofile.h"
+ 
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index abdc593dfd2a..40017a49e770 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -1,485 +1,29 @@
+-// SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
++// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #pragma once
+ 
+ #include <algorithm>
+-#include <array>
+ #include <memory>
+-#include <mutex>
+ #include <numeric>
+-#include <span>
+-#include <vector>
+-
+-#include <boost/container/small_vector.hpp>
+-#include <boost/icl/interval_set.hpp>
+-
+-#include "common/common_types.h"
+-#include "common/div_ceil.h"
+-#include "common/literals.h"
+-#include "common/lru_cache.h"
+-#include "common/microprofile.h"
+-#include "common/polyfill_ranges.h"
+-#include "common/scratch_buffer.h"
+-#include "common/settings.h"
+-#include "core/memory.h"
+-#include "video_core/buffer_cache/buffer_base.h"
+-#include "video_core/control/channel_state_cache.h"
+-#include "video_core/delayed_destruction_ring.h"
+-#include "video_core/dirty_flags.h"
+-#include "video_core/engines/draw_manager.h"
+-#include "video_core/engines/kepler_compute.h"
+-#include "video_core/engines/maxwell_3d.h"
+-#include "video_core/memory_manager.h"
+-#include "video_core/rasterizer_interface.h"
+-#include "video_core/surface.h"
+-#include "video_core/texture_cache/slot_vector.h"
+-#include "video_core/texture_cache/types.h"
+ 
+-namespace VideoCommon {
+-
+-MICROPROFILE_DECLARE(GPU_PrepareBuffers);
+-MICROPROFILE_DECLARE(GPU_BindUploadBuffers);
+-MICROPROFILE_DECLARE(GPU_DownloadMemory);
+-
+-using BufferId = SlotId;
+-
+-using VideoCore::Surface::PixelFormat;
+-using namespace Common::Literals;
+-
+-constexpr u32 NUM_VERTEX_BUFFERS = 32;
+-constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
+-constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
+-constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
+-constexpr u32 NUM_STORAGE_BUFFERS = 16;
+-constexpr u32 NUM_TEXTURE_BUFFERS = 16;
+-constexpr u32 NUM_STAGES = 5;
+-
+-enum class ObtainBufferSynchronize : u32 {
+-    NoSynchronize = 0,
+-    FullSynchronize = 1,
+-    SynchronizeNoDirty = 2,
+-};
+-
+-enum class ObtainBufferOperation : u32 {
+-    DoNothing = 0,
+-    MarkAsWritten = 1,
+-    DiscardWrite = 2,
+-    MarkQuery = 3,
+-};
+-
+-using UniformBufferSizes = std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>;
+-using ComputeUniformBufferSizes = std::array<u32, NUM_COMPUTE_UNIFORM_BUFFERS>;
+-
+-template <typename P>
+-class BufferCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
+-
+-    // Page size for caching purposes.
+-    // This is unrelated to the CPU page size and it can be changed as it seems optimal.
+-    static constexpr u32 YUZU_PAGEBITS = 16;
+-    static constexpr u64 YUZU_PAGESIZE = u64{1} << YUZU_PAGEBITS;
+-
+-    static constexpr bool IS_OPENGL = P::IS_OPENGL;
+-    static constexpr bool HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS =
+-        P::HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS;
+-    static constexpr bool HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT =
+-        P::HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT;
+-    static constexpr bool NEEDS_BIND_UNIFORM_INDEX = P::NEEDS_BIND_UNIFORM_INDEX;
+-    static constexpr bool NEEDS_BIND_STORAGE_INDEX = P::NEEDS_BIND_STORAGE_INDEX;
+-    static constexpr bool USE_MEMORY_MAPS = P::USE_MEMORY_MAPS;
+-    static constexpr bool SEPARATE_IMAGE_BUFFERS_BINDINGS = P::SEPARATE_IMAGE_BUFFER_BINDINGS;
+-
+-    static constexpr BufferId NULL_BUFFER_ID{0};
+-
+-    static constexpr s64 DEFAULT_EXPECTED_MEMORY = 512_MiB;
+-    static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB;
+-    static constexpr s64 TARGET_THRESHOLD = 4_GiB;
+-
+-    using Maxwell = Tegra::Engines::Maxwell3D::Regs;
+-
+-    using Runtime = typename P::Runtime;
+-    using Buffer = typename P::Buffer;
+-
+-    using IntervalSet = boost::icl::interval_set<VAddr>;
+-    using IntervalType = typename IntervalSet::interval_type;
+-
+-    struct Empty {};
+-
+-    struct OverlapResult {
+-        std::vector<BufferId> ids;
+-        VAddr begin;
+-        VAddr end;
+-        bool has_stream_leap = false;
+-    };
+-
+-    struct Binding {
+-        VAddr cpu_addr{};
+-        u32 size{};
+-        BufferId buffer_id;
+-    };
+-
+-    struct TextureBufferBinding : Binding {
+-        PixelFormat format;
+-    };
+-
+-    static constexpr Binding NULL_BINDING{
+-        .cpu_addr = 0,
+-        .size = 0,
+-        .buffer_id = NULL_BUFFER_ID,
+-    };
+-
+-public:
+-    static constexpr u32 DEFAULT_SKIP_CACHE_SIZE = static_cast<u32>(4_KiB);
+-
+-    explicit BufferCache(VideoCore::RasterizerInterface& rasterizer_,
+-                         Core::Memory::Memory& cpu_memory_, Runtime& runtime_);
+-
+-    void TickFrame();
+-
+-    void WriteMemory(VAddr cpu_addr, u64 size);
+-
+-    void CachedWriteMemory(VAddr cpu_addr, u64 size);
+-
+-    void DownloadMemory(VAddr cpu_addr, u64 size);
+-
+-    bool InlineMemory(VAddr dest_address, size_t copy_size, std::span<const u8> inlined_buffer);
+-
+-    void BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr, u32 size);
+-
+-    void DisableGraphicsUniformBuffer(size_t stage, u32 index);
+-
+-    void UpdateGraphicsBuffers(bool is_indexed);
+-
+-    void UpdateComputeBuffers();
+-
+-    void BindHostGeometryBuffers(bool is_indexed);
+-
+-    void BindHostStageBuffers(size_t stage);
+-
+-    void BindHostComputeBuffers();
+-
+-    void SetUniformBuffersState(const std::array<u32, NUM_STAGES>& mask,
+-                                const UniformBufferSizes* sizes);
+-
+-    void SetComputeUniformBufferState(u32 mask, const ComputeUniformBufferSizes* sizes);
+-
+-    void UnbindGraphicsStorageBuffers(size_t stage);
+-
+-    void BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
+-                                   bool is_written);
+-
+-    void UnbindGraphicsTextureBuffers(size_t stage);
+-
+-    void BindGraphicsTextureBuffer(size_t stage, size_t tbo_index, GPUVAddr gpu_addr, u32 size,
+-                                   PixelFormat format, bool is_written, bool is_image);
+-
+-    void UnbindComputeStorageBuffers();
+-
+-    void BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
+-                                  bool is_written);
+-
+-    void UnbindComputeTextureBuffers();
+-
+-    void BindComputeTextureBuffer(size_t tbo_index, GPUVAddr gpu_addr, u32 size, PixelFormat format,
+-                                  bool is_written, bool is_image);
+-
+-    void FlushCachedWrites();
+-
+-    /// Return true when there are uncommitted buffers to be downloaded
+-    [[nodiscard]] bool HasUncommittedFlushes() const noexcept;
+-
+-    void AccumulateFlushes();
+-
+-    /// Return true when the caller should wait for async downloads
+-    [[nodiscard]] bool ShouldWaitAsyncFlushes() const noexcept;
+-
+-    /// Commit asynchronous downloads
+-    void CommitAsyncFlushes();
+-    void CommitAsyncFlushesHigh();
+-
+-    /// Pop asynchronous downloads
+-    void PopAsyncFlushes();
+-
+-    bool DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount);
+-
+-    bool DMAClear(GPUVAddr src_address, u64 amount, u32 value);
+-
+-    [[nodiscard]] std::pair<Buffer*, u32> ObtainBuffer(GPUVAddr gpu_addr, u32 size,
+-                                                       ObtainBufferSynchronize sync_info,
+-                                                       ObtainBufferOperation post_op);
+-
+-    /// Return true when a CPU region is modified from the GPU
+-    [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size);
+-
+-    /// Return true when a region is registered on the cache
+-    [[nodiscard]] bool IsRegionRegistered(VAddr addr, size_t size);
+-
+-    /// Return true when a CPU region is modified from the CPU
+-    [[nodiscard]] bool IsRegionCpuModified(VAddr addr, size_t size);
+-
+-    void SetDrawIndirect(
+-        const Tegra::Engines::DrawManager::IndirectParams* current_draw_indirect_) {
+-        current_draw_indirect = current_draw_indirect_;
+-    }
+-
+-    [[nodiscard]] std::pair<Buffer*, u32> GetDrawIndirectCount();
+-
+-    [[nodiscard]] std::pair<Buffer*, u32> GetDrawIndirectBuffer();
+-
+-    std::recursive_mutex mutex;
+-    Runtime& runtime;
+-
+-private:
+-    template <typename Func>
+-    static void ForEachEnabledBit(u32 enabled_mask, Func&& func) {
+-        for (u32 index = 0; enabled_mask != 0; ++index, enabled_mask >>= 1) {
+-            const int disabled_bits = std::countr_zero(enabled_mask);
+-            index += disabled_bits;
+-            enabled_mask >>= disabled_bits;
+-            func(index);
+-        }
+-    }
+-
+-    template <typename Func>
+-    void ForEachBufferInRange(VAddr cpu_addr, u64 size, Func&& func) {
+-        const u64 page_end = Common::DivCeil(cpu_addr + size, YUZU_PAGESIZE);
+-        for (u64 page = cpu_addr >> YUZU_PAGEBITS; page < page_end;) {
+-            const BufferId buffer_id = page_table[page];
+-            if (!buffer_id) {
+-                ++page;
+-                continue;
+-            }
+-            Buffer& buffer = slot_buffers[buffer_id];
+-            func(buffer_id, buffer);
+-
+-            const VAddr end_addr = buffer.CpuAddr() + buffer.SizeBytes();
+-            page = Common::DivCeil(end_addr, YUZU_PAGESIZE);
+-        }
+-    }
+-
+-    template <typename Func>
+-    void ForEachWrittenRange(VAddr cpu_addr, u64 size, Func&& func) {
+-        const VAddr start_address = cpu_addr;
+-        const VAddr end_address = start_address + size;
+-        const VAddr search_base =
+-            static_cast<VAddr>(std::min<s64>(0LL, static_cast<s64>(start_address - size)));
+-        const IntervalType search_interval{search_base, search_base + 1};
+-        auto it = common_ranges.lower_bound(search_interval);
+-        if (it == common_ranges.end()) {
+-            it = common_ranges.begin();
+-        }
+-        for (; it != common_ranges.end(); it++) {
+-            VAddr inter_addr_end = it->upper();
+-            VAddr inter_addr = it->lower();
+-            if (inter_addr >= end_address) {
+-                break;
+-            }
+-            if (inter_addr_end <= start_address) {
+-                continue;
+-            }
+-            if (inter_addr_end > end_address) {
+-                inter_addr_end = end_address;
+-            }
+-            if (inter_addr < start_address) {
+-                inter_addr = start_address;
+-            }
+-            func(inter_addr, inter_addr_end);
+-        }
+-    }
+-
+-    static bool IsRangeGranular(VAddr cpu_addr, size_t size) {
+-        return (cpu_addr & ~Core::Memory::YUZU_PAGEMASK) ==
+-               ((cpu_addr + size) & ~Core::Memory::YUZU_PAGEMASK);
+-    }
+-
+-    void RunGarbageCollector();
+-
+-    void BindHostIndexBuffer();
+-
+-    void BindHostVertexBuffers();
+-
+-    void BindHostDrawIndirectBuffers();
+-
+-    void BindHostGraphicsUniformBuffers(size_t stage);
+-
+-    void BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 binding_index, bool needs_bind);
+-
+-    void BindHostGraphicsStorageBuffers(size_t stage);
+-
+-    void BindHostGraphicsTextureBuffers(size_t stage);
+-
+-    void BindHostTransformFeedbackBuffers();
+-
+-    void BindHostComputeUniformBuffers();
+-
+-    void BindHostComputeStorageBuffers();
+-
+-    void BindHostComputeTextureBuffers();
+-
+-    void DoUpdateGraphicsBuffers(bool is_indexed);
+-
+-    void DoUpdateComputeBuffers();
+-
+-    void UpdateIndexBuffer();
+-
+-    void UpdateVertexBuffers();
+-
+-    void UpdateVertexBuffer(u32 index);
+-
+-    void UpdateDrawIndirect();
+-
+-    void UpdateUniformBuffers(size_t stage);
+-
+-    void UpdateStorageBuffers(size_t stage);
+-
+-    void UpdateTextureBuffers(size_t stage);
+-
+-    void UpdateTransformFeedbackBuffers();
+-
+-    void UpdateTransformFeedbackBuffer(u32 index);
+-
+-    void UpdateComputeUniformBuffers();
+-
+-    void UpdateComputeStorageBuffers();
+-
+-    void UpdateComputeTextureBuffers();
+-
+-    void MarkWrittenBuffer(BufferId buffer_id, VAddr cpu_addr, u32 size);
+-
+-    [[nodiscard]] BufferId FindBuffer(VAddr cpu_addr, u32 size);
+-
+-    [[nodiscard]] OverlapResult ResolveOverlaps(VAddr cpu_addr, u32 wanted_size);
+-
+-    void JoinOverlap(BufferId new_buffer_id, BufferId overlap_id, bool accumulate_stream_score);
+-
+-    [[nodiscard]] BufferId CreateBuffer(VAddr cpu_addr, u32 wanted_size);
+-
+-    void Register(BufferId buffer_id);
+-
+-    void Unregister(BufferId buffer_id);
+-
+-    template <bool insert>
+-    void ChangeRegister(BufferId buffer_id);
+-
+-    void TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept;
+-
+-    bool SynchronizeBuffer(Buffer& buffer, VAddr cpu_addr, u32 size);
+-
+-    bool SynchronizeBufferImpl(Buffer& buffer, VAddr cpu_addr, u32 size);
+-
+-    void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
+-                      std::span<BufferCopy> copies);
+-
+-    void ImmediateUploadMemory(Buffer& buffer, u64 largest_copy,
+-                               std::span<const BufferCopy> copies);
+-
+-    void MappedUploadMemory(Buffer& buffer, u64 total_size_bytes, std::span<BufferCopy> copies);
+-
+-    void DownloadBufferMemory(Buffer& buffer_id);
+-
+-    void DownloadBufferMemory(Buffer& buffer_id, VAddr cpu_addr, u64 size);
+-
+-    void DeleteBuffer(BufferId buffer_id);
+-
+-    void NotifyBufferDeletion();
+-
+-    [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
+-                                               bool is_written = false) const;
+-
+-    [[nodiscard]] TextureBufferBinding GetTextureBufferBinding(GPUVAddr gpu_addr, u32 size,
+-                                                               PixelFormat format);
+-
+-    [[nodiscard]] std::span<const u8> ImmediateBufferWithData(VAddr cpu_addr, size_t size);
+-
+-    [[nodiscard]] std::span<u8> ImmediateBuffer(size_t wanted_capacity);
+-
+-    [[nodiscard]] bool HasFastUniformBufferBound(size_t stage, u32 binding_index) const noexcept;
+-
+-    void ClearDownload(IntervalType subtract_interval);
+-
+-    VideoCore::RasterizerInterface& rasterizer;
+-    Core::Memory::Memory& cpu_memory;
+-
+-    SlotVector<Buffer> slot_buffers;
+-    DelayedDestructionRing<Buffer, 8> delayed_destruction_ring;
+-
+-    const Tegra::Engines::DrawManager::IndirectParams* current_draw_indirect{};
+-
+-    u32 last_index_count = 0;
+-
+-    Binding index_buffer;
+-    std::array<Binding, NUM_VERTEX_BUFFERS> vertex_buffers;
+-    std::array<std::array<Binding, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES> uniform_buffers;
+-    std::array<std::array<Binding, NUM_STORAGE_BUFFERS>, NUM_STAGES> storage_buffers;
+-    std::array<std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS>, NUM_STAGES> texture_buffers;
+-    std::array<Binding, NUM_TRANSFORM_FEEDBACK_BUFFERS> transform_feedback_buffers;
+-    Binding count_buffer_binding;
+-    Binding indirect_buffer_binding;
+-
+-    std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
+-    std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
+-    std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
+-
+-    std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
+-    u32 enabled_compute_uniform_buffer_mask = 0;
+-
+-    const UniformBufferSizes* uniform_buffer_sizes{};
+-    const ComputeUniformBufferSizes* compute_uniform_buffer_sizes{};
+-
+-    std::array<u32, NUM_STAGES> enabled_storage_buffers{};
+-    std::array<u32, NUM_STAGES> written_storage_buffers{};
+-    u32 enabled_compute_storage_buffers = 0;
+-    u32 written_compute_storage_buffers = 0;
+-
+-    std::array<u32, NUM_STAGES> enabled_texture_buffers{};
+-    std::array<u32, NUM_STAGES> written_texture_buffers{};
+-    std::array<u32, NUM_STAGES> image_texture_buffers{};
+-    u32 enabled_compute_texture_buffers = 0;
+-    u32 written_compute_texture_buffers = 0;
+-    u32 image_compute_texture_buffers = 0;
+-
+-    std::array<u32, 16> uniform_cache_hits{};
+-    std::array<u32, 16> uniform_cache_shots{};
+-
+-    u32 uniform_buffer_skip_cache_size = DEFAULT_SKIP_CACHE_SIZE;
+-
+-    bool has_deleted_buffers = false;
++#include "video_core/buffer_cache/buffer_cache_base.h"
+ 
+-    std::conditional_t<HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS, std::array<u32, NUM_STAGES>, Empty>
+-        dirty_uniform_buffers{};
+-    std::conditional_t<IS_OPENGL, std::array<u32, NUM_STAGES>, Empty> fast_bound_uniform_buffers{};
+-    std::conditional_t<HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS,
+-                       std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>, Empty>
+-        uniform_buffer_binding_sizes{};
+-
+-    std::vector<BufferId> cached_write_buffer_ids;
+-
+-    IntervalSet uncommitted_ranges;
+-    IntervalSet common_ranges;
+-    std::deque<IntervalSet> committed_ranges;
+-
+-    Common::ScratchBuffer<u8> immediate_buffer_alloc;
+-
+-    struct LRUItemParams {
+-        using ObjectType = BufferId;
+-        using TickType = u64;
+-    };
+-    Common::LeastRecentlyUsedCache<LRUItemParams> lru_cache;
+-    u64 frame_tick = 0;
+-    u64 total_used_memory = 0;
+-    u64 minimum_memory = 0;
+-    u64 critical_memory = 0;
++namespace VideoCommon {
+ 
+-    std::array<BufferId, ((1ULL << 39) >> YUZU_PAGEBITS)> page_table;
+-};
++using Core::Memory::YUZU_PAGESIZE;
+ 
+ template <class P>
+ BufferCache<P>::BufferCache(VideoCore::RasterizerInterface& rasterizer_,
+                             Core::Memory::Memory& cpu_memory_, Runtime& runtime_)
+-    : runtime{runtime_}, rasterizer{rasterizer_}, cpu_memory{cpu_memory_} {
++    : runtime{runtime_}, rasterizer{rasterizer_}, cpu_memory{cpu_memory_}, memory_tracker{
++                                                                               rasterizer} {
+     // Ensure the first slot is used for the null buffer
+     void(slot_buffers.insert(runtime, NullBufferParams{}));
+     common_ranges.clear();
++    inline_buffer_id = NULL_BUFFER_ID;
++
++    active_async_buffers = !Settings::IsGPULevelHigh();
+ 
+     if (!runtime.CanReportMemoryUsage()) {
+         minimum_memory = DEFAULT_EXPECTED_MEMORY;
+@@ -531,6 +75,8 @@ void BufferCache<P>::TickFrame() {
+     uniform_cache_hits[0] = 0;
+     uniform_cache_shots[0] = 0;
+ 
++    active_async_buffers = !Settings::IsGPULevelHigh();
++
+     const bool skip_preferred = hits * 256 < shots * 251;
+     uniform_buffer_skip_cache_size = skip_preferred ? DEFAULT_SKIP_CACHE_SIZE : 0;
+ 
+@@ -543,35 +89,62 @@ void BufferCache<P>::TickFrame() {
+     }
+     ++frame_tick;
+     delayed_destruction_ring.Tick();
++
++    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
++        for (auto& buffer : async_buffers_death_ring) {
++            runtime.FreeDeferredStagingBuffer(buffer);
++        }
++        async_buffers_death_ring.clear();
++    }
+ }
+ 
+ template <class P>
+ void BufferCache<P>::WriteMemory(VAddr cpu_addr, u64 size) {
+-    ForEachBufferInRange(cpu_addr, size, [&](BufferId, Buffer& buffer) {
+-        buffer.MarkRegionAsCpuModified(cpu_addr, size);
+-    });
++    memory_tracker.MarkRegionAsCpuModified(cpu_addr, size);
++    if (memory_tracker.IsRegionGpuModified(cpu_addr, size)) {
++        const IntervalType subtract_interval{cpu_addr, cpu_addr + size};
++        ClearDownload(subtract_interval);
++        common_ranges.subtract(subtract_interval);
++    }
+ }
+ 
+ template <class P>
+ void BufferCache<P>::CachedWriteMemory(VAddr cpu_addr, u64 size) {
+-    ForEachBufferInRange(cpu_addr, size, [&](BufferId buffer_id, Buffer& buffer) {
+-        if (!buffer.HasCachedWrites()) {
+-            cached_write_buffer_ids.push_back(buffer_id);
+-        }
+-        buffer.CachedCpuWrite(cpu_addr, size);
+-    });
++    memory_tracker.CachedCpuWrite(cpu_addr, size);
++    const IntervalType add_interval{Common::AlignDown(cpu_addr, YUZU_PAGESIZE),
++                                    Common::AlignUp(cpu_addr + size, YUZU_PAGESIZE)};
++    cached_ranges.add(add_interval);
+ }
+ 
+ template <class P>
+ void BufferCache<P>::DownloadMemory(VAddr cpu_addr, u64 size) {
++    WaitOnAsyncFlushes(cpu_addr, size);
+     ForEachBufferInRange(cpu_addr, size, [&](BufferId, Buffer& buffer) {
+         DownloadBufferMemory(buffer, cpu_addr, size);
+     });
+ }
+ 
++template <class P>
++void BufferCache<P>::WaitOnAsyncFlushes(VAddr cpu_addr, u64 size) {
++    bool must_wait = false;
++    ForEachInOverlapCounter(async_downloads, cpu_addr, size,
++                            [&](VAddr, VAddr, int) { must_wait = true; });
++    bool must_release = false;
++    ForEachInRangeSet(pending_ranges, cpu_addr, size, [&](VAddr, VAddr) { must_release = true; });
++    if (must_release) {
++        std::function<void()> tmp([]() {});
++        rasterizer.SignalFence(std::move(tmp));
++    }
++    if (must_wait || must_release) {
++        rasterizer.ReleaseFences();
++    }
++}
++
+ template <class P>
+ void BufferCache<P>::ClearDownload(IntervalType subtract_interval) {
++    RemoveEachInOverlapCounter(async_downloads, subtract_interval, -1024);
+     uncommitted_ranges.subtract(subtract_interval);
++    pending_ranges.subtract(subtract_interval);
+     for (auto& interval_set : committed_ranges) {
+         interval_set.subtract(subtract_interval);
+     }
+@@ -591,6 +164,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+     }
+ 
+     const IntervalType subtract_interval{*cpu_dest_address, *cpu_dest_address + amount};
++    WaitOnAsyncFlushes(*cpu_src_address, static_cast<u32>(amount));
+     ClearDownload(subtract_interval);
+ 
+     BufferId buffer_a;
+@@ -616,10 +190,11 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+         const VAddr diff = base_address - *cpu_src_address;
+         const VAddr new_base_address = *cpu_dest_address + diff;
+         const IntervalType add_interval{new_base_address, new_base_address + size};
+-        uncommitted_ranges.add(add_interval);
+         tmp_intervals.push_back(add_interval);
++        uncommitted_ranges.add(add_interval);
++        pending_ranges.add(add_interval);
+     };
+-    ForEachWrittenRange(*cpu_src_address, amount, mirror);
++    ForEachInRangeSet(common_ranges, *cpu_src_address, amount, mirror);
+     // This subtraction in this order is important for overlapping copies.
+     common_ranges.subtract(subtract_interval);
+     const bool has_new_downloads = tmp_intervals.size() != 0;
+@@ -628,7 +203,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+     }
+     runtime.CopyBuffer(dest_buffer, src_buffer, copies);
+     if (has_new_downloads) {
+-        dest_buffer.MarkRegionAsGpuModified(*cpu_dest_address, amount);
++        memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
+     }
+     std::vector<u8> tmp_buffer(amount);
+     cpu_memory.ReadBlockUnsafe(*cpu_src_address, tmp_buffer.data(), amount);
+@@ -866,10 +441,9 @@ void BufferCache<P>::BindComputeTextureBuffer(size_t tbo_index, GPUVAddr gpu_add
+ 
+ template <class P>
+ void BufferCache<P>::FlushCachedWrites() {
+-    for (const BufferId buffer_id : cached_write_buffer_ids) {
+-        slot_buffers[buffer_id].FlushCachedWrites();
+-    }
+     cached_write_buffer_ids.clear();
++    memory_tracker.FlushCachedWrites();
++    cached_ranges.clear();
+ }
+ 
+ template <class P>
+@@ -879,10 +453,6 @@ bool BufferCache<P>::HasUncommittedFlushes() const noexcept {
+ 
+ template <class P>
+ void BufferCache<P>::AccumulateFlushes() {
+-    if (Settings::values.gpu_accuracy.GetValue() != Settings::GPUAccuracy::High) {
+-        uncommitted_ranges.clear();
+-        return;
+-    }
+     if (uncommitted_ranges.empty()) {
+         return;
+     }
+@@ -891,7 +461,11 @@ void BufferCache<P>::AccumulateFlushes() {
+ 
+ template <class P>
+ bool BufferCache<P>::ShouldWaitAsyncFlushes() const noexcept {
+-    return false;
++    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
++        return (!async_buffers.empty() && async_buffers.front().has_value());
++    } else {
++        return false;
++    }
+ }
+ 
+ template <class P>
+@@ -899,12 +473,16 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
+     AccumulateFlushes();
+ 
+     if (committed_ranges.empty()) {
++        if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
++            if (active_async_buffers) {
++                async_buffers.emplace_back(std::optional<Async_Buffer>{});
++            }
++        }
+         return;
+     }
+     MICROPROFILE_SCOPE(GPU_DownloadMemory);
+-    const bool is_accuracy_normal =
+-        Settings::values.gpu_accuracy.GetValue() == Settings::GPUAccuracy::Normal;
+ 
++    pending_ranges.clear();
+     auto it = committed_ranges.begin();
+     while (it != committed_ranges.end()) {
+         auto& current_intervals = *it;
+@@ -926,11 +504,12 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
+             const std::size_t size = interval.upper() - interval.lower();
+             const VAddr cpu_addr = interval.lower();
+             ForEachBufferInRange(cpu_addr, size, [&](BufferId buffer_id, Buffer& buffer) {
+-                buffer.ForEachDownloadRangeAndClear(
+-                    cpu_addr, size, [&](u64 range_offset, u64 range_size) {
+-                        if (is_accuracy_normal) {
+-                            return;
+-                        }
++                const VAddr buffer_start = buffer.CpuAddr();
++                const VAddr buffer_end = buffer_start + buffer.SizeBytes();
++                const VAddr new_start = std::max(buffer_start, cpu_addr);
++                const VAddr new_end = std::min(buffer_end, cpu_addr + size);
++                memory_tracker.ForEachDownloadRange(
++                    new_start, new_end - new_start, false, [&](u64 cpu_addr_out, u64 range_size) {
+                         const VAddr buffer_addr = buffer.CpuAddr();
+                         const auto add_download = [&](VAddr start, VAddr end) {
+                             const u64 new_offset = start - buffer_addr;
+@@ -944,92 +523,142 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
+                                 buffer_id,
+                             });
+                             // Align up to avoid cache conflicts
+-                            constexpr u64 align = 8ULL;
++                            constexpr u64 align = 64ULL;
+                             constexpr u64 mask = ~(align - 1ULL);
+                             total_size_bytes += (new_size + align - 1) & mask;
+                             largest_copy = std::max(largest_copy, new_size);
+                         };
+ 
+-                        const VAddr start_address = buffer_addr + range_offset;
+-                        const VAddr end_address = start_address + range_size;
+-                        ForEachWrittenRange(start_address, range_size, add_download);
+-                        const IntervalType subtract_interval{start_address, end_address};
+-                        common_ranges.subtract(subtract_interval);
++                        ForEachInRangeSet(common_ranges, cpu_addr_out, range_size, add_download);
+                     });
+             });
+         }
+     }
+     committed_ranges.clear();
+     if (downloads.empty()) {
++        if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
++            if (active_async_buffers) {
++                async_buffers.emplace_back(std::optional<Async_Buffer>{});
++            }
++        }
+         return;
+     }
+-    if constexpr (USE_MEMORY_MAPS) {
+-        auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
+-        runtime.PreCopyBarrier();
+-        for (auto& [copy, buffer_id] : downloads) {
+-            // Have in mind the staging buffer offset for the copy
+-            copy.dst_offset += download_staging.offset;
+-            const std::array copies{copy};
+-            runtime.CopyBuffer(download_staging.buffer, slot_buffers[buffer_id], copies, false);
+-        }
+-        runtime.PostCopyBarrier();
+-        runtime.Finish();
+-        for (const auto& [copy, buffer_id] : downloads) {
+-            const Buffer& buffer = slot_buffers[buffer_id];
+-            const VAddr cpu_addr = buffer.CpuAddr() + copy.src_offset;
+-            // Undo the modified offset
+-            const u64 dst_offset = copy.dst_offset - download_staging.offset;
+-            const u8* read_mapped_memory = download_staging.mapped_span.data() + dst_offset;
+-            cpu_memory.WriteBlockUnsafe(cpu_addr, read_mapped_memory, copy.size);
++    if (active_async_buffers) {
++        if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
++            auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
++            boost::container::small_vector<BufferCopy, 4> normalized_copies;
++            IntervalSet new_async_range{};
++            runtime.PreCopyBarrier();
++            for (auto& [copy, buffer_id] : downloads) {
++                copy.dst_offset += download_staging.offset;
++                const std::array copies{copy};
++                BufferCopy second_copy{copy};
++                Buffer& buffer = slot_buffers[buffer_id];
++                second_copy.src_offset = static_cast<size_t>(buffer.CpuAddr()) + copy.src_offset;
++                VAddr orig_cpu_addr = static_cast<VAddr>(second_copy.src_offset);
++                const IntervalType base_interval{orig_cpu_addr, orig_cpu_addr + copy.size};
++                async_downloads += std::make_pair(base_interval, 1);
++                runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
++                normalized_copies.push_back(second_copy);
++            }
++            runtime.PostCopyBarrier();
++            pending_downloads.emplace_back(std::move(normalized_copies));
++            async_buffers.emplace_back(download_staging);
++        } else {
++            committed_ranges.clear();
++            uncommitted_ranges.clear();
+         }
+     } else {
+-        const std::span<u8> immediate_buffer = ImmediateBuffer(largest_copy);
+-        for (const auto& [copy, buffer_id] : downloads) {
+-            Buffer& buffer = slot_buffers[buffer_id];
+-            buffer.ImmediateDownload(copy.src_offset, immediate_buffer.subspan(0, copy.size));
+-            const VAddr cpu_addr = buffer.CpuAddr() + copy.src_offset;
+-            cpu_memory.WriteBlockUnsafe(cpu_addr, immediate_buffer.data(), copy.size);
++        if constexpr (USE_MEMORY_MAPS) {
++            auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
++            runtime.PreCopyBarrier();
++            for (auto& [copy, buffer_id] : downloads) {
++                // Have in mind the staging buffer offset for the copy
++                copy.dst_offset += download_staging.offset;
++                const std::array copies{copy};
++                runtime.CopyBuffer(download_staging.buffer, slot_buffers[buffer_id], copies, false);
++            }
++            runtime.PostCopyBarrier();
++            runtime.Finish();
++            for (const auto& [copy, buffer_id] : downloads) {
++                const Buffer& buffer = slot_buffers[buffer_id];
++                const VAddr cpu_addr = buffer.CpuAddr() + copy.src_offset;
++                // Undo the modified offset
++                const u64 dst_offset = copy.dst_offset - download_staging.offset;
++                const u8* read_mapped_memory = download_staging.mapped_span.data() + dst_offset;
++                cpu_memory.WriteBlockUnsafe(cpu_addr, read_mapped_memory, copy.size);
++            }
++        } else {
++            const std::span<u8> immediate_buffer = ImmediateBuffer(largest_copy);
++            for (const auto& [copy, buffer_id] : downloads) {
++                Buffer& buffer = slot_buffers[buffer_id];
++                buffer.ImmediateDownload(copy.src_offset, immediate_buffer.subspan(0, copy.size));
++                const VAddr cpu_addr = buffer.CpuAddr() + copy.src_offset;
++                cpu_memory.WriteBlockUnsafe(cpu_addr, immediate_buffer.data(), copy.size);
++            }
+         }
+     }
+ }
+ 
+ template <class P>
+ void BufferCache<P>::CommitAsyncFlushes() {
+-    if (Settings::values.gpu_accuracy.GetValue() == Settings::GPUAccuracy::High) {
+-        CommitAsyncFlushesHigh();
+-    } else {
+-        uncommitted_ranges.clear();
+-        committed_ranges.clear();
+-    }
++    CommitAsyncFlushesHigh();
+ }
+ 
+ template <class P>
+-void BufferCache<P>::PopAsyncFlushes() {}
++void BufferCache<P>::PopAsyncFlushes() {
++    MICROPROFILE_SCOPE(GPU_DownloadMemory);
++    PopAsyncBuffers();
++}
+ 
+ template <class P>
+-bool BufferCache<P>::IsRegionGpuModified(VAddr addr, size_t size) {
+-    const u64 page_end = Common::DivCeil(addr + size, YUZU_PAGESIZE);
+-    for (u64 page = addr >> YUZU_PAGEBITS; page < page_end;) {
+-        const BufferId image_id = page_table[page];
+-        if (!image_id) {
+-            ++page;
+-            continue;
+-        }
+-        Buffer& buffer = slot_buffers[image_id];
+-        if (buffer.IsRegionGpuModified(addr, size)) {
+-            return true;
++void BufferCache<P>::PopAsyncBuffers() {
++    if (async_buffers.empty()) {
++        return;
++    }
++    if (!async_buffers.front().has_value()) {
++        async_buffers.pop_front();
++        return;
++    }
++    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
++        auto& downloads = pending_downloads.front();
++        auto& async_buffer = async_buffers.front();
++        u8* base = async_buffer->mapped_span.data();
++        const size_t base_offset = async_buffer->offset;
++        for (const auto& copy : downloads) {
++            const VAddr cpu_addr = static_cast<VAddr>(copy.src_offset);
++            const u64 dst_offset = copy.dst_offset - base_offset;
++            const u8* read_mapped_memory = base + dst_offset;
++            ForEachInOverlapCounter(
++                async_downloads, cpu_addr, copy.size, [&](VAddr start, VAddr end, int count) {
++                    cpu_memory.WriteBlockUnsafe(start, &read_mapped_memory[start - cpu_addr],
++                                                end - start);
++                    if (count == 1) {
++                        const IntervalType base_interval{start, end};
++                        common_ranges.subtract(base_interval);
++                    }
++                });
++            const IntervalType subtract_interval{cpu_addr, cpu_addr + copy.size};
++            RemoveEachInOverlapCounter(async_downloads, subtract_interval, -1);
+         }
+-        const VAddr end_addr = buffer.CpuAddr() + buffer.SizeBytes();
+-        page = Common::DivCeil(end_addr, YUZU_PAGESIZE);
++        async_buffers_death_ring.emplace_back(*async_buffer);
++        async_buffers.pop_front();
++        pending_downloads.pop_front();
+     }
+-    return false;
++}
++
++template <class P>
++bool BufferCache<P>::IsRegionGpuModified(VAddr addr, size_t size) {
++    bool is_dirty = false;
++    ForEachInRangeSet(common_ranges, addr, size, [&](VAddr, VAddr) { is_dirty = true; });
++    return is_dirty;
+ }
+ 
+ template <class P>
+ bool BufferCache<P>::IsRegionRegistered(VAddr addr, size_t size) {
+     const VAddr end_addr = addr + size;
+-    const u64 page_end = Common::DivCeil(end_addr, YUZU_PAGESIZE);
+-    for (u64 page = addr >> YUZU_PAGEBITS; page < page_end;) {
++    const u64 page_end = Common::DivCeil(end_addr, PAGE_SIZE);
++    for (u64 page = addr >> PAGE_BITS; page < page_end;) {
+         const BufferId buffer_id = page_table[page];
+         if (!buffer_id) {
+             ++page;
+@@ -1041,28 +670,14 @@ bool BufferCache<P>::IsRegionRegistered(VAddr addr, size_t size) {
+         if (buf_start_addr < end_addr && addr < buf_end_addr) {
+             return true;
+         }
+-        page = Common::DivCeil(end_addr, YUZU_PAGESIZE);
++        page = Common::DivCeil(end_addr, PAGE_SIZE);
+     }
+     return false;
+ }
+ 
+ template <class P>
+ bool BufferCache<P>::IsRegionCpuModified(VAddr addr, size_t size) {
+-    const u64 page_end = Common::DivCeil(addr + size, YUZU_PAGESIZE);
+-    for (u64 page = addr >> YUZU_PAGEBITS; page < page_end;) {
+-        const BufferId image_id = page_table[page];
+-        if (!image_id) {
+-            ++page;
+-            continue;
+-        }
+-        Buffer& buffer = slot_buffers[image_id];
+-        if (buffer.IsRegionCpuModified(addr, size)) {
+-            return true;
+-        }
+-        const VAddr end_addr = buffer.CpuAddr() + buffer.SizeBytes();
+-        page = Common::DivCeil(end_addr, YUZU_PAGESIZE);
+-    }
+-    return false;
++    return memory_tracker.IsRegionCpuModified(addr, size);
+ }
+ 
+ template <class P>
+@@ -1072,7 +687,7 @@ void BufferCache<P>::BindHostIndexBuffer() {
+     const u32 offset = buffer.Offset(index_buffer.cpu_addr);
+     const u32 size = index_buffer.size;
+     const auto& draw_state = maxwell3d->draw_manager->GetDrawState();
+-    if (!draw_state.inline_index_draw_indexes.empty()) {
++    if (!draw_state.inline_index_draw_indexes.empty()) [[unlikely]] {
+         if constexpr (USE_MEMORY_MAPS) {
+             auto upload_staging = runtime.UploadStagingBuffer(size);
+             std::array<BufferCopy, 1> copies{
+@@ -1155,7 +770,7 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32
+     TouchBuffer(buffer, binding.buffer_id);
+     const bool use_fast_buffer = binding.buffer_id != NULL_BUFFER_ID &&
+                                  size <= uniform_buffer_skip_cache_size &&
+-                                 !buffer.IsRegionGpuModified(cpu_addr, size);
++                                 !memory_tracker.IsRegionGpuModified(cpu_addr, size);
+     if (use_fast_buffer) {
+         if constexpr (IS_OPENGL) {
+             if (runtime.HasFastBufferSubData()) {
+@@ -1378,27 +993,36 @@ void BufferCache<P>::UpdateIndexBuffer() {
+     // We have to check for the dirty flags and index count
+     // The index count is currently changed without updating the dirty flags
+     const auto& draw_state = maxwell3d->draw_manager->GetDrawState();
+-    const auto& index_array = draw_state.index_buffer;
++    const auto& index_buffer_ref = draw_state.index_buffer;
+     auto& flags = maxwell3d->dirty.flags;
+     if (!flags[Dirty::IndexBuffer]) {
+         return;
+     }
+     flags[Dirty::IndexBuffer] = false;
+-    last_index_count = index_array.count;
+-    if (!draw_state.inline_index_draw_indexes.empty()) {
++    if (!draw_state.inline_index_draw_indexes.empty()) [[unlikely]] {
+         auto inline_index_size = static_cast<u32>(draw_state.inline_index_draw_indexes.size());
++        u32 buffer_size = Common::AlignUp(inline_index_size, PAGE_SIZE);
++        if (inline_buffer_id == NULL_BUFFER_ID) [[unlikely]] {
++            inline_buffer_id = CreateBuffer(0, buffer_size);
++        }
++        if (slot_buffers[inline_buffer_id].SizeBytes() < buffer_size) [[unlikely]] {
++            slot_buffers.erase(inline_buffer_id);
++            inline_buffer_id = CreateBuffer(0, buffer_size);
++        }
+         index_buffer = Binding{
+             .cpu_addr = 0,
+             .size = inline_index_size,
+-            .buffer_id = CreateBuffer(0, inline_index_size),
++            .buffer_id = inline_buffer_id,
+         };
+         return;
+     }
+-    const GPUVAddr gpu_addr_begin = index_array.StartAddress();
+-    const GPUVAddr gpu_addr_end = index_array.EndAddress();
++
++    const GPUVAddr gpu_addr_begin = index_buffer_ref.StartAddress();
++    const GPUVAddr gpu_addr_end = index_buffer_ref.EndAddress();
+     const std::optional<VAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
+     const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
+-    const u32 draw_size = (index_array.count + index_array.first) * index_array.FormatSizeInBytes();
++    const u32 draw_size =
++        (index_buffer_ref.count + index_buffer_ref.first) * index_buffer_ref.FormatSizeInBytes();
+     const u32 size = std::min(address_size, draw_size);
+     if (size == 0 || !cpu_addr) {
+         index_buffer = NULL_BINDING;
+@@ -1434,17 +1058,15 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
+     const GPUVAddr gpu_addr_begin = array.Address();
+     const GPUVAddr gpu_addr_end = limit.Address() + 1;
+     const std::optional<VAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
+-    u32 address_size = static_cast<u32>(
+-        std::min(gpu_addr_end - gpu_addr_begin, static_cast<u64>(std::numeric_limits<u32>::max())));
+-    if (array.enable == 0 || address_size == 0 || !cpu_addr) {
++    const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
++    u32 size = address_size; // TODO: Analyze stride and number of vertices
++    if (array.enable == 0 || size == 0 || !cpu_addr) {
+         vertex_buffers[index] = NULL_BINDING;
+         return;
+     }
+     if (!gpu_memory->IsWithinGPUAddressRange(gpu_addr_end)) {
+-        address_size =
+-            static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr_begin, address_size));
++        size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr_begin, size));
+     }
+-    const u32 size = address_size; // TODO: Analyze stride and number of vertices
+     vertex_buffers[index] = Binding{
+         .cpu_addr = *cpu_addr,
+         .size = size,
+@@ -1591,17 +1213,16 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
+ 
+ template <class P>
+ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, VAddr cpu_addr, u32 size) {
+-    Buffer& buffer = slot_buffers[buffer_id];
+-    buffer.MarkRegionAsGpuModified(cpu_addr, size);
++    memory_tracker.MarkRegionAsGpuModified(cpu_addr, size);
++
++    if (memory_tracker.IsRegionCpuModified(cpu_addr, size)) {
++        SynchronizeBuffer(slot_buffers[buffer_id], cpu_addr, size);
++    }
+ 
+     const IntervalType base_interval{cpu_addr, cpu_addr + size};
+     common_ranges.add(base_interval);
+-
+-    const bool is_async = Settings::values.use_asynchronous_gpu_emulation.GetValue();
+-    if (!is_async) {
+-        return;
+-    }
+     uncommitted_ranges.add(base_interval);
++    pending_ranges.add(base_interval);
+ }
+ 
+ template <class P>
+@@ -1609,7 +1230,7 @@ BufferId BufferCache<P>::FindBuffer(VAddr cpu_addr, u32 size) {
+     if (cpu_addr == 0) {
+         return NULL_BUFFER_ID;
+     }
+-    const u64 page = cpu_addr >> YUZU_PAGEBITS;
++    const u64 page = cpu_addr >> PAGE_BITS;
+     const BufferId buffer_id = page_table[page];
+     if (!buffer_id) {
+         return CreateBuffer(cpu_addr, size);
+@@ -1638,9 +1259,8 @@ typename BufferCache<P>::OverlapResult BufferCache<P>::ResolveOverlaps(VAddr cpu
+             .has_stream_leap = has_stream_leap,
+         };
+     }
+-    for (; cpu_addr >> YUZU_PAGEBITS < Common::DivCeil(end, YUZU_PAGESIZE);
+-         cpu_addr += YUZU_PAGESIZE) {
+-        const BufferId overlap_id = page_table[cpu_addr >> YUZU_PAGEBITS];
++    for (; cpu_addr >> PAGE_BITS < Common::DivCeil(end, PAGE_SIZE); cpu_addr += PAGE_SIZE) {
++        const BufferId overlap_id = page_table[cpu_addr >> PAGE_BITS];
+         if (!overlap_id) {
+             continue;
+         }
+@@ -1666,11 +1286,11 @@ typename BufferCache<P>::OverlapResult BufferCache<P>::ResolveOverlaps(VAddr cpu
+             // as a stream buffer. Increase the size to skip constantly recreating buffers.
+             has_stream_leap = true;
+             if (expands_right) {
+-                begin -= YUZU_PAGESIZE * 256;
++                begin -= PAGE_SIZE * 256;
+                 cpu_addr = begin;
+             }
+             if (expands_left) {
+-                end += YUZU_PAGESIZE * 256;
++                end += PAGE_SIZE * 256;
+             }
+         }
+     }
+@@ -1690,25 +1310,22 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
+     if (accumulate_stream_score) {
+         new_buffer.IncreaseStreamScore(overlap.StreamScore() + 1);
+     }
+-    std::vector<BufferCopy> copies;
++    boost::container::small_vector<BufferCopy, 1> copies;
+     const size_t dst_base_offset = overlap.CpuAddr() - new_buffer.CpuAddr();
+-    overlap.ForEachDownloadRange([&](u64 begin, u64 range_size) {
+-        copies.push_back(BufferCopy{
+-            .src_offset = begin,
+-            .dst_offset = dst_base_offset + begin,
+-            .size = range_size,
+-        });
+-        new_buffer.UnmarkRegionAsCpuModified(begin, range_size);
+-        new_buffer.MarkRegionAsGpuModified(begin, range_size);
++    copies.push_back(BufferCopy{
++        .src_offset = 0,
++        .dst_offset = dst_base_offset,
++        .size = overlap.SizeBytes(),
+     });
+-    if (!copies.empty()) {
+-        runtime.CopyBuffer(slot_buffers[new_buffer_id], overlap, copies);
+-    }
+-    DeleteBuffer(overlap_id);
++    runtime.CopyBuffer(new_buffer, overlap, copies);
++    DeleteBuffer(overlap_id, true);
+ }
+ 
+ template <class P>
+ BufferId BufferCache<P>::CreateBuffer(VAddr cpu_addr, u32 wanted_size) {
++    VAddr cpu_addr_end = Common::AlignUp(cpu_addr + wanted_size, PAGE_SIZE);
++    cpu_addr = Common::AlignDown(cpu_addr, PAGE_SIZE);
++    wanted_size = static_cast<u32>(cpu_addr_end - cpu_addr);
+     const OverlapResult overlap = ResolveOverlaps(cpu_addr, wanted_size);
+     const u32 size = static_cast<u32>(overlap.end - overlap.begin);
+     const BufferId new_buffer_id = slot_buffers.insert(runtime, rasterizer, overlap.begin, size);
+@@ -1718,7 +1335,7 @@ BufferId BufferCache<P>::CreateBuffer(VAddr cpu_addr, u32 wanted_size) {
+         JoinOverlap(new_buffer_id, overlap_id, !overlap.has_stream_leap);
+     }
+     Register(new_buffer_id);
+-    TouchBuffer(slot_buffers[new_buffer_id], new_buffer_id);
++    TouchBuffer(new_buffer, new_buffer_id);
+     return new_buffer_id;
+ }
+ 
+@@ -1746,8 +1363,8 @@ void BufferCache<P>::ChangeRegister(BufferId buffer_id) {
+     }
+     const VAddr cpu_addr_begin = buffer.CpuAddr();
+     const VAddr cpu_addr_end = cpu_addr_begin + size;
+-    const u64 page_begin = cpu_addr_begin / YUZU_PAGESIZE;
+-    const u64 page_end = Common::DivCeil(cpu_addr_end, YUZU_PAGESIZE);
++    const u64 page_begin = cpu_addr_begin / PAGE_SIZE;
++    const u64 page_end = Common::DivCeil(cpu_addr_end, PAGE_SIZE);
+     for (u64 page = page_begin; page != page_end; ++page) {
+         if constexpr (insert) {
+             page_table[page] = buffer_id;
+@@ -1766,9 +1383,6 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
+ 
+ template <class P>
+ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, VAddr cpu_addr, u32 size) {
+-    if (buffer.CpuAddr() == 0) {
+-        return true;
+-    }
+     return SynchronizeBufferImpl(buffer, cpu_addr, size);
+ }
+ 
+@@ -1777,10 +1391,11 @@ bool BufferCache<P>::SynchronizeBufferImpl(Buffer& buffer, VAddr cpu_addr, u32 s
+     boost::container::small_vector<BufferCopy, 4> copies;
+     u64 total_size_bytes = 0;
+     u64 largest_copy = 0;
+-    buffer.ForEachUploadRange(cpu_addr, size, [&](u64 range_offset, u64 range_size) {
++    VAddr buffer_start = buffer.CpuAddr();
++    memory_tracker.ForEachUploadRange(cpu_addr, size, [&](u64 cpu_addr_out, u64 range_size) {
+         copies.push_back(BufferCopy{
+             .src_offset = total_size_bytes,
+-            .dst_offset = range_offset,
++            .dst_offset = cpu_addr_out - buffer_start,
+             .size = range_size,
+         });
+         total_size_bytes += range_size;
+@@ -1794,6 +1409,51 @@ bool BufferCache<P>::SynchronizeBufferImpl(Buffer& buffer, VAddr cpu_addr, u32 s
+     return false;
+ }
+ 
++template <class P>
++bool BufferCache<P>::SynchronizeBufferNoModified(Buffer& buffer, VAddr cpu_addr, u32 size) {
++    boost::container::small_vector<BufferCopy, 4> copies;
++    u64 total_size_bytes = 0;
++    u64 largest_copy = 0;
++    IntervalSet found_sets{};
++    auto make_copies = [&] {
++        for (auto& interval : found_sets) {
++            const std::size_t sub_size = interval.upper() - interval.lower();
++            const VAddr cpu_addr_ = interval.lower();
++            copies.push_back(BufferCopy{
++                .src_offset = total_size_bytes,
++                .dst_offset = cpu_addr_ - buffer.CpuAddr(),
++                .size = sub_size,
++            });
++            total_size_bytes += sub_size;
++            largest_copy = std::max(largest_copy, sub_size);
++        }
++        const std::span<BufferCopy> copies_span(copies.data(), copies.size());
++        UploadMemory(buffer, total_size_bytes, largest_copy, copies_span);
++    };
++    memory_tracker.ForEachUploadRange(cpu_addr, size, [&](u64 cpu_addr_out, u64 range_size) {
++        const VAddr base_adr = cpu_addr_out;
++        const VAddr end_adr = base_adr + range_size;
++        const IntervalType add_interval{base_adr, end_adr};
++        found_sets.add(add_interval);
++    });
++    if (found_sets.empty()) {
++        return true;
++    }
++    const IntervalType search_interval{cpu_addr, cpu_addr + size};
++    auto it = common_ranges.lower_bound(search_interval);
++    auto it_end = common_ranges.upper_bound(search_interval);
++    if (it == common_ranges.end()) {
++        make_copies();
++        return false;
++    }
++    while (it != it_end) {
++        found_sets.subtract(*it);
++        it++;
++    }
++    make_copies();
++    return false;
++}
++
+ template <class P>
+ void BufferCache<P>::UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
+                                   std::span<BufferCopy> copies) {
+@@ -1805,39 +1465,45 @@ void BufferCache<P>::UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 larg
+ }
+ 
+ template <class P>
+-void BufferCache<P>::ImmediateUploadMemory(Buffer& buffer, u64 largest_copy,
+-                                           std::span<const BufferCopy> copies) {
+-    std::span<u8> immediate_buffer;
+-    for (const BufferCopy& copy : copies) {
+-        std::span<const u8> upload_span;
+-        const VAddr cpu_addr = buffer.CpuAddr() + copy.dst_offset;
+-        if (IsRangeGranular(cpu_addr, copy.size)) {
+-            upload_span = std::span(cpu_memory.GetPointer(cpu_addr), copy.size);
+-        } else {
+-            if (immediate_buffer.empty()) {
+-                immediate_buffer = ImmediateBuffer(largest_copy);
++void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
++                                           [[maybe_unused]] u64 largest_copy,
++                                           [[maybe_unused]] std::span<const BufferCopy> copies) {
++    if constexpr (!USE_MEMORY_MAPS) {
++        std::span<u8> immediate_buffer;
++        for (const BufferCopy& copy : copies) {
++            std::span<const u8> upload_span;
++            const VAddr cpu_addr = buffer.CpuAddr() + copy.dst_offset;
++            if (IsRangeGranular(cpu_addr, copy.size)) {
++                upload_span = std::span(cpu_memory.GetPointer(cpu_addr), copy.size);
++            } else {
++                if (immediate_buffer.empty()) {
++                    immediate_buffer = ImmediateBuffer(largest_copy);
++                }
++                cpu_memory.ReadBlockUnsafe(cpu_addr, immediate_buffer.data(), copy.size);
++                upload_span = immediate_buffer.subspan(0, copy.size);
+             }
+-            cpu_memory.ReadBlockUnsafe(cpu_addr, immediate_buffer.data(), copy.size);
+-            upload_span = immediate_buffer.subspan(0, copy.size);
++            buffer.ImmediateUpload(copy.dst_offset, upload_span);
+         }
+-        buffer.ImmediateUpload(copy.dst_offset, upload_span);
+     }
+ }
+ 
+ template <class P>
+-void BufferCache<P>::MappedUploadMemory(Buffer& buffer, u64 total_size_bytes,
+-                                        std::span<BufferCopy> copies) {
+-    auto upload_staging = runtime.UploadStagingBuffer(total_size_bytes);
+-    const std::span<u8> staging_pointer = upload_staging.mapped_span;
+-    for (BufferCopy& copy : copies) {
+-        u8* const src_pointer = staging_pointer.data() + copy.src_offset;
+-        const VAddr cpu_addr = buffer.CpuAddr() + copy.dst_offset;
+-        cpu_memory.ReadBlockUnsafe(cpu_addr, src_pointer, copy.size);
++void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
++                                        [[maybe_unused]] u64 total_size_bytes,
++                                        [[maybe_unused]] std::span<BufferCopy> copies) {
++    if constexpr (USE_MEMORY_MAPS) {
++        auto upload_staging = runtime.UploadStagingBuffer(total_size_bytes);
++        const std::span<u8> staging_pointer = upload_staging.mapped_span;
++        for (BufferCopy& copy : copies) {
++            u8* const src_pointer = staging_pointer.data() + copy.src_offset;
++            const VAddr cpu_addr = buffer.CpuAddr() + copy.dst_offset;
++            cpu_memory.ReadBlockUnsafe(cpu_addr, src_pointer, copy.size);
+ 
+-        // Apply the staging offset
+-        copy.src_offset += upload_staging.offset;
++            // Apply the staging offset
++            copy.src_offset += upload_staging.offset;
++        }
++        runtime.CopyBuffer(buffer, upload_staging.buffer, copies);
+     }
+-    runtime.CopyBuffer(buffer, upload_staging.buffer, copies);
+ }
+ 
+ template <class P>
+@@ -1847,7 +1513,9 @@ bool BufferCache<P>::InlineMemory(VAddr dest_address, size_t copy_size,
+     if (!is_dirty) {
+         return false;
+     }
+-    if (!IsRegionGpuModified(dest_address, copy_size)) {
++    VAddr aligned_start = Common::AlignDown(dest_address, YUZU_PAGESIZE);
++    VAddr aligned_end = Common::AlignUp(dest_address + copy_size, YUZU_PAGESIZE);
++    if (!IsRegionGpuModified(aligned_start, aligned_end - aligned_start)) {
+         return false;
+     }
+ 
+@@ -1886,30 +1554,31 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, VAddr cpu_addr, u64 si
+     boost::container::small_vector<BufferCopy, 1> copies;
+     u64 total_size_bytes = 0;
+     u64 largest_copy = 0;
+-    buffer.ForEachDownloadRangeAndClear(cpu_addr, size, [&](u64 range_offset, u64 range_size) {
+-        const VAddr buffer_addr = buffer.CpuAddr();
+-        const auto add_download = [&](VAddr start, VAddr end) {
+-            const u64 new_offset = start - buffer_addr;
+-            const u64 new_size = end - start;
+-            copies.push_back(BufferCopy{
+-                .src_offset = new_offset,
+-                .dst_offset = total_size_bytes,
+-                .size = new_size,
+-            });
+-            // Align up to avoid cache conflicts
+-            constexpr u64 align = 256ULL;
+-            constexpr u64 mask = ~(align - 1ULL);
+-            total_size_bytes += (new_size + align - 1) & mask;
+-            largest_copy = std::max(largest_copy, new_size);
+-        };
+-
+-        const VAddr start_address = buffer_addr + range_offset;
+-        const VAddr end_address = start_address + range_size;
+-        ForEachWrittenRange(start_address, range_size, add_download);
+-        const IntervalType subtract_interval{start_address, end_address};
+-        ClearDownload(subtract_interval);
+-        common_ranges.subtract(subtract_interval);
+-    });
++    memory_tracker.ForEachDownloadRangeAndClear(
++        cpu_addr, size, [&](u64 cpu_addr_out, u64 range_size) {
++            const VAddr buffer_addr = buffer.CpuAddr();
++            const auto add_download = [&](VAddr start, VAddr end) {
++                const u64 new_offset = start - buffer_addr;
++                const u64 new_size = end - start;
++                copies.push_back(BufferCopy{
++                    .src_offset = new_offset,
++                    .dst_offset = total_size_bytes,
++                    .size = new_size,
++                });
++                // Align up to avoid cache conflicts
++                constexpr u64 align = 64ULL;
++                constexpr u64 mask = ~(align - 1ULL);
++                total_size_bytes += (new_size + align - 1) & mask;
++                largest_copy = std::max(largest_copy, new_size);
++            };
++
++            const VAddr start_address = cpu_addr_out;
++            const VAddr end_address = start_address + range_size;
++            ForEachInRangeSet(common_ranges, start_address, range_size, add_download);
++            const IntervalType subtract_interval{start_address, end_address};
++            ClearDownload(subtract_interval);
++            common_ranges.subtract(subtract_interval);
++        });
+     if (total_size_bytes == 0) {
+         return;
+     }
+@@ -1943,7 +1612,7 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, VAddr cpu_addr, u64 si
+ }
+ 
+ template <class P>
+-void BufferCache<P>::DeleteBuffer(BufferId buffer_id) {
++void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+     const auto scalar_replace = [buffer_id](Binding& binding) {
+         if (binding.buffer_id == buffer_id) {
+             binding.buffer_id = BufferId{};
+@@ -1962,8 +1631,10 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id) {
+     std::erase(cached_write_buffer_ids, buffer_id);
+ 
+     // Mark the whole buffer as CPU written to stop tracking CPU writes
+-    Buffer& buffer = slot_buffers[buffer_id];
+-    buffer.MarkRegionAsCpuModified(buffer.CpuAddr(), buffer.SizeBytes());
++    if (!do_not_mark) {
++        Buffer& buffer = slot_buffers[buffer_id];
++        memory_tracker.MarkRegionAsCpuModified(buffer.CpuAddr(), buffer.SizeBytes());
++    }
+ 
+     Unregister(buffer_id);
+     delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
+@@ -2011,7 +1682,7 @@ typename BufferCache<P>::Binding BufferCache<P>::StorageBufferBinding(GPUVAddr s
+         LOG_WARNING(HW_GPU, "Failed to find storage buffer for cbuf index {}", cbuf_index);
+         return NULL_BINDING;
+     }
+-    const VAddr cpu_end = Common::AlignUp(*cpu_addr + size, Core::Memory::YUZU_PAGESIZE);
++    const VAddr cpu_end = Common::AlignUp(*cpu_addr + size, YUZU_PAGESIZE);
+     const Binding binding{
+         .cpu_addr = *cpu_addr,
+         .size = is_written ? size : static_cast<u32>(cpu_end - *cpu_addr),
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+new file mode 100644
+index 000000000000..339582f3cbb1
+--- /dev/null
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -0,0 +1,582 @@
++// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include <numeric>
++#include <span>
++#include <unordered_map>
++#include <vector>
++
++#include <boost/container/small_vector.hpp>
++#define BOOST_NO_MT
++#include <boost/pool/detail/mutex.hpp>
++#undef BOOST_NO_MT
++#include <boost/icl/interval.hpp>
++#include <boost/icl/interval_base_set.hpp>
++#include <boost/icl/interval_set.hpp>
++#include <boost/icl/split_interval_map.hpp>
++#include <boost/pool/pool.hpp>
++#include <boost/pool/pool_alloc.hpp>
++#include <boost/pool/poolfwd.hpp>
++
++#include "common/common_types.h"
++#include "common/div_ceil.h"
++#include "common/literals.h"
++#include "common/lru_cache.h"
++#include "common/microprofile.h"
++#include "common/scope_exit.h"
++#include "common/settings.h"
++#include "core/memory.h"
++#include "video_core/buffer_cache/buffer_base.h"
++#include "video_core/control/channel_state_cache.h"
++#include "video_core/delayed_destruction_ring.h"
++#include "video_core/dirty_flags.h"
++#include "video_core/engines/draw_manager.h"
++#include "video_core/engines/kepler_compute.h"
++#include "video_core/engines/maxwell_3d.h"
++#include "video_core/memory_manager.h"
++#include "video_core/rasterizer_interface.h"
++#include "video_core/surface.h"
++#include "video_core/texture_cache/slot_vector.h"
++#include "video_core/texture_cache/types.h"
++
++namespace boost {
++template <typename T>
++class fast_pool_allocator<T, default_user_allocator_new_delete, details::pool::null_mutex, 4096, 0>;
++}
++
++namespace VideoCommon {
++
++MICROPROFILE_DECLARE(GPU_PrepareBuffers);
++MICROPROFILE_DECLARE(GPU_BindUploadBuffers);
++MICROPROFILE_DECLARE(GPU_DownloadMemory);
++
++using BufferId = SlotId;
++
++using VideoCore::Surface::PixelFormat;
++using namespace Common::Literals;
++
++constexpr u32 NUM_VERTEX_BUFFERS = 32;
++constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
++constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
++constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
++constexpr u32 NUM_STORAGE_BUFFERS = 16;
++constexpr u32 NUM_TEXTURE_BUFFERS = 16;
++constexpr u32 NUM_STAGES = 5;
++
++using UniformBufferSizes = std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>;
++using ComputeUniformBufferSizes = std::array<u32, NUM_COMPUTE_UNIFORM_BUFFERS>;
++
++enum class ObtainBufferSynchronize : u32 {
++    NoSynchronize = 0,
++    FullSynchronize = 1,
++    SynchronizeNoDirty = 2,
++};
++
++enum class ObtainBufferOperation : u32 {
++    DoNothing = 0,
++    MarkAsWritten = 1,
++    DiscardWrite = 2,
++    MarkQuery = 3,
++};
++
++template <typename P>
++class BufferCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
++    // Page size for caching purposes.
++    // This is unrelated to the CPU page size and it can be changed as it seems optimal.
++    static constexpr u32 PAGE_BITS = 16;
++    static constexpr u64 PAGE_SIZE = u64{1} << PAGE_BITS;
++    static constexpr u32 CPU_PAGE_BITS = 12;
++    static constexpr u64 CPU_PAGE_SIZE = u64{1} << CPU_PAGE_BITS;
++
++    static constexpr bool IS_OPENGL = P::IS_OPENGL;
++    static constexpr bool HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS =
++        P::HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS;
++    static constexpr bool HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT =
++        P::HAS_FULL_INDEX_AND_PRIMITIVE_SUPPORT;
++    static constexpr bool NEEDS_BIND_UNIFORM_INDEX = P::NEEDS_BIND_UNIFORM_INDEX;
++    static constexpr bool NEEDS_BIND_STORAGE_INDEX = P::NEEDS_BIND_STORAGE_INDEX;
++    static constexpr bool USE_MEMORY_MAPS = P::USE_MEMORY_MAPS;
++    static constexpr bool SEPARATE_IMAGE_BUFFERS_BINDINGS = P::SEPARATE_IMAGE_BUFFER_BINDINGS;
++    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = P::IMPLEMENTS_ASYNC_DOWNLOADS;
++
++    static constexpr BufferId NULL_BUFFER_ID{0};
++
++    static constexpr s64 DEFAULT_EXPECTED_MEMORY = 512_MiB;
++    static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB;
++    static constexpr s64 TARGET_THRESHOLD = 4_GiB;
++
++    // Debug Flags.
++
++    static constexpr bool DISABLE_DOWNLOADS = true;
++
++    using Maxwell = Tegra::Engines::Maxwell3D::Regs;
++
++    using Runtime = typename P::Runtime;
++    using Buffer = typename P::Buffer;
++    using Async_Buffer = typename P::Async_Buffer;
++    using MemoryTracker = typename P::MemoryTracker;
++
++    using IntervalCompare = std::less<VAddr>;
++    using IntervalInstance = boost::icl::interval_type_default<VAddr, std::less>;
++    using IntervalAllocator = boost::fast_pool_allocator<VAddr>;
++    using IntervalSet = boost::icl::interval_set<VAddr>;
++    using IntervalType = typename IntervalSet::interval_type;
++
++    template <typename Type>
++    struct counter_add_functor : public boost::icl::identity_based_inplace_combine<Type> {
++        // types
++        typedef counter_add_functor<Type> type;
++        typedef boost::icl::identity_based_inplace_combine<Type> base_type;
++
++        // public member functions
++        void operator()(Type& current, const Type& added) const {
++            current += added;
++            if (current < base_type::identity_element()) {
++                current = base_type::identity_element();
++            }
++        }
++
++        // public static functions
++        static void version(Type&){};
++    };
++
++    using OverlapCombine = counter_add_functor<int>;
++    using OverlapSection = boost::icl::inter_section<int>;
++    using OverlapCounter = boost::icl::split_interval_map<VAddr, int>;
++
++    struct Empty {};
++
++    struct OverlapResult {
++        std::vector<BufferId> ids;
++        VAddr begin;
++        VAddr end;
++        bool has_stream_leap = false;
++    };
++
++    struct Binding {
++        VAddr cpu_addr{};
++        u32 size{};
++        BufferId buffer_id;
++    };
++
++    struct TextureBufferBinding : Binding {
++        PixelFormat format;
++    };
++
++    static constexpr Binding NULL_BINDING{
++        .cpu_addr = 0,
++        .size = 0,
++        .buffer_id = NULL_BUFFER_ID,
++    };
++
++public:
++    static constexpr u32 DEFAULT_SKIP_CACHE_SIZE = static_cast<u32>(4_KiB);
++
++    explicit BufferCache(VideoCore::RasterizerInterface& rasterizer_,
++                         Core::Memory::Memory& cpu_memory_, Runtime& runtime_);
++
++    void TickFrame();
++
++    void WriteMemory(VAddr cpu_addr, u64 size);
++
++    void CachedWriteMemory(VAddr cpu_addr, u64 size);
++
++    void DownloadMemory(VAddr cpu_addr, u64 size);
++
++    bool InlineMemory(VAddr dest_address, size_t copy_size, std::span<const u8> inlined_buffer);
++
++    void BindGraphicsUniformBuffer(size_t stage, u32 index, GPUVAddr gpu_addr, u32 size);
++
++    void DisableGraphicsUniformBuffer(size_t stage, u32 index);
++
++    void UpdateGraphicsBuffers(bool is_indexed);
++
++    void UpdateComputeBuffers();
++
++    void BindHostGeometryBuffers(bool is_indexed);
++
++    void BindHostStageBuffers(size_t stage);
++
++    void BindHostComputeBuffers();
++
++    void SetUniformBuffersState(const std::array<u32, NUM_STAGES>& mask,
++                                const UniformBufferSizes* sizes);
++
++    void SetComputeUniformBufferState(u32 mask, const ComputeUniformBufferSizes* sizes);
++
++    void UnbindGraphicsStorageBuffers(size_t stage);
++
++    void BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
++                                   bool is_written);
++
++    void UnbindGraphicsTextureBuffers(size_t stage);
++
++    void BindGraphicsTextureBuffer(size_t stage, size_t tbo_index, GPUVAddr gpu_addr, u32 size,
++                                   PixelFormat format, bool is_written, bool is_image);
++
++    void UnbindComputeStorageBuffers();
++
++    void BindComputeStorageBuffer(size_t ssbo_index, u32 cbuf_index, u32 cbuf_offset,
++                                  bool is_written);
++
++    void UnbindComputeTextureBuffers();
++
++    void BindComputeTextureBuffer(size_t tbo_index, GPUVAddr gpu_addr, u32 size, PixelFormat format,
++                                  bool is_written, bool is_image);
++
++    [[nodiscard]] std::pair<Buffer*, u32> ObtainBuffer(GPUVAddr gpu_addr, u32 size,
++                                                       ObtainBufferSynchronize sync_info,
++                                                       ObtainBufferOperation post_op);
++    void FlushCachedWrites();
++
++    /// Return true when there are uncommitted buffers to be downloaded
++    [[nodiscard]] bool HasUncommittedFlushes() const noexcept;
++
++    void AccumulateFlushes();
++
++    /// Return true when the caller should wait for async downloads
++    [[nodiscard]] bool ShouldWaitAsyncFlushes() const noexcept;
++
++    /// Commit asynchronous downloads
++    void CommitAsyncFlushes();
++    void CommitAsyncFlushesHigh();
++
++    /// Pop asynchronous downloads
++    void PopAsyncFlushes();
++    void PopAsyncBuffers();
++
++    bool DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount);
++
++    bool DMAClear(GPUVAddr src_address, u64 amount, u32 value);
++
++    /// Return true when a CPU region is modified from the GPU
++    [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size);
++
++    /// Return true when a region is registered on the cache
++    [[nodiscard]] bool IsRegionRegistered(VAddr addr, size_t size);
++
++    /// Return true when a CPU region is modified from the CPU
++    [[nodiscard]] bool IsRegionCpuModified(VAddr addr, size_t size);
++
++    void SetDrawIndirect(
++        const Tegra::Engines::DrawManager::IndirectParams* current_draw_indirect_) {
++        current_draw_indirect = current_draw_indirect_;
++    }
++
++    [[nodiscard]] std::pair<Buffer*, u32> GetDrawIndirectCount();
++
++    [[nodiscard]] std::pair<Buffer*, u32> GetDrawIndirectBuffer();
++
++    std::recursive_mutex mutex;
++    Runtime& runtime;
++
++private:
++    template <typename Func>
++    static void ForEachEnabledBit(u32 enabled_mask, Func&& func) {
++        for (u32 index = 0; enabled_mask != 0; ++index, enabled_mask >>= 1) {
++            const int disabled_bits = std::countr_zero(enabled_mask);
++            index += disabled_bits;
++            enabled_mask >>= disabled_bits;
++            func(index);
++        }
++    }
++
++    template <typename Func>
++    void ForEachBufferInRange(VAddr cpu_addr, u64 size, Func&& func) {
++        const u64 page_end = Common::DivCeil(cpu_addr + size, PAGE_SIZE);
++        for (u64 page = cpu_addr >> PAGE_BITS; page < page_end;) {
++            const BufferId buffer_id = page_table[page];
++            if (!buffer_id) {
++                ++page;
++                continue;
++            }
++            Buffer& buffer = slot_buffers[buffer_id];
++            func(buffer_id, buffer);
++
++            const VAddr end_addr = buffer.CpuAddr() + buffer.SizeBytes();
++            page = Common::DivCeil(end_addr, PAGE_SIZE);
++        }
++    }
++
++    template <typename Func>
++    void ForEachInRangeSet(IntervalSet& current_range, VAddr cpu_addr, u64 size, Func&& func) {
++        const VAddr start_address = cpu_addr;
++        const VAddr end_address = start_address + size;
++        const IntervalType search_interval{start_address, end_address};
++        auto it = current_range.lower_bound(search_interval);
++        if (it == current_range.end()) {
++            return;
++        }
++        auto end_it = current_range.upper_bound(search_interval);
++        for (; it != end_it; it++) {
++            VAddr inter_addr_end = it->upper();
++            VAddr inter_addr = it->lower();
++            if (inter_addr_end > end_address) {
++                inter_addr_end = end_address;
++            }
++            if (inter_addr < start_address) {
++                inter_addr = start_address;
++            }
++            func(inter_addr, inter_addr_end);
++        }
++    }
++
++    template <typename Func>
++    void ForEachInOverlapCounter(OverlapCounter& current_range, VAddr cpu_addr, u64 size,
++                                 Func&& func) {
++        const VAddr start_address = cpu_addr;
++        const VAddr end_address = start_address + size;
++        const IntervalType search_interval{start_address, end_address};
++        auto it = current_range.lower_bound(search_interval);
++        if (it == current_range.end()) {
++            return;
++        }
++        auto end_it = current_range.upper_bound(search_interval);
++        for (; it != end_it; it++) {
++            auto& inter = it->first;
++            VAddr inter_addr_end = inter.upper();
++            VAddr inter_addr = inter.lower();
++            if (inter_addr_end > end_address) {
++                inter_addr_end = end_address;
++            }
++            if (inter_addr < start_address) {
++                inter_addr = start_address;
++            }
++            func(inter_addr, inter_addr_end, it->second);
++        }
++    }
++
++    void RemoveEachInOverlapCounter(OverlapCounter& current_range,
++                                    const IntervalType search_interval, int subtract_value) {
++        bool any_removals = false;
++        current_range.add(std::make_pair(search_interval, subtract_value));
++        do {
++            any_removals = false;
++            auto it = current_range.lower_bound(search_interval);
++            if (it == current_range.end()) {
++                return;
++            }
++            auto end_it = current_range.upper_bound(search_interval);
++            for (; it != end_it; it++) {
++                if (it->second <= 0) {
++                    any_removals = true;
++                    current_range.erase(it);
++                    break;
++                }
++            }
++        } while (any_removals);
++    }
++
++    static bool IsRangeGranular(VAddr cpu_addr, size_t size) {
++        return (cpu_addr & ~Core::Memory::YUZU_PAGEMASK) ==
++               ((cpu_addr + size) & ~Core::Memory::YUZU_PAGEMASK);
++    }
++
++    void RunGarbageCollector();
++
++    void WaitOnAsyncFlushes(VAddr cpu_addr, u64 size);
++
++    void BindHostIndexBuffer();
++
++    void BindHostVertexBuffers();
++
++    void BindHostDrawIndirectBuffers();
++
++    void BindHostGraphicsUniformBuffers(size_t stage);
++
++    void BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 binding_index, bool needs_bind);
++
++    void BindHostGraphicsStorageBuffers(size_t stage);
++
++    void BindHostGraphicsTextureBuffers(size_t stage);
++
++    void BindHostTransformFeedbackBuffers();
++
++    void BindHostComputeUniformBuffers();
++
++    void BindHostComputeStorageBuffers();
++
++    void BindHostComputeTextureBuffers();
++
++    void DoUpdateGraphicsBuffers(bool is_indexed);
++
++    void DoUpdateComputeBuffers();
++
++    void UpdateIndexBuffer();
++
++    void UpdateVertexBuffers();
++
++    void UpdateVertexBuffer(u32 index);
++
++    void UpdateDrawIndirect();
++
++    void UpdateUniformBuffers(size_t stage);
++
++    void UpdateStorageBuffers(size_t stage);
++
++    void UpdateTextureBuffers(size_t stage);
++
++    void UpdateTransformFeedbackBuffers();
++
++    void UpdateTransformFeedbackBuffer(u32 index);
++
++    void UpdateComputeUniformBuffers();
++
++    void UpdateComputeStorageBuffers();
++
++    void UpdateComputeTextureBuffers();
++
++    void MarkWrittenBuffer(BufferId buffer_id, VAddr cpu_addr, u32 size);
++
++    [[nodiscard]] BufferId FindBuffer(VAddr cpu_addr, u32 size);
++
++    [[nodiscard]] OverlapResult ResolveOverlaps(VAddr cpu_addr, u32 wanted_size);
++
++    void JoinOverlap(BufferId new_buffer_id, BufferId overlap_id, bool accumulate_stream_score);
++
++    [[nodiscard]] BufferId CreateBuffer(VAddr cpu_addr, u32 wanted_size);
++
++    void Register(BufferId buffer_id);
++
++    void Unregister(BufferId buffer_id);
++
++    template <bool insert>
++    void ChangeRegister(BufferId buffer_id);
++
++    void TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept;
++
++    bool SynchronizeBuffer(Buffer& buffer, VAddr cpu_addr, u32 size);
++
++    bool SynchronizeBufferImpl(Buffer& buffer, VAddr cpu_addr, u32 size);
++
++    bool SynchronizeBufferNoModified(Buffer& buffer, VAddr cpu_addr, u32 size);
++
++    void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
++                      std::span<BufferCopy> copies);
++
++    void ImmediateUploadMemory(Buffer& buffer, u64 largest_copy,
++                               std::span<const BufferCopy> copies);
++
++    void MappedUploadMemory(Buffer& buffer, u64 total_size_bytes, std::span<BufferCopy> copies);
++
++    void DownloadBufferMemory(Buffer& buffer_id);
++
++    void DownloadBufferMemory(Buffer& buffer_id, VAddr cpu_addr, u64 size);
++
++    void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
++
++    void NotifyBufferDeletion();
++
++    [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
++                                               bool is_written) const;
++
++    [[nodiscard]] TextureBufferBinding GetTextureBufferBinding(GPUVAddr gpu_addr, u32 size,
++                                                               PixelFormat format);
++
++    [[nodiscard]] std::span<const u8> ImmediateBufferWithData(VAddr cpu_addr, size_t size);
++
++    [[nodiscard]] std::span<u8> ImmediateBuffer(size_t wanted_capacity);
++
++    [[nodiscard]] bool HasFastUniformBufferBound(size_t stage, u32 binding_index) const noexcept;
++
++    void ClearDownload(IntervalType subtract_interval);
++
++    VideoCore::RasterizerInterface& rasterizer;
++    Core::Memory::Memory& cpu_memory;
++
++    SlotVector<Buffer> slot_buffers;
++    DelayedDestructionRing<Buffer, 8> delayed_destruction_ring;
++
++    const Tegra::Engines::DrawManager::IndirectParams* current_draw_indirect{};
++
++    u32 last_index_count = 0;
++
++    Binding index_buffer;
++    std::array<Binding, NUM_VERTEX_BUFFERS> vertex_buffers;
++    std::array<std::array<Binding, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES> uniform_buffers;
++    std::array<std::array<Binding, NUM_STORAGE_BUFFERS>, NUM_STAGES> storage_buffers;
++    std::array<std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS>, NUM_STAGES> texture_buffers;
++    std::array<Binding, NUM_TRANSFORM_FEEDBACK_BUFFERS> transform_feedback_buffers;
++    Binding count_buffer_binding;
++    Binding indirect_buffer_binding;
++
++    std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
++    std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
++    std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
++
++    std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
++    u32 enabled_compute_uniform_buffer_mask = 0;
++
++    const UniformBufferSizes* uniform_buffer_sizes{};
++    const ComputeUniformBufferSizes* compute_uniform_buffer_sizes{};
++
++    std::array<u32, NUM_STAGES> enabled_storage_buffers{};
++    std::array<u32, NUM_STAGES> written_storage_buffers{};
++    u32 enabled_compute_storage_buffers = 0;
++    u32 written_compute_storage_buffers = 0;
++
++    std::array<u32, NUM_STAGES> enabled_texture_buffers{};
++    std::array<u32, NUM_STAGES> written_texture_buffers{};
++    std::array<u32, NUM_STAGES> image_texture_buffers{};
++    u32 enabled_compute_texture_buffers = 0;
++    u32 written_compute_texture_buffers = 0;
++    u32 image_compute_texture_buffers = 0;
++
++    std::array<u32, 16> uniform_cache_hits{};
++    std::array<u32, 16> uniform_cache_shots{};
++
++    u32 uniform_buffer_skip_cache_size = DEFAULT_SKIP_CACHE_SIZE;
++
++    bool has_deleted_buffers = false;
++
++    std::conditional_t<HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS, std::array<u32, NUM_STAGES>, Empty>
++        dirty_uniform_buffers{};
++    std::conditional_t<IS_OPENGL, std::array<u32, NUM_STAGES>, Empty> fast_bound_uniform_buffers{};
++    std::conditional_t<HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS,
++                       std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>, Empty>
++        uniform_buffer_binding_sizes{};
++
++    std::vector<BufferId> cached_write_buffer_ids;
++
++    MemoryTracker memory_tracker;
++    IntervalSet uncommitted_ranges;
++    IntervalSet common_ranges;
++    IntervalSet cached_ranges;
++    IntervalSet pending_ranges;
++    std::deque<IntervalSet> committed_ranges;
++
++    // Async Buffers
++    OverlapCounter async_downloads;
++    std::deque<std::optional<Async_Buffer>> async_buffers;
++    std::deque<boost::container::small_vector<BufferCopy, 4>> pending_downloads;
++    std::optional<Async_Buffer> current_buffer;
++
++    std::deque<Async_Buffer> async_buffers_death_ring;
++
++    size_t immediate_buffer_capacity = 0;
++    Common::ScratchBuffer<u8> immediate_buffer_alloc;
++
++    struct LRUItemParams {
++        using ObjectType = BufferId;
++        using TickType = u64;
++    };
++    Common::LeastRecentlyUsedCache<LRUItemParams> lru_cache;
++    u64 frame_tick = 0;
++    u64 total_used_memory = 0;
++    u64 minimum_memory = 0;
++    u64 critical_memory = 0;
++    BufferId inline_buffer_id;
++
++    bool active_async_buffers = false;
++
++    std::array<BufferId, ((1ULL << 39) >> PAGE_BITS)> page_table;
++};
++
++} // namespace VideoCommon
+diff --git a/src/video_core/buffer_cache/memory_tracker_base.h b/src/video_core/buffer_cache/memory_tracker_base.h
+new file mode 100644
+index 000000000000..4bc59017f135
+--- /dev/null
++++ b/src/video_core/buffer_cache/memory_tracker_base.h
+@@ -0,0 +1,271 @@
++// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <bit>
++#include <deque>
++#include <limits>
++#include <type_traits>
++#include <unordered_set>
++#include <utility>
++
++#include "common/alignment.h"
++#include "common/common_types.h"
++#include "video_core/buffer_cache/word_manager.h"
++
++namespace VideoCommon {
++
++template <class RasterizerInterface>
++class MemoryTrackerBase {
++    static constexpr size_t MAX_CPU_PAGE_BITS = 39;
++    static constexpr size_t HIGHER_PAGE_BITS = 22;
++    static constexpr size_t HIGHER_PAGE_SIZE = 1ULL << HIGHER_PAGE_BITS;
++    static constexpr size_t HIGHER_PAGE_MASK = HIGHER_PAGE_SIZE - 1ULL;
++    static constexpr size_t NUM_HIGH_PAGES = 1ULL << (MAX_CPU_PAGE_BITS - HIGHER_PAGE_BITS);
++    static constexpr size_t MANAGER_POOL_SIZE = 32;
++    static constexpr size_t WORDS_STACK_NEEDED = HIGHER_PAGE_SIZE / BYTES_PER_WORD;
++    using Manager = WordManager<RasterizerInterface, WORDS_STACK_NEEDED>;
++
++public:
++    MemoryTrackerBase(RasterizerInterface& rasterizer_) : rasterizer{&rasterizer_} {}
++    ~MemoryTrackerBase() = default;
++
++    /// Returns the inclusive CPU modified range in a begin end pair
++    [[nodiscard]] std::pair<u64, u64> ModifiedCpuRegion(VAddr query_cpu_addr,
++                                                        u64 query_size) noexcept {
++        return IteratePairs<true>(
++            query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
++                return manager->template ModifiedRegion<Type::CPU>(offset, size);
++            });
++    }
++
++    /// Returns the inclusive GPU modified range in a begin end pair
++    [[nodiscard]] std::pair<u64, u64> ModifiedGpuRegion(VAddr query_cpu_addr,
++                                                        u64 query_size) noexcept {
++        return IteratePairs<false>(
++            query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
++                return manager->template ModifiedRegion<Type::GPU>(offset, size);
++            });
++    }
++
++    /// Returns true if a region has been modified from the CPU
++    [[nodiscard]] bool IsRegionCpuModified(VAddr query_cpu_addr, u64 query_size) noexcept {
++        return IteratePages<true>(
++            query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
++                return manager->template IsRegionModified<Type::CPU>(offset, size);
++            });
++    }
++
++    /// Returns true if a region has been modified from the GPU
++    [[nodiscard]] bool IsRegionGpuModified(VAddr query_cpu_addr, u64 query_size) noexcept {
++        return IteratePages<false>(
++            query_cpu_addr, query_size, [](Manager* manager, u64 offset, size_t size) {
++                return manager->template IsRegionModified<Type::GPU>(offset, size);
++            });
++    }
++
++    /// Mark region as CPU modified, notifying the rasterizer about this change
++    void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
++        IteratePages<true>(dirty_cpu_addr, query_size,
++                           [](Manager* manager, u64 offset, size_t size) {
++                               manager->template ChangeRegionState<Type::CPU, true>(
++                                   manager->GetCpuAddr() + offset, size);
++                           });
++    }
++
++    /// Unmark region as CPU modified, notifying the rasterizer about this change
++    void UnmarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
++        IteratePages<true>(dirty_cpu_addr, query_size,
++                           [](Manager* manager, u64 offset, size_t size) {
++                               manager->template ChangeRegionState<Type::CPU, false>(
++                                   manager->GetCpuAddr() + offset, size);
++                           });
++    }
++
++    /// Mark region as modified from the host GPU
++    void MarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 query_size) noexcept {
++        IteratePages<true>(dirty_cpu_addr, query_size,
++                           [](Manager* manager, u64 offset, size_t size) {
++                               manager->template ChangeRegionState<Type::GPU, true>(
++                                   manager->GetCpuAddr() + offset, size);
++                           });
++    }
++
++    /// Unmark region as modified from the host GPU
++    void UnmarkRegionAsGpuModified(VAddr dirty_cpu_addr, u64 query_size) noexcept {
++        IteratePages<true>(dirty_cpu_addr, query_size,
++                           [](Manager* manager, u64 offset, size_t size) {
++                               manager->template ChangeRegionState<Type::GPU, false>(
++                                   manager->GetCpuAddr() + offset, size);
++                           });
++    }
++
++    /// Mark region as modified from the CPU
++    /// but don't mark it as modified until FlusHCachedWrites is called.
++    void CachedCpuWrite(VAddr dirty_cpu_addr, u64 query_size) {
++        IteratePages<true>(
++            dirty_cpu_addr, query_size, [this](Manager* manager, u64 offset, size_t size) {
++                const VAddr cpu_address = manager->GetCpuAddr() + offset;
++                manager->template ChangeRegionState<Type::CachedCPU, true>(cpu_address, size);
++                cached_pages.insert(static_cast<u32>(cpu_address >> HIGHER_PAGE_BITS));
++            });
++    }
++
++    /// Flushes cached CPU writes, and notify the rasterizer about the deltas
++    void FlushCachedWrites(VAddr query_cpu_addr, u64 query_size) noexcept {
++        IteratePages<false>(query_cpu_addr, query_size,
++                            [](Manager* manager, [[maybe_unused]] u64 offset,
++                               [[maybe_unused]] size_t size) { manager->FlushCachedWrites(); });
++    }
++
++    void FlushCachedWrites() noexcept {
++        for (auto id : cached_pages) {
++            top_tier[id]->FlushCachedWrites();
++        }
++        cached_pages.clear();
++    }
++
++    /// Call 'func' for each CPU modified range and unmark those pages as CPU modified
++    template <typename Func>
++    void ForEachUploadRange(VAddr query_cpu_range, u64 query_size, Func&& func) {
++        IteratePages<true>(query_cpu_range, query_size,
++                           [&func](Manager* manager, u64 offset, size_t size) {
++                               manager->template ForEachModifiedRange<Type::CPU, true>(
++                                   manager->GetCpuAddr() + offset, size, func);
++                           });
++    }
++
++    /// Call 'func' for each GPU modified range and unmark those pages as GPU modified
++    template <typename Func>
++    void ForEachDownloadRange(VAddr query_cpu_range, u64 query_size, bool clear, Func&& func) {
++        IteratePages<false>(query_cpu_range, query_size,
++                            [&func, clear](Manager* manager, u64 offset, size_t size) {
++                                if (clear) {
++                                    manager->template ForEachModifiedRange<Type::GPU, true>(
++                                        manager->GetCpuAddr() + offset, size, func);
++                                } else {
++                                    manager->template ForEachModifiedRange<Type::GPU, false>(
++                                        manager->GetCpuAddr() + offset, size, func);
++                                }
++                            });
++    }
++
++    template <typename Func>
++    void ForEachDownloadRangeAndClear(VAddr query_cpu_range, u64 query_size, Func&& func) {
++        IteratePages<false>(query_cpu_range, query_size,
++                            [&func](Manager* manager, u64 offset, size_t size) {
++                                manager->template ForEachModifiedRange<Type::GPU, true>(
++                                    manager->GetCpuAddr() + offset, size, func);
++                            });
++    }
++
++private:
++    template <bool create_region_on_fail, typename Func>
++    bool IteratePages(VAddr cpu_address, size_t size, Func&& func) {
++        using FuncReturn = typename std::invoke_result<Func, Manager*, u64, size_t>::type;
++        static constexpr bool BOOL_BREAK = std::is_same_v<FuncReturn, bool>;
++        std::size_t remaining_size{size};
++        std::size_t page_index{cpu_address >> HIGHER_PAGE_BITS};
++        u64 page_offset{cpu_address & HIGHER_PAGE_MASK};
++        while (remaining_size > 0) {
++            const std::size_t copy_amount{std::min(HIGHER_PAGE_SIZE - page_offset, remaining_size)};
++            auto* manager{top_tier[page_index]};
++            if (manager) {
++                if constexpr (BOOL_BREAK) {
++                    if (func(manager, page_offset, copy_amount)) {
++                        return true;
++                    }
++                } else {
++                    func(manager, page_offset, copy_amount);
++                }
++            } else if constexpr (create_region_on_fail) {
++                CreateRegion(page_index);
++                manager = top_tier[page_index];
++                if constexpr (BOOL_BREAK) {
++                    if (func(manager, page_offset, copy_amount)) {
++                        return true;
++                    }
++                } else {
++                    func(manager, page_offset, copy_amount);
++                }
++            }
++            page_index++;
++            page_offset = 0;
++            remaining_size -= copy_amount;
++        }
++        return false;
++    }
++
++    template <bool create_region_on_fail, typename Func>
++    std::pair<u64, u64> IteratePairs(VAddr cpu_address, size_t size, Func&& func) {
++        std::size_t remaining_size{size};
++        std::size_t page_index{cpu_address >> HIGHER_PAGE_BITS};
++        u64 page_offset{cpu_address & HIGHER_PAGE_MASK};
++        u64 begin = std::numeric_limits<u64>::max();
++        u64 end = 0;
++        while (remaining_size > 0) {
++            const std::size_t copy_amount{std::min(HIGHER_PAGE_SIZE - page_offset, remaining_size)};
++            auto* manager{top_tier[page_index]};
++            const auto execute = [&] {
++                auto [new_begin, new_end] = func(manager, page_offset, copy_amount);
++                if (new_begin != 0 || new_end != 0) {
++                    const u64 base_address = page_index << HIGHER_PAGE_BITS;
++                    begin = std::min(new_begin + base_address, begin);
++                    end = std::max(new_end + base_address, end);
++                }
++            };
++            if (manager) {
++                execute();
++            } else if constexpr (create_region_on_fail) {
++                CreateRegion(page_index);
++                manager = top_tier[page_index];
++                execute();
++            }
++            page_index++;
++            page_offset = 0;
++            remaining_size -= copy_amount;
++        }
++        if (begin < end) {
++            return std::make_pair(begin, end);
++        } else {
++            return std::make_pair(0ULL, 0ULL);
++        }
++    }
++
++    void CreateRegion(std::size_t page_index) {
++        const VAddr base_cpu_addr = page_index << HIGHER_PAGE_BITS;
++        top_tier[page_index] = GetNewManager(base_cpu_addr);
++    }
++
++    Manager* GetNewManager(VAddr base_cpu_addess) {
++        const auto on_return = [&] {
++            auto* new_manager = free_managers.front();
++            new_manager->SetCpuAddress(base_cpu_addess);
++            free_managers.pop_front();
++            return new_manager;
++        };
++        if (!free_managers.empty()) {
++            return on_return();
++        }
++        manager_pool.emplace_back();
++        auto& last_pool = manager_pool.back();
++        for (size_t i = 0; i < MANAGER_POOL_SIZE; i++) {
++            new (&last_pool[i]) Manager(0, *rasterizer, HIGHER_PAGE_SIZE);
++            free_managers.push_back(&last_pool[i]);
++        }
++        return on_return();
++    }
++
++    std::deque<std::array<Manager, MANAGER_POOL_SIZE>> manager_pool;
++    std::deque<Manager*> free_managers;
++
++    std::array<Manager*, NUM_HIGH_PAGES> top_tier{};
++
++    std::unordered_set<u32> cached_pages;
++
++    RasterizerInterface* rasterizer = nullptr;
++};
++
++} // namespace VideoCommon
+diff --git a/src/video_core/buffer_cache/word_manager.h b/src/video_core/buffer_cache/word_manager.h
+new file mode 100644
+index 000000000000..a42455045e62
+--- /dev/null
++++ b/src/video_core/buffer_cache/word_manager.h
+@@ -0,0 +1,462 @@
++// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <algorithm>
++#include <bit>
++#include <limits>
++#include <span>
++#include <utility>
++
++#include "common/alignment.h"
++#include "common/common_funcs.h"
++#include "common/common_types.h"
++#include "common/div_ceil.h"
++#include "core/memory.h"
++
++namespace VideoCommon {
++
++constexpr u64 PAGES_PER_WORD = 64;
++constexpr u64 BYTES_PER_PAGE = Core::Memory::YUZU_PAGESIZE;
++constexpr u64 BYTES_PER_WORD = PAGES_PER_WORD * BYTES_PER_PAGE;
++
++enum class Type {
++    CPU,
++    GPU,
++    CachedCPU,
++    Untracked,
++};
++
++/// Vector tracking modified pages tightly packed with small vector optimization
++template <size_t stack_words = 1>
++struct WordsArray {
++    /// Returns the pointer to the words state
++    [[nodiscard]] const u64* Pointer(bool is_short) const noexcept {
++        return is_short ? stack.data() : heap;
++    }
++
++    /// Returns the pointer to the words state
++    [[nodiscard]] u64* Pointer(bool is_short) noexcept {
++        return is_short ? stack.data() : heap;
++    }
++
++    std::array<u64, stack_words> stack{}; ///< Small buffers storage
++    u64* heap;                            ///< Not-small buffers pointer to the storage
++};
++
++template <size_t stack_words = 1>
++struct Words {
++    explicit Words() = default;
++    explicit Words(u64 size_bytes_) : size_bytes{size_bytes_} {
++        num_words = Common::DivCeil(size_bytes, BYTES_PER_WORD);
++        if (IsShort()) {
++            cpu.stack.fill(~u64{0});
++            gpu.stack.fill(0);
++            cached_cpu.stack.fill(0);
++            untracked.stack.fill(~u64{0});
++        } else {
++            // Share allocation between CPU and GPU pages and set their default values
++            u64* const alloc = new u64[num_words * 4];
++            cpu.heap = alloc;
++            gpu.heap = alloc + num_words;
++            cached_cpu.heap = alloc + num_words * 2;
++            untracked.heap = alloc + num_words * 3;
++            std::fill_n(cpu.heap, num_words, ~u64{0});
++            std::fill_n(gpu.heap, num_words, 0);
++            std::fill_n(cached_cpu.heap, num_words, 0);
++            std::fill_n(untracked.heap, num_words, ~u64{0});
++        }
++        // Clean up tailing bits
++        const u64 last_word_size = size_bytes % BYTES_PER_WORD;
++        const u64 last_local_page = Common::DivCeil(last_word_size, BYTES_PER_PAGE);
++        const u64 shift = (PAGES_PER_WORD - last_local_page) % PAGES_PER_WORD;
++        const u64 last_word = (~u64{0} << shift) >> shift;
++        cpu.Pointer(IsShort())[NumWords() - 1] = last_word;
++        untracked.Pointer(IsShort())[NumWords() - 1] = last_word;
++    }
++
++    ~Words() {
++        Release();
++    }
++
++    Words& operator=(Words&& rhs) noexcept {
++        Release();
++        size_bytes = rhs.size_bytes;
++        num_words = rhs.num_words;
++        cpu = rhs.cpu;
++        gpu = rhs.gpu;
++        cached_cpu = rhs.cached_cpu;
++        untracked = rhs.untracked;
++        rhs.cpu.heap = nullptr;
++        return *this;
++    }
++
++    Words(Words&& rhs) noexcept
++        : size_bytes{rhs.size_bytes}, num_words{rhs.num_words}, cpu{rhs.cpu}, gpu{rhs.gpu},
++          cached_cpu{rhs.cached_cpu}, untracked{rhs.untracked} {
++        rhs.cpu.heap = nullptr;
++    }
++
++    Words& operator=(const Words&) = delete;
++    Words(const Words&) = delete;
++
++    /// Returns true when the buffer fits in the small vector optimization
++    [[nodiscard]] bool IsShort() const noexcept {
++        return num_words <= stack_words;
++    }
++
++    /// Returns the number of words of the buffer
++    [[nodiscard]] size_t NumWords() const noexcept {
++        return num_words;
++    }
++
++    /// Release buffer resources
++    void Release() {
++        if (!IsShort()) {
++            // CPU written words is the base for the heap allocation
++            delete[] cpu.heap;
++        }
++    }
++
++    template <Type type>
++    std::span<u64> Span() noexcept {
++        if constexpr (type == Type::CPU) {
++            return std::span<u64>(cpu.Pointer(IsShort()), num_words);
++        } else if constexpr (type == Type::GPU) {
++            return std::span<u64>(gpu.Pointer(IsShort()), num_words);
++        } else if constexpr (type == Type::CachedCPU) {
++            return std::span<u64>(cached_cpu.Pointer(IsShort()), num_words);
++        } else if constexpr (type == Type::Untracked) {
++            return std::span<u64>(untracked.Pointer(IsShort()), num_words);
++        }
++    }
++
++    template <Type type>
++    std::span<const u64> Span() const noexcept {
++        if constexpr (type == Type::CPU) {
++            return std::span<const u64>(cpu.Pointer(IsShort()), num_words);
++        } else if constexpr (type == Type::GPU) {
++            return std::span<const u64>(gpu.Pointer(IsShort()), num_words);
++        } else if constexpr (type == Type::CachedCPU) {
++            return std::span<const u64>(cached_cpu.Pointer(IsShort()), num_words);
++        } else if constexpr (type == Type::Untracked) {
++            return std::span<const u64>(untracked.Pointer(IsShort()), num_words);
++        }
++    }
++
++    u64 size_bytes = 0;
++    size_t num_words = 0;
++    WordsArray<stack_words> cpu;
++    WordsArray<stack_words> gpu;
++    WordsArray<stack_words> cached_cpu;
++    WordsArray<stack_words> untracked;
++};
++
++template <class RasterizerInterface, size_t stack_words = 1>
++class WordManager {
++public:
++    explicit WordManager(VAddr cpu_addr_, RasterizerInterface& rasterizer_, u64 size_bytes)
++        : cpu_addr{cpu_addr_}, rasterizer{&rasterizer_}, words{size_bytes} {}
++
++    explicit WordManager() = default;
++
++    void SetCpuAddress(VAddr new_cpu_addr) {
++        cpu_addr = new_cpu_addr;
++    }
++
++    VAddr GetCpuAddr() const {
++        return cpu_addr;
++    }
++
++    static u64 ExtractBits(u64 word, size_t page_start, size_t page_end) {
++        constexpr size_t number_bits = sizeof(u64) * 8;
++        const size_t limit_page_end = number_bits - std::min(page_end, number_bits);
++        u64 bits = (word >> page_start) << page_start;
++        bits = (bits << limit_page_end) >> limit_page_end;
++        return bits;
++    }
++
++    static std::pair<size_t, size_t> GetWordPage(VAddr address) {
++        const size_t converted_address = static_cast<size_t>(address);
++        const size_t word_number = converted_address / BYTES_PER_WORD;
++        const size_t amount_pages = converted_address % BYTES_PER_WORD;
++        return std::make_pair(word_number, amount_pages / BYTES_PER_PAGE);
++    }
++
++    template <typename Func>
++    void IterateWords(size_t offset, size_t size, Func&& func) const {
++        using FuncReturn = std::invoke_result_t<Func, std::size_t, u64>;
++        static constexpr bool BOOL_BREAK = std::is_same_v<FuncReturn, bool>;
++        const size_t start = static_cast<size_t>(std::max<s64>(static_cast<s64>(offset), 0LL));
++        const size_t end = static_cast<size_t>(std::max<s64>(static_cast<s64>(offset + size), 0LL));
++        if (start >= SizeBytes() || end <= start) {
++            return;
++        }
++        auto [start_word, start_page] = GetWordPage(start);
++        auto [end_word, end_page] = GetWordPage(end + BYTES_PER_PAGE - 1ULL);
++        const size_t num_words = NumWords();
++        start_word = std::min(start_word, num_words);
++        end_word = std::min(end_word, num_words);
++        const size_t diff = end_word - start_word;
++        end_word += (end_page + PAGES_PER_WORD - 1ULL) / PAGES_PER_WORD;
++        end_word = std::min(end_word, num_words);
++        end_page += diff * PAGES_PER_WORD;
++        constexpr u64 base_mask{~0ULL};
++        for (size_t word_index = start_word; word_index < end_word; word_index++) {
++            const u64 mask = ExtractBits(base_mask, start_page, end_page);
++            start_page = 0;
++            end_page -= PAGES_PER_WORD;
++            if constexpr (BOOL_BREAK) {
++                if (func(word_index, mask)) {
++                    return;
++                }
++            } else {
++                func(word_index, mask);
++            }
++        }
++    }
++
++    template <typename Func>
++    void IteratePages(u64 mask, Func&& func) const {
++        size_t offset = 0;
++        while (mask != 0) {
++            const size_t empty_bits = std::countr_zero(mask);
++            offset += empty_bits;
++            mask = mask >> empty_bits;
++
++            const size_t continuous_bits = std::countr_one(mask);
++            func(offset, continuous_bits);
++            mask = continuous_bits < PAGES_PER_WORD ? (mask >> continuous_bits) : 0;
++            offset += continuous_bits;
++        }
++    }
++
++    /**
++     * Change the state of a range of pages
++     *
++     * @param dirty_addr    Base address to mark or unmark as modified
++     * @param size          Size in bytes to mark or unmark as modified
++     */
++    template <Type type, bool enable>
++    void ChangeRegionState(u64 dirty_addr, u64 size) noexcept(type == Type::GPU) {
++        std::span<u64> state_words = words.template Span<type>();
++        [[maybe_unused]] std::span<u64> untracked_words = words.template Span<Type::Untracked>();
++        [[maybe_unused]] std::span<u64> cached_words = words.template Span<Type::CachedCPU>();
++        IterateWords(dirty_addr - cpu_addr, size, [&](size_t index, u64 mask) {
++            if constexpr (type == Type::CPU || type == Type::CachedCPU) {
++                NotifyRasterizer<!enable>(index, untracked_words[index], mask);
++            }
++            if constexpr (enable) {
++                state_words[index] |= mask;
++                if constexpr (type == Type::CPU || type == Type::CachedCPU) {
++                    untracked_words[index] |= mask;
++                }
++                if constexpr (type == Type::CPU) {
++                    cached_words[index] &= ~mask;
++                }
++            } else {
++                if constexpr (type == Type::CPU) {
++                    const u64 word = state_words[index] & mask;
++                    cached_words[index] &= ~word;
++                }
++                state_words[index] &= ~mask;
++                if constexpr (type == Type::CPU || type == Type::CachedCPU) {
++                    untracked_words[index] &= ~mask;
++                }
++            }
++        });
++    }
++
++    /**
++     * Loop over each page in the given range, turn off those bits and notify the rasterizer if
++     * needed. Call the given function on each turned off range.
++     *
++     * @param query_cpu_range Base CPU address to loop over
++     * @param size            Size in bytes of the CPU range to loop over
++     * @param func            Function to call for each turned off region
++     */
++    template <Type type, bool clear, typename Func>
++    void ForEachModifiedRange(VAddr query_cpu_range, s64 size, Func&& func) {
++        static_assert(type != Type::Untracked);
++
++        std::span<u64> state_words = words.template Span<type>();
++        [[maybe_unused]] std::span<u64> untracked_words = words.template Span<Type::Untracked>();
++        [[maybe_unused]] std::span<u64> cached_words = words.template Span<Type::CachedCPU>();
++        const size_t offset = query_cpu_range - cpu_addr;
++        bool pending = false;
++        size_t pending_offset{};
++        size_t pending_pointer{};
++        const auto release = [&]() {
++            func(cpu_addr + pending_offset * BYTES_PER_PAGE,
++                 (pending_pointer - pending_offset) * BYTES_PER_PAGE);
++        };
++        IterateWords(offset, size, [&](size_t index, u64 mask) {
++            const u64 word = state_words[index] & mask;
++            if constexpr (clear) {
++                if constexpr (type == Type::CPU || type == Type::CachedCPU) {
++                    NotifyRasterizer<true>(index, untracked_words[index], mask);
++                }
++                state_words[index] &= ~mask;
++                if constexpr (type == Type::CPU || type == Type::CachedCPU) {
++                    untracked_words[index] &= ~mask;
++                }
++                if constexpr (type == Type::CPU) {
++                    cached_words[index] &= ~word;
++                }
++            }
++            const size_t base_offset = index * PAGES_PER_WORD;
++            IteratePages(word, [&](size_t pages_offset, size_t pages_size) {
++                const auto reset = [&]() {
++                    pending_offset = base_offset + pages_offset;
++                    pending_pointer = base_offset + pages_offset + pages_size;
++                };
++                if (!pending) {
++                    reset();
++                    pending = true;
++                    return;
++                }
++                if (pending_pointer == base_offset + pages_offset) {
++                    pending_pointer += pages_size;
++                    return;
++                }
++                release();
++                reset();
++            });
++        });
++        if (pending) {
++            release();
++        }
++    }
++
++    /**
++     * Returns true when a region has been modified
++     *
++     * @param offset Offset in bytes from the start of the buffer
++     * @param size   Size in bytes of the region to query for modifications
++     */
++    template <Type type>
++    [[nodiscard]] bool IsRegionModified(u64 offset, u64 size) const noexcept {
++        static_assert(type != Type::Untracked);
++
++        const std::span<const u64> state_words = words.template Span<type>();
++        bool result = false;
++        IterateWords(offset, size, [&](size_t index, u64 mask) {
++            const u64 word = state_words[index] & mask;
++            if (word != 0) {
++                result = true;
++                return true;
++            }
++            return false;
++        });
++        return result;
++    }
++
++    /**
++     * Returns a begin end pair with the inclusive modified region
++     *
++     * @param offset Offset in bytes from the start of the buffer
++     * @param size   Size in bytes of the region to query for modifications
++     */
++    template <Type type>
++    [[nodiscard]] std::pair<u64, u64> ModifiedRegion(u64 offset, u64 size) const noexcept {
++        static_assert(type != Type::Untracked);
++        const std::span<const u64> state_words = words.template Span<type>();
++        u64 begin = std::numeric_limits<u64>::max();
++        u64 end = 0;
++        IterateWords(offset, size, [&](size_t index, u64 mask) {
++            const u64 word = state_words[index] & mask;
++            if (word == 0) {
++                return;
++            }
++            const u64 local_page_begin = std::countr_zero(word);
++            const u64 local_page_end = PAGES_PER_WORD - std::countl_zero(word);
++            const u64 page_index = index * PAGES_PER_WORD;
++            begin = std::min(begin, page_index + local_page_begin);
++            end = page_index + local_page_end;
++        });
++        static constexpr std::pair<u64, u64> EMPTY{0, 0};
++        return begin < end ? std::make_pair(begin * BYTES_PER_PAGE, end * BYTES_PER_PAGE) : EMPTY;
++    }
++
++    /// Returns the number of words of the manager
++    [[nodiscard]] size_t NumWords() const noexcept {
++        return words.NumWords();
++    }
++
++    /// Returns the size in bytes of the manager
++    [[nodiscard]] u64 SizeBytes() const noexcept {
++        return words.size_bytes;
++    }
++
++    /// Returns true when the buffer fits in the small vector optimization
++    [[nodiscard]] bool IsShort() const noexcept {
++        return words.IsShort();
++    }
++
++    void FlushCachedWrites() noexcept {
++        const u64 num_words = NumWords();
++        u64* const cached_words = Array<Type::CachedCPU>();
++        u64* const untracked_words = Array<Type::Untracked>();
++        u64* const cpu_words = Array<Type::CPU>();
++        for (u64 word_index = 0; word_index < num_words; ++word_index) {
++            const u64 cached_bits = cached_words[word_index];
++            NotifyRasterizer<false>(word_index, untracked_words[word_index], cached_bits);
++            untracked_words[word_index] |= cached_bits;
++            cpu_words[word_index] |= cached_bits;
++            cached_words[word_index] = 0;
++        }
++    }
++
++private:
++    template <Type type>
++    u64* Array() noexcept {
++        if constexpr (type == Type::CPU) {
++            return words.cpu.Pointer(IsShort());
++        } else if constexpr (type == Type::GPU) {
++            return words.gpu.Pointer(IsShort());
++        } else if constexpr (type == Type::CachedCPU) {
++            return words.cached_cpu.Pointer(IsShort());
++        } else if constexpr (type == Type::Untracked) {
++            return words.untracked.Pointer(IsShort());
++        }
++    }
++
++    template <Type type>
++    const u64* Array() const noexcept {
++        if constexpr (type == Type::CPU) {
++            return words.cpu.Pointer(IsShort());
++        } else if constexpr (type == Type::GPU) {
++            return words.gpu.Pointer(IsShort());
++        } else if constexpr (type == Type::CachedCPU) {
++            return words.cached_cpu.Pointer(IsShort());
++        } else if constexpr (type == Type::Untracked) {
++            return words.untracked.Pointer(IsShort());
++        }
++    }
++
++    /**
++     * Notify rasterizer about changes in the CPU tracking state of a word in the buffer
++     *
++     * @param word_index   Index to the word to notify to the rasterizer
++     * @param current_bits Current state of the word
++     * @param new_bits     New state of the word
++     *
++     * @tparam add_to_rasterizer True when the rasterizer should start tracking the new pages
++     */
++    template <bool add_to_rasterizer>
++    void NotifyRasterizer(u64 word_index, u64 current_bits, u64 new_bits) const {
++        u64 changed_bits = (add_to_rasterizer ? current_bits : ~current_bits) & new_bits;
++        VAddr addr = cpu_addr + word_index * BYTES_PER_WORD;
++        IteratePages(changed_bits, [&](size_t offset, size_t size) {
++            rasterizer->UpdatePagesCachedCount(addr + offset * BYTES_PER_PAGE,
++                                               size * BYTES_PER_PAGE, add_to_rasterizer ? 1 : -1);
++        });
++    }
++
++    VAddr cpu_addr = 0;
++    RasterizerInterface* rasterizer = nullptr;
++    Words<stack_words> words;
++};
++
++} // namespace VideoCommon
+diff --git a/src/video_core/renderer_opengl/gl_buffer_cache.h b/src/video_core/renderer_opengl/gl_buffer_cache.h
+index a8c3f8b67478..18d3c3ac0900 100644
+--- a/src/video_core/renderer_opengl/gl_buffer_cache.h
++++ b/src/video_core/renderer_opengl/gl_buffer_cache.h
+@@ -8,6 +8,7 @@
+ 
+ #include "common/common_types.h"
+ #include "video_core/buffer_cache/buffer_cache.h"
++#include "video_core/buffer_cache/memory_tracker_base.h"
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/renderer_opengl/gl_device.h"
+ #include "video_core/renderer_opengl/gl_resource_manager.h"
+@@ -200,6 +201,8 @@ class BufferCacheRuntime {
+ struct BufferCacheParams {
+     using Runtime = OpenGL::BufferCacheRuntime;
+     using Buffer = OpenGL::Buffer;
++    using Async_Buffer = u32;
++    using MemoryTracker = VideoCommon::MemoryTrackerBase<VideoCore::RasterizerInterface>;
+ 
+     static constexpr bool IS_OPENGL = true;
+     static constexpr bool HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = true;
+@@ -208,6 +211,7 @@ struct BufferCacheParams {
+     static constexpr bool NEEDS_BIND_STORAGE_INDEX = true;
+     static constexpr bool USE_MEMORY_MAPS = false;
+     static constexpr bool SEPARATE_IMAGE_BUFFER_BINDINGS = true;
++    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = false;
+ };
+ 
+ using BufferCache = VideoCommon::BufferCache<BufferCacheParams>;
+diff --git a/src/video_core/renderer_opengl/gl_buffer_cache_base.cpp b/src/video_core/renderer_opengl/gl_buffer_cache_base.cpp
+new file mode 100644
+index 000000000000..f15ae8e256c2
+--- /dev/null
++++ b/src/video_core/renderer_opengl/gl_buffer_cache_base.cpp
+@@ -0,0 +1,9 @@
++// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "video_core/buffer_cache/buffer_cache.h"
++#include "video_core/renderer_opengl/gl_buffer_cache.h"
++
++namespace VideoCommon {
++template class VideoCommon::BufferCache<OpenGL::BufferCacheParams>;
++}
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+index 9cbcb3c8fafb..510602e8eb01 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+@@ -314,8 +314,12 @@ StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) {
+     return staging_pool.Request(size, MemoryUsage::Upload);
+ }
+ 
+-StagingBufferRef BufferCacheRuntime::DownloadStagingBuffer(size_t size) {
+-    return staging_pool.Request(size, MemoryUsage::Download);
++StagingBufferRef BufferCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) {
++    return staging_pool.Request(size, MemoryUsage::Download, deferred);
++}
++
++void BufferCacheRuntime::FreeDeferredStagingBuffer(StagingBufferRef& ref) {
++    staging_pool.FreeDeferred(ref);
+ }
+ 
+ u64 BufferCacheRuntime::GetDeviceLocalMemory() const {
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.h b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+index 183b3363285c..879f1ed94dbc 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.h
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+@@ -3,7 +3,8 @@
+ 
+ #pragma once
+ 
+-#include "video_core/buffer_cache/buffer_cache.h"
++#include "video_core/buffer_cache/buffer_cache_base.h"
++#include "video_core/buffer_cache/memory_tracker_base.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/renderer_vulkan/vk_compute_pass.h"
+ #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
+@@ -75,7 +76,9 @@ class BufferCacheRuntime {
+ 
+     [[nodiscard]] StagingBufferRef UploadStagingBuffer(size_t size);
+ 
+-    [[nodiscard]] StagingBufferRef DownloadStagingBuffer(size_t size);
++    [[nodiscard]] StagingBufferRef DownloadStagingBuffer(size_t size, bool deferred = false);
++
++    void FreeDeferredStagingBuffer(StagingBufferRef& ref);
+ 
+     void PreCopyBarrier();
+ 
+@@ -142,6 +145,8 @@ class BufferCacheRuntime {
+ struct BufferCacheParams {
+     using Runtime = Vulkan::BufferCacheRuntime;
+     using Buffer = Vulkan::Buffer;
++    using Async_Buffer = Vulkan::StagingBufferRef;
++    using MemoryTracker = VideoCommon::MemoryTrackerBase<VideoCore::RasterizerInterface>;
+ 
+     static constexpr bool IS_OPENGL = false;
+     static constexpr bool HAS_PERSISTENT_UNIFORM_BUFFER_BINDINGS = false;
+@@ -150,6 +155,7 @@ struct BufferCacheParams {
+     static constexpr bool NEEDS_BIND_STORAGE_INDEX = false;
+     static constexpr bool USE_MEMORY_MAPS = true;
+     static constexpr bool SEPARATE_IMAGE_BUFFER_BINDINGS = false;
++    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
+ };
+ 
+ using BufferCache = VideoCommon::BufferCache<BufferCacheParams>;
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache_base.cpp b/src/video_core/renderer_vulkan/vk_buffer_cache_base.cpp
+new file mode 100644
+index 000000000000..f9e2715079dd
+--- /dev/null
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache_base.cpp
+@@ -0,0 +1,9 @@
++// SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "video_core/buffer_cache/buffer_cache.h"
++#include "video_core/renderer_vulkan/vk_buffer_cache.h"
++
++namespace VideoCommon {
++template class VideoCommon::BufferCache<Vulkan::BufferCacheParams>;
++}

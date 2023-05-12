@@ -1,0 +1,267 @@
+diff --git a/src/common/settings.cpp b/src/common/settings.cpp
+index 84955030b126..6dcf4ddb2917 100644
+--- a/src/common/settings.cpp
++++ b/src/common/settings.cpp
+@@ -45,6 +45,7 @@ void LogSettings() {
+     log_setting("System_LanguageIndex", values.language_index.GetValue());
+     log_setting("System_RegionIndex", values.region_index.GetValue());
+     log_setting("System_TimeZoneIndex", values.time_zone_index.GetValue());
++    log_setting("System_UnsafeMemoryLayout", values.use_unsafe_extended_memory_layout.GetValue());
+     log_setting("Core_UseMultiCore", values.use_multi_core.GetValue());
+     log_setting("CPU_Accuracy", values.cpu_accuracy.GetValue());
+     log_setting("Renderer_UseResolutionScaling", values.resolution_setup.GetValue());
+@@ -191,7 +192,7 @@ void RestoreGlobalState(bool is_powered_on) {
+ 
+     // Core
+     values.use_multi_core.SetGlobal(true);
+-    values.use_extended_memory_layout.SetGlobal(true);
++    values.use_unsafe_extended_memory_layout.SetGlobal(true);
+ 
+     // CPU
+     values.cpu_accuracy.SetGlobal(true);
+diff --git a/src/common/settings.h b/src/common/settings.h
+index b77a1580aeb6..a2a3aaae0ee0 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -388,7 +388,8 @@ struct Values {
+ 
+     // Core
+     SwitchableSetting<bool> use_multi_core{true, "use_multi_core"};
+-    SwitchableSetting<bool> use_extended_memory_layout{false, "use_extended_memory_layout"};
++    SwitchableSetting<bool> use_unsafe_extended_memory_layout{false,
++                                                              "use_unsafe_extended_memory_layout"};
+ 
+     // Cpu
+     SwitchableSetting<CPUAccuracy, true> cpu_accuracy{CPUAccuracy::Auto, CPUAccuracy::Auto,
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index caa6a77be49e..ac0fb787240d 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -137,7 +137,7 @@ struct System::Impl {
+         device_memory = std::make_unique<Core::DeviceMemory>();
+ 
+         is_multicore = Settings::values.use_multi_core.GetValue();
+-        extended_memory_layout = Settings::values.use_extended_memory_layout.GetValue();
++        extended_memory_layout = Settings::values.use_unsafe_extended_memory_layout.GetValue();
+ 
+         core_timing.SetMulticore(is_multicore);
+         core_timing.Initialize([&system]() { system.RegisterHostThread(); });
+@@ -169,7 +169,7 @@ struct System::Impl {
+     void ReinitializeIfNecessary(System& system) {
+         const bool must_reinitialize =
+             is_multicore != Settings::values.use_multi_core.GetValue() ||
+-            extended_memory_layout != Settings::values.use_extended_memory_layout.GetValue();
++            extended_memory_layout != Settings::values.use_unsafe_extended_memory_layout.GetValue();
+ 
+         if (!must_reinitialize) {
+             return;
+@@ -178,7 +178,7 @@ struct System::Impl {
+         LOG_DEBUG(Kernel, "Re-initializing");
+ 
+         is_multicore = Settings::values.use_multi_core.GetValue();
+-        extended_memory_layout = Settings::values.use_extended_memory_layout.GetValue();
++        extended_memory_layout = Settings::values.use_unsafe_extended_memory_layout.GetValue();
+ 
+         Initialize(system);
+     }
+diff --git a/src/core/hle/kernel/board/nintendo/nx/k_system_control.cpp b/src/core/hle/kernel/board/nintendo/nx/k_system_control.cpp
+index 36d0d20d237d..49bdc671ee9c 100644
+--- a/src/core/hle/kernel/board/nintendo/nx/k_system_control.cpp
++++ b/src/core/hle/kernel/board/nintendo/nx/k_system_control.cpp
+@@ -35,12 +35,13 @@ namespace {
+ using namespace Common::Literals;
+ 
+ u32 GetMemorySizeForInit() {
+-    return Settings::values.use_extended_memory_layout ? Smc::MemorySize_8GB : Smc::MemorySize_4GB;
++    return Settings::values.use_unsafe_extended_memory_layout ? Smc::MemorySize_8GB
++                                                              : Smc::MemorySize_4GB;
+ }
+ 
+ Smc::MemoryArrangement GetMemoryArrangeForInit() {
+-    return Settings::values.use_extended_memory_layout ? Smc::MemoryArrangement_8GB
+-                                                       : Smc::MemoryArrangement_4GB;
++    return Settings::values.use_unsafe_extended_memory_layout ? Smc::MemoryArrangement_8GB
++                                                              : Smc::MemoryArrangement_4GB;
+ }
+ } // namespace
+ 
+diff --git a/src/yuzu/configuration/config.cpp b/src/yuzu/configuration/config.cpp
+index bb731276edb5..6fa39721bfc8 100644
+--- a/src/yuzu/configuration/config.cpp
++++ b/src/yuzu/configuration/config.cpp
+@@ -497,7 +497,7 @@ void Config::ReadCoreValues() {
+     qt_config->beginGroup(QStringLiteral("Core"));
+ 
+     ReadGlobalSetting(Settings::values.use_multi_core);
+-    ReadGlobalSetting(Settings::values.use_extended_memory_layout);
++    ReadGlobalSetting(Settings::values.use_unsafe_extended_memory_layout);
+ 
+     qt_config->endGroup();
+ }
+@@ -1161,7 +1161,7 @@ void Config::SaveCoreValues() {
+     qt_config->beginGroup(QStringLiteral("Core"));
+ 
+     WriteGlobalSetting(Settings::values.use_multi_core);
+-    WriteGlobalSetting(Settings::values.use_extended_memory_layout);
++    WriteGlobalSetting(Settings::values.use_unsafe_extended_memory_layout);
+ 
+     qt_config->endGroup();
+ }
+diff --git a/src/yuzu/configuration/configure_general.cpp b/src/yuzu/configuration/configure_general.cpp
+index 207bcdc4de35..26258d74477f 100644
+--- a/src/yuzu/configuration/configure_general.cpp
++++ b/src/yuzu/configuration/configure_general.cpp
+@@ -35,9 +35,6 @@ void ConfigureGeneral::SetConfiguration() {
+ 
+     ui->use_multi_core->setEnabled(runtime_lock);
+     ui->use_multi_core->setChecked(Settings::values.use_multi_core.GetValue());
+-    ui->use_extended_memory_layout->setEnabled(runtime_lock);
+-    ui->use_extended_memory_layout->setChecked(
+-        Settings::values.use_extended_memory_layout.GetValue());
+ 
+     ui->toggle_check_exit->setChecked(UISettings::values.confirm_before_closing.GetValue());
+     ui->toggle_user_on_boot->setChecked(UISettings::values.select_user_on_boot.GetValue());
+@@ -79,9 +76,6 @@ void ConfigureGeneral::ResetDefaults() {
+ void ConfigureGeneral::ApplyConfiguration() {
+     ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_multi_core, ui->use_multi_core,
+                                              use_multi_core);
+-    ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_extended_memory_layout,
+-                                             ui->use_extended_memory_layout,
+-                                             use_extended_memory_layout);
+ 
+     if (Settings::IsConfiguringGlobal()) {
+         UISettings::values.confirm_before_closing = ui->toggle_check_exit->isChecked();
+@@ -141,9 +135,6 @@ void ConfigureGeneral::SetupPerGameUI() {
+                                             Settings::values.use_speed_limit, use_speed_limit);
+     ConfigurationShared::SetColoredTristate(ui->use_multi_core, Settings::values.use_multi_core,
+                                             use_multi_core);
+-    ConfigurationShared::SetColoredTristate(ui->use_extended_memory_layout,
+-                                            Settings::values.use_extended_memory_layout,
+-                                            use_extended_memory_layout);
+ 
+     connect(ui->toggle_speed_limit, &QCheckBox::clicked, ui->speed_limit, [this]() {
+         ui->speed_limit->setEnabled(ui->toggle_speed_limit->isChecked() &&
+diff --git a/src/yuzu/configuration/configure_general.h b/src/yuzu/configuration/configure_general.h
+index a090c1a3f833..7ff63f425333 100644
+--- a/src/yuzu/configuration/configure_general.h
++++ b/src/yuzu/configuration/configure_general.h
+@@ -47,7 +47,6 @@ class ConfigureGeneral : public QWidget {
+ 
+     ConfigurationShared::CheckState use_speed_limit;
+     ConfigurationShared::CheckState use_multi_core;
+-    ConfigurationShared::CheckState use_extended_memory_layout;
+ 
+     const Core::System& system;
+ };
+diff --git a/src/yuzu/configuration/configure_general.ui b/src/yuzu/configuration/configure_general.ui
+index add110bb0203..986a1625bb5d 100644
+--- a/src/yuzu/configuration/configure_general.ui
++++ b/src/yuzu/configuration/configure_general.ui
+@@ -61,13 +61,6 @@
+             </property>
+            </widget>
+           </item>
+-          <item>
+-           <widget class="QCheckBox" name="use_extended_memory_layout">
+-            <property name="text">
+-             <string>Extended memory layout (8GB DRAM)</string>
+-            </property>
+-           </widget>
+-          </item>
+           <item>
+            <widget class="QCheckBox" name="toggle_check_exit">
+             <property name="text">
+diff --git a/src/yuzu/configuration/configure_system.cpp b/src/yuzu/configuration/configure_system.cpp
+index 6af34f793567..286ccc5cd8f8 100644
+--- a/src/yuzu/configuration/configure_system.cpp
++++ b/src/yuzu/configuration/configure_system.cpp
+@@ -111,6 +111,9 @@ void ConfigureSystem::SetConfiguration() {
+     ui->custom_rtc_edit->setDateTime(QDateTime::fromSecsSinceEpoch(rtc_time));
+     ui->device_name_edit->setText(
+         QString::fromUtf8(Settings::values.device_name.GetValue().c_str()));
++    ui->use_unsafe_extended_memory_layout->setEnabled(enabled);
++    ui->use_unsafe_extended_memory_layout->setChecked(
++        Settings::values.use_unsafe_extended_memory_layout.GetValue());
+ 
+     if (Settings::IsConfiguringGlobal()) {
+         ui->combo_language->setCurrentIndex(Settings::values.language_index.GetValue());
+@@ -160,6 +163,9 @@ void ConfigureSystem::ApplyConfiguration() {
+     ConfigurationShared::ApplyPerGameSetting(&Settings::values.region_index, ui->combo_region);
+     ConfigurationShared::ApplyPerGameSetting(&Settings::values.time_zone_index,
+                                              ui->combo_time_zone);
++    ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_unsafe_extended_memory_layout,
++                                             ui->use_unsafe_extended_memory_layout,
++                                             use_unsafe_extended_memory_layout);
+ 
+     if (Settings::IsConfiguringGlobal()) {
+         // Guard if during game and set to game-specific value
+@@ -215,6 +221,10 @@ void ConfigureSystem::SetupPerGameUI() {
+         Settings::values.rng_seed.GetValue().has_value(),
+         Settings::values.rng_seed.GetValue(true).has_value(), use_rng_seed);
+ 
++    ConfigurationShared::SetColoredTristate(ui->use_unsafe_extended_memory_layout,
++                                            Settings::values.use_unsafe_extended_memory_layout,
++                                            use_unsafe_extended_memory_layout);
++
+     ui->custom_rtc_checkbox->setVisible(false);
+     ui->custom_rtc_edit->setVisible(false);
+ }
+diff --git a/src/yuzu/configuration/configure_system.h b/src/yuzu/configuration/configure_system.h
+index ec28724a19a9..ce1a91601cb0 100644
+--- a/src/yuzu/configuration/configure_system.h
++++ b/src/yuzu/configuration/configure_system.h
+@@ -41,6 +41,7 @@ class ConfigureSystem : public QWidget {
+     bool enabled = false;
+ 
+     ConfigurationShared::CheckState use_rng_seed;
++    ConfigurationShared::CheckState use_unsafe_extended_memory_layout;
+ 
+     Core::System& system;
+ };
+diff --git a/src/yuzu/configuration/configure_system.ui b/src/yuzu/configuration/configure_system.ui
+index 9e7bc3b930eb..e0caecd5e367 100644
+--- a/src/yuzu/configuration/configure_system.ui
++++ b/src/yuzu/configuration/configure_system.ui
+@@ -478,6 +478,13 @@
+             </property>
+            </widget>
+           </item>
++          <item row="7" column="0">
++           <widget class="QCheckBox" name="use_unsafe_extended_memory_layout">
++            <property name="text">
++             <string>Unsafe extended memory layout (8GB DRAM)</string>
++            </property>
++           </widget>
++          </item>
+          </layout>
+         </item>
+        </layout>
+diff --git a/src/yuzu_cmd/config.cpp b/src/yuzu_cmd/config.cpp
+index 464da32316d3..064d6a68ee49 100644
+--- a/src/yuzu_cmd/config.cpp
++++ b/src/yuzu_cmd/config.cpp
+@@ -274,7 +274,7 @@ void Config::ReadValues() {
+ 
+     // Core
+     ReadSetting("Core", Settings::values.use_multi_core);
+-    ReadSetting("Core", Settings::values.use_extended_memory_layout);
++    ReadSetting("Core", Settings::values.use_unsafe_extended_memory_layout);
+ 
+     // Cpu
+     ReadSetting("Cpu", Settings::values.cpu_accuracy);
+diff --git a/src/yuzu_cmd/default_ini.h b/src/yuzu_cmd/default_ini.h
+index 209cfc28aec3..201dba3b4f51 100644
+--- a/src/yuzu_cmd/default_ini.h
++++ b/src/yuzu_cmd/default_ini.h
+@@ -163,9 +163,9 @@ keyboard_enabled =
+ # 0: Disabled, 1 (default): Enabled
+ use_multi_core =
+ 
+-# Enable extended guest system memory layout (8GB DRAM)
++# Enable unsafe extended guest system memory layout (8GB DRAM)
+ # 0 (default): Disabled, 1: Enabled
+-use_extended_memory_layout =
++use_unsafe_extended_memory_layout =
+ 
+ [Cpu]
+ # Adjusts various optimizations.

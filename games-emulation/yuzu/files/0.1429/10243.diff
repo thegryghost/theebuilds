@@ -1,0 +1,33 @@
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 012d6fa73f..4d0481f2a6 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -1864,6 +1864,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
+         num_layers = std::max(num_layers, color_buffer->range.extent.layers);
+         images[num_images] = color_buffer->ImageHandle();
+         image_ranges[num_images] = MakeSubresourceRange(color_buffer);
++        rt_map[index] = num_images;
+         samples = color_buffer->Samples();
+         ++num_images;
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 23473bf9c6..4166b3d201 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -334,7 +334,7 @@ class Framebuffer {
+     }
+ 
+     [[nodiscard]] bool HasAspectColorBit(size_t index) const noexcept {
+-        return (image_ranges.at(index).aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
++        return (image_ranges.at(rt_map[index]).aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
+     }
+ 
+     [[nodiscard]] bool HasAspectDepthBit() const noexcept {
+@@ -354,6 +354,7 @@ class Framebuffer {
+     u32 num_images = 0;
+     std::array<VkImage, 9> images{};
+     std::array<VkImageSubresourceRange, 9> image_ranges{};
++    std::array<size_t, NUM_RT> rt_map{};
+     bool has_depth{};
+     bool has_stencil{};
+ };

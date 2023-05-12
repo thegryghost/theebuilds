@@ -1,0 +1,28 @@
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
+index 0cd87a48fab3..fee510f7b787 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
+@@ -473,7 +473,8 @@ void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, Id value) {
+ }
+ 
+ void EmitSetSampleMask(EmitContext& ctx, Id value) {
+-    ctx.OpStore(ctx.sample_mask, value);
++    const Id pointer{ctx.OpAccessChain(ctx.output_u32, ctx.sample_mask, ctx.u32_zero_value)};
++    ctx.OpStore(pointer, value);
+ }
+ 
+ void EmitSetFragDepth(EmitContext& ctx, Id value) {
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index d48d4860e472..47739794fa09 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -1572,7 +1572,8 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
+             Decorate(frag_depth, spv::Decoration::BuiltIn, spv::BuiltIn::FragDepth);
+         }
+         if (info.stores_sample_mask) {
+-            sample_mask = DefineOutput(*this, U32[1], std::nullopt);
++            const Id array_type{TypeArray(U32[1], Const(1U))};
++            sample_mask = DefineOutput(*this, array_type, std::nullopt);
+             Decorate(sample_mask, spv::Decoration::BuiltIn, spv::BuiltIn::SampleMask);
+         }
+         break;

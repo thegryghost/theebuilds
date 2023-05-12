@@ -1,0 +1,164 @@
+diff --git a/src/audio_core/renderer/adsp/audio_renderer.cpp b/src/audio_core/renderer/adsp/audio_renderer.cpp
+index 503f403496..42b4b167a0 100644
+--- a/src/audio_core/renderer/adsp/audio_renderer.cpp
++++ b/src/audio_core/renderer/adsp/audio_renderer.cpp
+@@ -189,8 +189,6 @@ void AudioRenderer::ThreadFunc() {
+                     max_time = std::min(command_buffer.time_limit, max_time);
+                     command_list_processor.SetProcessTimeMax(max_time);
+ 
+-                    streams[index]->WaitFreeSpace();
+-
+                     // Process the command list
+                     {
+                         MICROPROFILE_SCOPE(Audio_Renderer);
+diff --git a/src/audio_core/renderer/system_manager.cpp b/src/audio_core/renderer/system_manager.cpp
+index 07d8ed093e..9095016414 100644
+--- a/src/audio_core/renderer/system_manager.cpp
++++ b/src/audio_core/renderer/system_manager.cpp
+@@ -15,9 +15,14 @@ MICROPROFILE_DEFINE(Audio_RenderSystemManager, "Audio", "Render System Manager",
+                     MP_RGB(60, 19, 97));
+ 
+ namespace AudioCore::AudioRenderer {
++constexpr std::chrono::nanoseconds RENDER_TIME{5'000'000UL};
+ 
+ SystemManager::SystemManager(Core::System& core_)
+-    : core{core_}, adsp{core.AudioCore().GetADSP()}, mailbox{adsp.GetRenderMailbox()} {}
++    : core{core_}, adsp{core.AudioCore().GetADSP()}, mailbox{adsp.GetRenderMailbox()},
++      thread_event{Core::Timing::CreateEvent(
++          "AudioRendererSystemManager", [this](std::uintptr_t, s64 time, std::chrono::nanoseconds) {
++              return ThreadFunc2(time);
++          })} {}
+ 
+ SystemManager::~SystemManager() {
+     Stop();
+@@ -27,7 +32,9 @@ bool SystemManager::InitializeUnsafe() {
+     if (!active) {
+         if (adsp.Start()) {
+             active = true;
+-            thread = std::jthread([this](std::stop_token stop_token) { ThreadFunc(); });
++            thread = std::jthread([this](std::stop_token stop_token) { ThreadFunc(stop_token); });
++            core.CoreTiming().ScheduleLoopingEvent(std::chrono::nanoseconds(0), RENDER_TIME,
++                                                   thread_event);
+         }
+     }
+ 
+@@ -38,9 +45,13 @@ void SystemManager::Stop() {
+     if (!active) {
+         return;
+     }
++    core.CoreTiming().UnscheduleEvent(thread_event, {});
+     active = false;
+-    update.store(true);
+-    update.notify_all();
++    {
++        std::scoped_lock l{cv_mutex};
++        do_update = false;
++    }
++    thread.request_stop();
+     thread.join();
+     adsp.Stop();
+ }
+@@ -85,12 +96,12 @@ bool SystemManager::Remove(System& system_) {
+     return true;
+ }
+ 
+-void SystemManager::ThreadFunc() {
++void SystemManager::ThreadFunc(std::stop_token stop_token) {
+     static constexpr char name[]{"AudioRenderSystemManager"};
+     MicroProfileOnThreadCreate(name);
+     Common::SetCurrentThreadName(name);
+     Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+-    while (active) {
++    while (active && !stop_token.stop_requested()) {
+         {
+             std::scoped_lock l{mutex1};
+ 
+@@ -103,7 +114,20 @@ void SystemManager::ThreadFunc() {
+ 
+         adsp.Signal();
+         adsp.Wait();
++
++        std::unique_lock l{cv_mutex};
++        Common::CondvarWait(update_cv, l, stop_token, [this]() { return do_update; });
++        do_update = false;
++    }
++}
++
++std::optional<std::chrono::nanoseconds> SystemManager::ThreadFunc2(s64 time) {
++    {
++        std::scoped_lock l{cv_mutex};
++        do_update = true;
+     }
++    update_cv.notify_all();
++    return std::nullopt;
+ }
+ 
+ } // namespace AudioCore::AudioRenderer
+diff --git a/src/audio_core/renderer/system_manager.h b/src/audio_core/renderer/system_manager.h
+index 1f0bbd8b4c..b28e7c1c6b 100644
+--- a/src/audio_core/renderer/system_manager.h
++++ b/src/audio_core/renderer/system_manager.h
+@@ -66,13 +66,12 @@ class SystemManager {
+     /**
+      * Main thread responsible for command generation.
+      */
+-    void ThreadFunc();
++    void ThreadFunc(std::stop_token stop_token);
+ 
+-    enum class StreamState {
+-        Filling,
+-        Steady,
+-        Draining,
+-    };
++    /**
++     * Signalling core timing thread to run ThreadFunc.
++     */
++    std::optional<std::chrono::nanoseconds> ThreadFunc2(s64 time);
+ 
+     /// Core system
+     Core::System& core;
+@@ -90,8 +89,12 @@ class SystemManager {
+     ADSP::ADSP& adsp;
+     /// AudioRenderer mailbox for communication
+     ADSP::AudioRenderer_Mailbox* mailbox{};
++    /// Core timing event to signal main thread
++    std::shared_ptr<Core::Timing::EventType> thread_event;
+     /// Atomic for main thread to wait on
+-    std::atomic<bool> update{};
++    std::mutex cv_mutex{};
++    bool do_update{};
++    std::condition_variable_any update_cv{};
+ };
+ 
+ } // namespace AudioCore::AudioRenderer
+diff --git a/src/audio_core/sink/sink_stream.cpp b/src/audio_core/sink/sink_stream.cpp
+index 13ba26e74d..6dfa6f8639 100644
+--- a/src/audio_core/sink/sink_stream.cpp
++++ b/src/audio_core/sink/sink_stream.cpp
+@@ -269,10 +269,4 @@ u64 SinkStream::GetExpectedPlayedSampleCount() {
+     return std::min<u64>(exp_played_sample_count, max_played_sample_count) + TargetSampleCount * 3;
+ }
+ 
+-void SinkStream::WaitFreeSpace() {
+-    std::unique_lock lk{release_mutex};
+-    release_cv.wait(
+-        lk, [this]() { return queued_buffers < max_queue_size || system.IsShuttingDown(); });
+-}
+-
+ } // namespace AudioCore::Sink
+diff --git a/src/audio_core/sink/sink_stream.h b/src/audio_core/sink/sink_stream.h
+index 21b5b40a1c..22a5bb3822 100644
+--- a/src/audio_core/sink/sink_stream.h
++++ b/src/audio_core/sink/sink_stream.h
+@@ -207,11 +207,6 @@ class SinkStream {
+      */
+     u64 GetExpectedPlayedSampleCount();
+ 
+-    /**
+-     * Waits for free space in the sample ring buffer
+-     */
+-    void WaitFreeSpace();
+-
+ protected:
+     /// Core system
+     Core::System& system;

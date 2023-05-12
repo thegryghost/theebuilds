@@ -33,6 +33,12 @@ DEPEND="
 "
 DOCS=( README.md THEMES.md CREDITS.md USERGUIDE.md )
 
+
+PATCHES=(
+        "${FILESDIR}/gcc13.patch"
+)
+
+
 #src_prepare() {
 #	eapply_user
 #	cmake_src_prepare

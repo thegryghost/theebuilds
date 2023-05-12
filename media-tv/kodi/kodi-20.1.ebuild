@@ -15,7 +15,7 @@ LIBDVDNAV_VERSION="6.1.1-Next-Nexus-Alpha2-2"
 FFMPEG_VERSION="4.4.1"
 CODENAME="Nexus"
 FFMPEG_KODI_VERSION="Alpha1"
-PYTHON_COMPAT=( python3_{9,10} )
+PYTHON_COMPAT=( python3_{9,10,11} )
 SRC_URI="https://github.com/xbmc/libdvdcss/archive/${LIBDVDCSS_VERSION}.tar.gz -> libdvdcss-${LIBDVDCSS_VERSION}.tar.gz
 	https://github.com/xbmc/libdvdread/archive/${LIBDVDREAD_VERSION}.tar.gz -> libdvdread-${LIBDVDREAD_VERSION}.tar.gz
 	https://github.com/xbmc/libdvdnav/archive/${LIBDVDNAV_VERSION}.tar.gz -> libdvdnav-${LIBDVDNAV_VERSION}.tar.gz
@@ -188,6 +188,9 @@ BDEPEND="${COMMON_DEPEND}
 	virtual/jre
 "
 
+PATCHES=( "${FILESDIR}/${P}-gcc13.patch" )
+
+
 CONFIG_CHECK="~IP_MULTICAST"
 ERROR_IP_MULTICAST="
 In some cases Kodi needs to access multicast addresses.
@@ -208,8 +211,8 @@ src_unpack() {
 }
 
 src_prepare() {
+#	eapply "${FILESDIR}/${P}-gcc13.patch"
 	cmake_src_prepare
-
 	# avoid long delays when powerkit isn't running #348580
 	sed -i \
 		-e '/dbus_connection_send_with_reply_and_block/s:-1:3000:' \

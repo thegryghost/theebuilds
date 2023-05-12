@@ -120,13 +120,7 @@ src_prepare() {
 		eapply "${FILESDIR}/0.1429/10086.diff"
 		eapply "${FILESDIR}/0.1429/10091.diff"
 		eapply "${FILESDIR}/0.1429/10107.diff"
-		eapply "${FILESDIR}/0.1429/10181.diff"
 		eapply "${FILESDIR}/0.1429/10221.diff"
-		eapply "${FILESDIR}/0.1429/10234.diff"
-		eapply "${FILESDIR}/0.1429/10236.diff"
-		eapply "${FILESDIR}/0.1429/10237.diff"
-		eapply "${FILESDIR}/0.1429/10243.diff"
-		eapply "${FILESDIR}/0.1429/10244.diff"
 		eapply "${FILESDIR}/0.1429/10249.diff"
 		eapply "${FILESDIR}/0.1429/4042.diff"
 	fi

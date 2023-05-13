@@ -1,0 +1,30 @@
+--- ./external/lunasvg/source/property.h.org	2023-05-10 01:48:45.261735693 -0400
++++ ./external/lunasvg/source/property.h	2023-05-10 01:49:01.828773983 -0400
+@@ -4,6 +4,7 @@
+ #include <vector>
+ #include <string>
+ #include <array>
++#include <cinttypes>
+ 
+ namespace lunasvg {
+ 
+--- ./external/lunasvg/source/layoutcontext.h.org	2023-05-10 01:47:47.007095547 -0400
++++ ./external/lunasvg/source/layoutcontext.h	2023-05-10 01:48:11.117636427 -0400
+@@ -7,6 +7,7 @@
+ #include <list>
+ #include <map>
+ #include <set>
++#include <cinttypes>
+ 
+ namespace lunasvg {
+ 
+--- ./external/lunasvg/include/lunasvg.h.org	2023-05-10 01:49:57.153348262 -0400
++++ ./external/lunasvg/include/lunasvg.h	2023-05-10 01:50:08.673606651 -0400
+@@ -25,6 +25,7 @@
+ 
+ #include <memory>
+ #include <string>
++#include <cinttypes>
+ 
+ #if defined(_MSC_VER) && defined(LUNASVG_SHARED)
+ #ifdef LUNASVG_EXPORT

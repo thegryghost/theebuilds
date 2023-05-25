@@ -1,0 +1,62 @@
+diff --git a/src/citra/config.cpp b/src/citra/config.cpp
+index 88a36ed66..daf2ff4dc 100644
+--- a/src/citra/config.cpp
++++ b/src/citra/config.cpp
+@@ -7,7 +7,7 @@
+ #include <sstream>
+ #include <unordered_map>
+ #include <SDL.h>
+-#include <inih/cpp/INIReader.h>
++#include <INIReader.h>
+ #include "citra/config.h"
+ #include "citra/default_ini.h"
+ #include "common/file_util.h"
+--- a/src/citra_qt/CMakeLists.txt	2022-04-08 23:20:42.063947240 -0400
++++ b/src/citra_qt/CMakeLists.txt	2022-04-08 23:20:27.857653771 -0400
+@@ -195,6 +195,10 @@
+ file(GLOB_RECURSE ICONS ${PROJECT_SOURCE_DIR}/dist/icons/*)
+ file(GLOB_RECURSE THEMES ${PROJECT_SOURCE_DIR}/dist/qt_themes/*)
+ 
++if (USE_SYSTEM_INIH)
++    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} ${INIH_LDFLAGS})
++endif()
++
+ if (ENABLE_QT_TRANSLATION)
+     set(CITRA_QT_LANGUAGES "${PROJECT_SOURCE_DIR}/dist/languages" CACHE PATH "Path to the translation bundle for the Qt frontend")
+     option(GENERATE_QT_TRANSLATION "Generate en.ts as the translation source file" OFF)
+--- a/src/citra/CMakeLists.txt	2022-04-08 23:22:20.724688396 -0400
++++ b/src/citra/CMakeLists.txt	2022-04-08 23:22:43.160765491 -0400
+@@ -18,6 +18,10 @@
+ 
+ create_target_directory_groups(citra)
+ 
++if (USE_SYSTEM_INIH)
++    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} ${INIH_LDFLAGS})
++endif()
++
+ target_link_libraries(citra PRIVATE citra_common citra_core input_common network)
+ target_link_libraries(citra PRIVATE inih glad)
+ if (MSVC)
+--- a/externals/CMakeLists.txt	2022-04-08 23:35:53.483392641 -0400
++++ b/externals/CMakeLists.txt	2022-04-08 23:36:18.446071512 -0400
+@@ -1,4 +1,5 @@
+ # Definitions for all external bundled libraries
++include(FindPkgConfig)
+
+ # Suppress warnings from external libraries
+ if (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+@@ -58,7 +58,11 @@
+ add_subdirectory(glad)
+ 
+ # inih
+-add_subdirectory(inih)
++if (NOT USE_SYSTEM_INIH)
++    add_subdirectory(inih)
++else()
++    pkg_check_modules(INIH REQUIRED inih INIReader)
++endif()
+ 
+ # MicroProfile
+ add_library(microprofile INTERFACE)
+--- src/citra/CMakeLists.txt.org	2023-05-15 00:37:01.231093247 -0400
++++ src/citra/CMakeLists.txt	2023-05-15 00:36:54.227720316 -0400

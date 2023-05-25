@@ -1,0 +1,13 @@
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 9790949f5c8..31d75455075 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1507,7 +1507,7 @@ std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImag
+         if (!copy.must_accelerate) {
+             do {
+                 if (!src_id && !dst_id) {
+-                    break;
++                    return std::nullopt;
+                 }
+                 if (src_id && True(slot_images[src_id].flags & ImageFlagBits::GpuModified)) {
+                     break;

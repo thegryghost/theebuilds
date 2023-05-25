@@ -1,0 +1,21 @@
+diff --git a/src/core/hle/kernel/k_memory_block_manager.h b/src/core/hle/kernel/k_memory_block_manager.h
+index 7c0bd16f0c8..96496e99043 100644
+--- a/src/core/hle/kernel/k_memory_block_manager.h
++++ b/src/core/hle/kernel/k_memory_block_manager.h
+@@ -144,14 +144,10 @@ class KMemoryBlockManager final {
+ 
+ class KScopedMemoryBlockManagerAuditor {
+ public:
+-    explicit KScopedMemoryBlockManagerAuditor(KMemoryBlockManager* m) : m_manager(m) {
+-        ASSERT(m_manager->CheckState());
+-    }
++    explicit KScopedMemoryBlockManagerAuditor(KMemoryBlockManager* m) : m_manager(m) {}
+     explicit KScopedMemoryBlockManagerAuditor(KMemoryBlockManager& m)
+         : KScopedMemoryBlockManagerAuditor(std::addressof(m)) {}
+-    ~KScopedMemoryBlockManagerAuditor() {
+-        ASSERT(m_manager->CheckState());
+-    }
++    ~KScopedMemoryBlockManagerAuditor() = default;
+ 
+ private:
+     KMemoryBlockManager* m_manager;

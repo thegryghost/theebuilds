@@ -1,0 +1,69 @@
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 98756e4daf7..f3a6d506977 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -30,8 +30,8 @@ BufferCache<P>::BufferCache(VideoCore::RasterizerInterface& rasterizer_,
+     }
+ 
+     const s64 device_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
+-    const s64 min_spacing_expected = device_memory - 1_GiB - 512_MiB;
+-    const s64 min_spacing_critical = device_memory - 1_GiB;
++    const s64 min_spacing_expected = device_memory - 1_GiB;
++    const s64 min_spacing_critical = device_memory - 512_MiB;
+     const s64 mem_threshold = std::min(device_memory, TARGET_THRESHOLD);
+     const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
+     const s64 min_vacancy_critical = (3 * mem_threshold) / 10;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index b24086fce50..6abafa877a2 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -49,8 +49,8 @@ TextureCache<P>::TextureCache(Runtime& runtime_, VideoCore::RasterizerInterface&
+ 
+     if constexpr (HAS_DEVICE_MEMORY_INFO) {
+         const s64 device_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
+-        const s64 min_spacing_expected = device_memory - 1_GiB - 512_MiB;
+-        const s64 min_spacing_critical = device_memory - 1_GiB;
++        const s64 min_spacing_expected = device_memory - 1_GiB;
++        const s64 min_spacing_critical = device_memory - 512_MiB;
+         const s64 mem_threshold = std::min(device_memory, TARGET_THRESHOLD);
+         const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
+         const s64 min_vacancy_critical = (3 * mem_threshold) / 10;
+@@ -86,10 +86,12 @@ void TextureCache<P>::RunGarbageCollector() {
+             // used by the async decoder thread.
+             return false;
+         }
++        if (!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) {
++            return false;
++        }
+         const bool must_download =
+             image.IsSafeDownload() && False(image.flags & ImageFlagBits::BadOverlap);
+-        if (!high_priority_mode &&
+-            (must_download || True(image.flags & ImageFlagBits::CostlyLoad))) {
++        if (!high_priority_mode && must_download) {
+             return false;
+         }
+         if (must_download) {
+diff --git a/src/video_core/vulkan_common/vulkan_device.cpp b/src/video_core/vulkan_common/vulkan_device.cpp
+index f6e6f27369a..b49f78bc9e9 100644
+--- a/src/video_core/vulkan_common/vulkan_device.cpp
++++ b/src/video_core/vulkan_common/vulkan_device.cpp
+@@ -1001,6 +1001,11 @@ u64 Device::GetDeviceMemoryUsage() const {
+ }
+ 
+ void Device::CollectPhysicalMemoryInfo() {
++    // Account for resolution scaling in memory limits
++    const size_t normal_memory = 6_GiB;
++    const size_t scaler_memory = 1_GiB * Settings::values.resolution_info.ScaleUp(1);
++
++    // Calculate limits using memory budget
+     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+     const auto mem_info =
+@@ -1030,6 +1035,7 @@ void Device::CollectPhysicalMemoryInfo() {
+     if (!is_integrated) {
+         const u64 reserve_memory = std::min<u64>(device_access_memory / 8, 1_GiB);
+         device_access_memory -= reserve_memory;
++        device_access_memory = std::min<u64>(device_access_memory, normal_memory + scaler_memory);
+         return;
+     }
+     const s64 available_memory = static_cast<s64>(device_access_memory - device_initial_usage);

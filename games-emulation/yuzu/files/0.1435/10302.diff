@@ -1,0 +1,485 @@
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index fff57ffa9c..d2be26bb5a 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -23,42 +23,94 @@ BufferCache<P>::BufferCache(VideoCore::RasterizerInterface& rasterizer_,
+     common_ranges.clear();
+     inline_buffer_id = NULL_BUFFER_ID;
+ 
+-    if (!runtime.CanReportMemoryUsage()) {
+-        minimum_memory = DEFAULT_EXPECTED_MEMORY;
+-        critical_memory = DEFAULT_CRITICAL_MEMORY;
+-        return;
+-    }
+-
+     const s64 device_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
+-    const s64 min_spacing_expected = device_memory - 1_GiB - 512_MiB;
+-    const s64 min_spacing_critical = device_memory - 1_GiB;
+-    const s64 mem_threshold = std::min(device_memory, TARGET_THRESHOLD);
+-    const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
+-    const s64 min_vacancy_critical = (3 * mem_threshold) / 10;
+-    minimum_memory = static_cast<u64>(
+-        std::max(std::min(device_memory - min_vacancy_expected, min_spacing_expected),
+-                 DEFAULT_EXPECTED_MEMORY));
+-    critical_memory = static_cast<u64>(
+-        std::max(std::min(device_memory - min_vacancy_critical, min_spacing_critical),
+-                 DEFAULT_CRITICAL_MEMORY));
++    const u64 device_mem_per = device_memory / 100;
++    minimum_memory = device_mem_per * 25;
++    expected_memory = device_mem_per * 50;
++    critical_memory = device_mem_per * 80;
++    LOG_INFO(HW_GPU, "Buffer cache device memory limits: min {} expected {} critical {}",
++             minimum_memory, expected_memory, critical_memory);
+ }
+ 
+ template <class P>
+ void BufferCache<P>::RunGarbageCollector() {
+-    const bool aggressive_gc = total_used_memory >= critical_memory;
+-    const u64 ticks_to_destroy = aggressive_gc ? 60 : 120;
+-    int num_iterations = aggressive_gc ? 64 : 32;
+-    const auto clean_up = [this, &num_iterations](BufferId buffer_id) {
++    if (total_used_memory < minimum_memory) {
++        return;
++    }
++    bool is_expected = total_used_memory >= expected_memory;
++    bool is_critical = total_used_memory >= critical_memory;
++    const u64 ticks_to_destroy = is_critical ? 60ULL : is_expected ? 120ULL : 240ULL;
++    size_t num_iterations = is_critical ? 40 : (is_expected ? 20 : 10);
++    boost::container::small_vector<std::pair<BufferId, VideoCommon::BufferCopies>, 40> to_delete;
++    u64 total_size{0};
++
++    const auto clean_up = [&](BufferId buffer_id) {
+         if (num_iterations == 0) {
+             return true;
+         }
+         --num_iterations;
+         auto& buffer = slot_buffers[buffer_id];
+-        DownloadBufferMemory(buffer);
+-        DeleteBuffer(buffer_id);
++        auto buffer_copies = FullDownloadCopies(buffer, buffer.CpuAddr(), buffer.SizeBytes());
++        total_size += buffer_copies.total_size;
++        to_delete.push_back({buffer_id, std::move(buffer_copies)});
+         return false;
+     };
+     lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, clean_up);
++
++    if (total_size > 0) {
++        if constexpr (USE_MEMORY_MAPS) {
++            auto map = runtime.DownloadStagingBuffer(Common::AlignUp(total_size, 1024));
++            auto base_offset = map.offset;
++
++            for (auto& [buffer_id, buffer_copies] : to_delete) {
++                if (buffer_copies.total_size == 0) {
++                    continue;
++                }
++
++                for (auto& copy : buffer_copies.copies) {
++                    copy.dst_offset += map.offset;
++                }
++
++                auto& buffer = slot_buffers[buffer_id];
++                runtime.CopyBuffer(map.buffer, buffer, buffer_copies.copies);
++                map.offset += buffer_copies.total_size;
++            }
++
++            runtime.Finish();
++
++            for (auto& [buffer_id, buffer_copies] : to_delete) {
++                if (buffer_copies.total_size > 0) {
++                    auto& buffer = slot_buffers[buffer_id];
++                    for (const auto& copy : buffer_copies.copies) {
++                        const VAddr copy_cpu_addr = buffer.CpuAddr() + copy.src_offset;
++                        const u8* copy_mapped_memory =
++                            map.mapped_span.data() + copy.dst_offset - base_offset;
++                        cpu_memory.WriteBlockUnsafe(copy_cpu_addr, copy_mapped_memory, copy.size);
++                    }
++                }
++                DeleteBuffer(buffer_id);
++            }
++        } else {
++            for (auto& [buffer_id, buffer_copies] : to_delete) {
++                if (buffer_copies.total_size == 0) {
++                    continue;
++                }
++                const std::span<u8> immediate_buffer = ImmediateBuffer(buffer_copies.total_size);
++                auto& buffer = slot_buffers[buffer_id];
++                for (const BufferCopy& copy : buffer_copies.copies) {
++                    buffer.ImmediateDownload(copy.src_offset,
++                                             immediate_buffer.subspan(0, copy.size));
++                    const VAddr copy_cpu_addr = buffer.CpuAddr() + copy.src_offset;
++                    cpu_memory.WriteBlockUnsafe(copy_cpu_addr, immediate_buffer.data(), copy.size);
++                }
++                DeleteBuffer(buffer_id);
++            }
++        }
++    } else {
++        for (auto& [buffer_id, buffer_copies] : to_delete) {
++            DeleteBuffer(buffer_id);
++        }
++    }
+ }
+ 
+ template <class P>
+@@ -77,12 +129,10 @@ void BufferCache<P>::TickFrame() {
+     uniform_buffer_skip_cache_size = skip_preferred ? DEFAULT_SKIP_CACHE_SIZE : 0;
+ 
+     // If we can obtain the memory info, use it instead of the estimate.
+-    if (runtime.CanReportMemoryUsage()) {
++    if (runtime.CanReportMemoryUsage() && frame_tick % 60 == 0) {
+         total_used_memory = runtime.GetDeviceMemoryUsage();
+     }
+-    if (total_used_memory >= minimum_memory) {
+-        RunGarbageCollector();
+-    }
++    RunGarbageCollector();
+     ++frame_tick;
+     delayed_destruction_ring.Tick();
+ 
+@@ -1556,17 +1606,13 @@ bool BufferCache<P>::InlineMemory(VAddr dest_address, size_t copy_size,
+ }
+ 
+ template <class P>
+-void BufferCache<P>::DownloadBufferMemory(Buffer& buffer) {
+-    DownloadBufferMemory(buffer, buffer.CpuAddr(), buffer.SizeBytes());
+-}
+-
+-template <class P>
+-void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, VAddr cpu_addr, u64 size) {
+-    boost::container::small_vector<BufferCopy, 1> copies;
++VideoCommon::BufferCopies BufferCache<P>::FullDownloadCopies(Buffer& buffer, VAddr cpu_addr,
++                                                             u64 size, bool clear) {
++    boost::container::small_vector<BufferCopy, 16> copies;
+     u64 total_size_bytes = 0;
+     u64 largest_copy = 0;
+-    memory_tracker.ForEachDownloadRangeAndClear(
+-        cpu_addr, size, [&](u64 cpu_addr_out, u64 range_size) {
++    memory_tracker.ForEachDownloadRange(
++        cpu_addr, size, clear, [&](u64 cpu_addr_out, u64 range_size) {
+             const VAddr buffer_addr = buffer.CpuAddr();
+             const auto add_download = [&](VAddr start, VAddr end) {
+                 const u64 new_offset = start - buffer_addr;
+@@ -1590,22 +1636,35 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, VAddr cpu_addr, u64 si
+             ClearDownload(subtract_interval);
+             common_ranges.subtract(subtract_interval);
+         });
+-    if (total_size_bytes == 0) {
++    return {total_size_bytes, largest_copy, std::move(copies)};
++}
++
++template <class P>
++void BufferCache<P>::DownloadBufferMemory(Buffer& buffer) {
++    DownloadBufferMemory(buffer, buffer.CpuAddr(), buffer.SizeBytes());
++}
++
++template <class P>
++void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, VAddr cpu_addr, u64 size) {
++    auto buffer_copies = FullDownloadCopies(buffer, cpu_addr, size);
++    if (buffer_copies.total_size == 0) {
+         return;
+     }
++
+     MICROPROFILE_SCOPE(GPU_DownloadMemory);
+ 
+     if constexpr (USE_MEMORY_MAPS) {
+-        auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
++        auto download_staging = runtime.DownloadStagingBuffer(buffer_copies.total_size);
+         const u8* const mapped_memory = download_staging.mapped_span.data();
+-        const std::span<BufferCopy> copies_span(copies.data(), copies.data() + copies.size());
+-        for (BufferCopy& copy : copies) {
++        const std::span<BufferCopy> copies_span(buffer_copies.copies.data(),
++                                                buffer_copies.copies.size());
++        for (BufferCopy& copy : buffer_copies.copies) {
+             // Modify copies to have the staging offset in mind
+             copy.dst_offset += download_staging.offset;
+         }
+         runtime.CopyBuffer(download_staging.buffer, buffer, copies_span);
+         runtime.Finish();
+-        for (const BufferCopy& copy : copies) {
++        for (const BufferCopy& copy : buffer_copies.copies) {
+             const VAddr copy_cpu_addr = buffer.CpuAddr() + copy.src_offset;
+             // Undo the modified offset
+             const u64 dst_offset = copy.dst_offset - download_staging.offset;
+@@ -1613,8 +1672,8 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, VAddr cpu_addr, u64 si
+             cpu_memory.WriteBlockUnsafe(copy_cpu_addr, copy_mapped_memory, copy.size);
+         }
+     } else {
+-        const std::span<u8> immediate_buffer = ImmediateBuffer(largest_copy);
+-        for (const BufferCopy& copy : copies) {
++        const std::span<u8> immediate_buffer = ImmediateBuffer(buffer_copies.largest_copy);
++        for (const BufferCopy& copy : buffer_copies.copies) {
+             buffer.ImmediateDownload(copy.src_offset, immediate_buffer.subspan(0, copy.size));
+             const VAddr copy_cpu_addr = buffer.CpuAddr() + copy.src_offset;
+             cpu_memory.WriteBlockUnsafe(copy_cpu_addr, immediate_buffer.data(), copy.size);
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 0445ec47f4..40ec2cc407 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -57,8 +57,6 @@ MICROPROFILE_DECLARE(GPU_PrepareBuffers);
+ MICROPROFILE_DECLARE(GPU_BindUploadBuffers);
+ MICROPROFILE_DECLARE(GPU_DownloadMemory);
+ 
+-using BufferId = SlotId;
+-
+ using VideoCore::Surface::PixelFormat;
+ using namespace Common::Literals;
+ 
+@@ -466,6 +464,9 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelI
+ 
+     void MappedUploadMemory(Buffer& buffer, u64 total_size_bytes, std::span<BufferCopy> copies);
+ 
++    [[nodiscard]] VideoCommon::BufferCopies FullDownloadCopies(Buffer& buffer, VAddr cpu_addr,
++                                                               u64 size, bool clear = true);
++
+     void DownloadBufferMemory(Buffer& buffer_id);
+ 
+     void DownloadBufferMemory(Buffer& buffer_id, VAddr cpu_addr, u64 size);
+@@ -569,6 +570,7 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelI
+     u64 frame_tick = 0;
+     u64 total_used_memory = 0;
+     u64 minimum_memory = 0;
++    u64 expected_memory = 0;
+     u64 critical_memory = 0;
+     BufferId inline_buffer_id;
+ 
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index b24086fce5..87a064de63 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -47,35 +47,31 @@ TextureCache<P>::TextureCache(Runtime& runtime_, VideoCore::RasterizerInterface&
+     void(slot_image_views.insert(runtime, NullImageViewParams{}));
+     void(slot_samplers.insert(runtime, sampler_descriptor));
+ 
+-    if constexpr (HAS_DEVICE_MEMORY_INFO) {
+-        const s64 device_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
+-        const s64 min_spacing_expected = device_memory - 1_GiB - 512_MiB;
+-        const s64 min_spacing_critical = device_memory - 1_GiB;
+-        const s64 mem_threshold = std::min(device_memory, TARGET_THRESHOLD);
+-        const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
+-        const s64 min_vacancy_critical = (3 * mem_threshold) / 10;
+-        expected_memory = static_cast<u64>(
+-            std::max(std::min(device_memory - min_vacancy_expected, min_spacing_expected),
+-                     DEFAULT_EXPECTED_MEMORY));
+-        critical_memory = static_cast<u64>(
+-            std::max(std::min(device_memory - min_vacancy_critical, min_spacing_critical),
+-                     DEFAULT_CRITICAL_MEMORY));
+-        minimum_memory = static_cast<u64>((device_memory - mem_threshold) / 2);
+-    } else {
+-        expected_memory = DEFAULT_EXPECTED_MEMORY + 512_MiB;
+-        critical_memory = DEFAULT_CRITICAL_MEMORY + 1_GiB;
+-        minimum_memory = 0;
+-    }
++    const s64 device_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
++    const u64 device_mem_per = device_memory / 100;
++    minimum_memory = device_mem_per * 25;
++    expected_memory = device_mem_per * 50;
++    critical_memory = device_mem_per * 80;
++    LOG_INFO(HW_GPU, "Texture cache device memory limits: min {} expected {} critical {}",
++             minimum_memory, expected_memory, critical_memory);
+ }
+ 
+ template <class P>
+ void TextureCache<P>::RunGarbageCollector() {
+-    bool high_priority_mode = total_used_memory >= expected_memory;
+-    bool aggressive_mode = total_used_memory >= critical_memory;
+-    const u64 ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 50ULL;
+-    size_t num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
+-    const auto clean_up = [this, &num_iterations, &high_priority_mode,
+-                           &aggressive_mode](ImageId image_id) {
++    if (total_used_memory < minimum_memory) {
++        return;
++    }
++    bool is_expected = total_used_memory >= expected_memory;
++    bool is_critical = total_used_memory >= critical_memory;
++    const u64 ticks_to_destroy = is_critical ? 10ULL : is_expected ? 25ULL : 50ULL;
++    size_t num_iterations = is_critical ? 40 : (is_expected ? 20 : 10);
++    boost::container::small_vector<
++        std::tuple<ImageId, bool, boost::container::small_vector<BufferImageCopy, 16>>, 40>
++        to_delete;
++    u64 total_download_size{0};
++    u32 largest_download_size{0};
++
++    const auto clean_up = [&](ImageId image_id) {
+         if (num_iterations == 0) {
+             return true;
+         }
+@@ -86,51 +82,70 @@ void TextureCache<P>::RunGarbageCollector() {
+             // used by the async decoder thread.
+             return false;
+         }
+-        const bool must_download =
+-            image.IsSafeDownload() && False(image.flags & ImageFlagBits::BadOverlap);
+-        if (!high_priority_mode &&
+-            (must_download || True(image.flags & ImageFlagBits::CostlyLoad))) {
+-            return false;
++
++        const bool do_download = image.IsSafeDownload() &&
++                                 False(image.flags & ImageFlagBits::BadOverlap) &&
++                                 (False(image.flags & ImageFlagBits::CostlyLoad) || is_critical);
++        if (do_download) {
++            total_download_size += image.unswizzled_size_bytes;
++            largest_download_size = std::max(largest_download_size, image.unswizzled_size_bytes);
+         }
+-        if (must_download) {
+-            auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
+-            const auto copies = FullDownloadCopies(image.info);
++        to_delete.push_back({image_id, do_download, {}});
++        return false;
++    };
++    lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, clean_up);
++
++    if (total_download_size > 0) {
++        auto map = runtime.DownloadStagingBuffer(total_download_size);
++        for (auto& [image_id, do_download, copies] : to_delete) {
++            if (!do_download) {
++                continue;
++            }
++            Image& image = slot_images[image_id];
++            copies = FullDownloadCopies(image.info);
+             image.DownloadMemory(map, copies);
+-            runtime.Finish();
+-            SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span,
+-                         swizzle_data_buffer);
+-        }
+-        if (True(image.flags & ImageFlagBits::Tracked)) {
+-            UntrackImage(image, image_id);
++            map.offset += Common::AlignUp(image.unswizzled_size_bytes, 64);
+         }
+-        UnregisterImage(image_id);
+-        DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+-        if (total_used_memory < critical_memory) {
+-            if (aggressive_mode) {
+-                // Sink the aggresiveness.
+-                num_iterations >>= 2;
+-                aggressive_mode = false;
+-                return false;
++
++        runtime.Finish();
++        swizzle_data_buffer.resize_destructive(Common::AlignUp(largest_download_size, 1024));
++
++        u64 offset{0};
++        for (auto& [image_id, do_download, copies] : to_delete) {
++            Image& image = slot_images[image_id];
++            if (do_download) {
++                for (auto& copy : copies) {
++                    copy.buffer_offset += offset;
++                }
++                SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span,
++                             swizzle_data_buffer);
++                offset += Common::AlignUp(image.unswizzled_size_bytes, 64);
+             }
+-            if (high_priority_mode && total_used_memory < expected_memory) {
+-                num_iterations >>= 1;
+-                high_priority_mode = false;
++            if (True(image.flags & ImageFlagBits::Tracked)) {
++                UntrackImage(image, image_id);
+             }
++            UnregisterImage(image_id);
++            DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+         }
+-        return false;
+-    };
+-    lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, clean_up);
++    } else {
++        for (auto& [image_id, do_download, copies] : to_delete) {
++            Image& image = slot_images[image_id];
++            if (True(image.flags & ImageFlagBits::Tracked)) {
++                UntrackImage(image, image_id);
++            }
++            UnregisterImage(image_id);
++            DeleteImage(image_id, image.scale_tick > frame_tick + 5);
++        }
++    }
+ }
+ 
+ template <class P>
+ void TextureCache<P>::TickFrame() {
+     // If we can obtain the memory info, use it instead of the estimate.
+-    if (runtime.CanReportMemoryUsage()) {
++    if (runtime.CanReportMemoryUsage() && frame_tick % 60 == 0) {
+         total_used_memory = runtime.GetDeviceMemoryUsage();
+     }
+-    if (total_used_memory > minimum_memory) {
+-        RunGarbageCollector();
+-    }
++    RunGarbageCollector();
+     sentenced_images.Tick();
+     sentenced_framebuffers.Tick();
+     sentenced_image_view.Tick();
+diff --git a/src/video_core/texture_cache/types.h b/src/video_core/texture_cache/types.h
+index a0e10643f3..aa7769ea02 100644
+--- a/src/video_core/texture_cache/types.h
++++ b/src/video_core/texture_cache/types.h
+@@ -3,6 +3,8 @@
+ 
+ #pragma once
+ 
++#include <boost/container/small_vector.hpp>
++
+ #include "common/common_funcs.h"
+ #include "common/common_types.h"
+ #include "video_core/texture_cache/slot_vector.h"
+@@ -14,6 +16,7 @@ constexpr size_t MAX_MIP_LEVELS = 14;
+ 
+ constexpr SlotId CORRUPT_ID{0xfffffffe};
+ 
++using BufferId = SlotId;
+ using ImageId = SlotId;
+ using ImageMapId = SlotId;
+ using ImageViewId = SlotId;
+@@ -146,6 +149,12 @@ struct BufferCopy {
+     size_t size;
+ };
+ 
++struct BufferCopies {
++    u64 total_size;
++    u64 largest_copy;
++    boost::container::small_vector<BufferCopy, 16> copies;
++};
++
+ struct SwizzleParameters {
+     Extent3D num_tiles;
+     Extent3D block;
+diff --git a/src/video_core/texture_cache/util.cpp b/src/video_core/texture_cache/util.cpp
+index f1071aa235..6ade4410a9 100644
+--- a/src/video_core/texture_cache/util.cpp
++++ b/src/video_core/texture_cache/util.cpp
+@@ -914,7 +914,7 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
+     }
+ }
+ 
+-std::vector<BufferImageCopy> FullDownloadCopies(const ImageInfo& info) {
++boost::container::small_vector<BufferImageCopy, 16> FullDownloadCopies(const ImageInfo& info) {
+     const Extent3D size = info.size;
+     const u32 bytes_per_block = BytesPerBlock(info.format);
+     if (info.type == ImageType::Linear) {
+@@ -942,7 +942,7 @@ std::vector<BufferImageCopy> FullDownloadCopies(const ImageInfo& info) {
+ 
+     u32 host_offset = 0;
+ 
+-    std::vector<BufferImageCopy> copies(num_levels);
++    boost::container::small_vector<BufferImageCopy, 16> copies(num_levels);
+     for (s32 level = 0; level < num_levels; ++level) {
+         const Extent3D level_size = AdjustMipSize(size, level);
+         const u32 num_blocks_per_layer = NumBlocks(level_size, tile_size);
+diff --git a/src/video_core/texture_cache/util.h b/src/video_core/texture_cache/util.h
+index 84aa6880d8..6549c569df 100644
+--- a/src/video_core/texture_cache/util.h
++++ b/src/video_core/texture_cache/util.h
+@@ -5,6 +5,7 @@
+ 
+ #include <optional>
+ #include <span>
++#include <boost/container/small_vector.hpp>
+ 
+ #include "common/common_types.h"
+ #include "common/scratch_buffer.h"
+@@ -73,7 +74,8 @@ struct OverlapResult {
+ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8> output,
+                   std::span<BufferImageCopy> copies);
+ 
+-[[nodiscard]] std::vector<BufferImageCopy> FullDownloadCopies(const ImageInfo& info);
++[[nodiscard]] boost::container::small_vector<BufferImageCopy, 16> FullDownloadCopies(
++    const ImageInfo& info);
+ 
+ [[nodiscard]] Extent3D MipSize(Extent3D size, u32 level);
+ 

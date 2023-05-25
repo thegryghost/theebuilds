@@ -1,0 +1,13 @@
+--- src/citra/CMakeLists.txt.org	2023-05-15 00:37:01.231093247 -0400
++++ src/citra/CMakeLists.txt	2023-05-15 00:36:54.227720316 -0400
+@@ -18,6 +18,10 @@
+ 
+ create_target_directory_groups(citra)
+ 
++if (USE_SYSTEM_INIH)
++    set(PLATFORM_LIBRARIES ${PLATFORM_LIBRARIES} ${INIH_LDFLAGS})
++endif()
++
+ target_link_libraries(citra PRIVATE citra_common citra_core input_common network)
+ target_link_libraries(citra PRIVATE inih glad)
+ if (MSVC)

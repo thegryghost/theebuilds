@@ -1,7 +1,0 @@
-diff --git a/externals/cubeb b/externals/cubeb
-index 75d9d125ee6..2d817de7c58 160000
---- a/externals/cubeb
-+++ b/externals/cubeb
-@@ -1 +1 @@
--Subproject commit 75d9d125ee655ef80f3bfcd97ae5a805931042b8
-+Subproject commit 2d817de7c58b33a7c045edf873f3f9c98e4a2082

@@ -95,6 +95,7 @@ PATCHES=(
 	"${FILESDIR}/001-hotkeys.patch"
 	"${FILESDIR}/cmake.patch"
 	"${FILESDIR}/citra-inih.patch"
+	"${FILESDIR}/citra-gcc13.patch"
 )
 
 src_prepare() {

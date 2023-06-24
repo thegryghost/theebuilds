@@ -1,0 +1,29 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 30a3c939ecd..7f931c6f1b0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -487,7 +487,7 @@ if (ENABLE_SDL2)
+     if (YUZU_USE_BUNDLED_SDL2)
+         # Detect toolchain and platform
+         if ((MSVC_VERSION GREATER_EQUAL 1920 AND MSVC_VERSION LESS 1940) AND ARCHITECTURE_x86_64)
+-            set(SDL2_VER "SDL2-2.0.18")
++            set(SDL2_VER "SDL2-2.26.5")
+         else()
+             message(FATAL_ERROR "No bundled SDL2 binaries for your toolchain. Disable YUZU_USE_BUNDLED_SDL2 and provide your own.")
+         endif()
+@@ -507,7 +507,7 @@ if (ENABLE_SDL2)
+     elseif (YUZU_USE_EXTERNAL_SDL2)
+         message(STATUS "Using SDL2 from externals.")
+     else()
+-        find_package(SDL2 2.0.18 REQUIRED)
++        find_package(SDL2 2.26.4 REQUIRED)
+     endif()
+ endif()
+ 
+diff --git a/externals/SDL b/externals/SDL
+index f17058b562c..ac13ca9ab69 160000
+--- a/externals/SDL
++++ b/externals/SDL
+@@ -1 +1 @@
+-Subproject commit f17058b562c8a1090c0c996b42982721ace90903
++Subproject commit ac13ca9ab691e13e8eebe9684740ddcb0d716203

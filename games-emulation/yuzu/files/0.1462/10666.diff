@@ -1,0 +1,240 @@
+diff --git a/src/audio_core/audio_core.cpp b/src/audio_core/audio_core.cpp
+index 07a679c32f3..703ef44945f 100644
+--- a/src/audio_core/audio_core.cpp
++++ b/src/audio_core/audio_core.cpp
+@@ -47,12 +47,4 @@ AudioRenderer::ADSP::ADSP& AudioCore::GetADSP() {
+     return *adsp;
+ }
+ 
+-void AudioCore::SetNVDECActive(bool active) {
+-    nvdec_active = active;
+-}
+-
+-bool AudioCore::IsNVDECActive() const {
+-    return nvdec_active;
+-}
+-
+ } // namespace AudioCore
+diff --git a/src/audio_core/audio_core.h b/src/audio_core/audio_core.h
+index e33e00a3e90..ea047773ee4 100644
+--- a/src/audio_core/audio_core.h
++++ b/src/audio_core/audio_core.h
+@@ -57,18 +57,6 @@ class AudioCore {
+      */
+     AudioRenderer::ADSP::ADSP& GetADSP();
+ 
+-    /**
+-     * Toggle NVDEC state, used to avoid stall in playback.
+-     *
+-     * @param active - Set true if nvdec is active, otherwise false.
+-     */
+-    void SetNVDECActive(bool active);
+-
+-    /**
+-     * Get NVDEC state.
+-     */
+-    bool IsNVDECActive() const;
+-
+ private:
+     /**
+      * Create the sinks on startup.
+@@ -83,8 +71,6 @@ class AudioCore {
+     std::unique_ptr<Sink::Sink> input_sink;
+     /// The ADSP in the sysmodule
+     std::unique_ptr<AudioRenderer::ADSP::ADSP> adsp;
+-    /// Is NVDec currently active?
+-    bool nvdec_active{false};
+ };
+ 
+ } // namespace AudioCore
+diff --git a/src/common/settings.cpp b/src/common/settings.cpp
+index ff53e80bb4f..9ff3edabbad 100644
+--- a/src/common/settings.cpp
++++ b/src/common/settings.cpp
+@@ -235,6 +235,7 @@ void RestoreGlobalState(bool is_powered_on) {
+     values.bg_green.SetGlobal(true);
+     values.bg_blue.SetGlobal(true);
+     values.enable_compute_pipelines.SetGlobal(true);
++    values.use_video_framerate.SetGlobal(true);
+ 
+     // System
+     values.language_index.SetGlobal(true);
+diff --git a/src/common/settings.h b/src/common/settings.h
+index 7f865b2a758..9682281b08b 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -482,6 +482,7 @@ struct Values {
+     SwitchableSetting<AstcRecompression, true> astc_recompression{
+         AstcRecompression::Uncompressed, AstcRecompression::Uncompressed, AstcRecompression::Bc3,
+         "astc_recompression"};
++    SwitchableSetting<bool> use_video_framerate{false, "use_video_framerate"};
+ 
+     SwitchableSetting<u8> bg_red{0, "bg_red"};
+     SwitchableSetting<u8> bg_green{0, "bg_green"};
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 4406ae30e77..7ba704f1899 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -216,6 +216,14 @@ struct System::Impl {
+         }
+     }
+ 
++    void SetNVDECActive(bool is_nvdec_active) {
++        nvdec_active = is_nvdec_active;
++    }
++
++    bool GetNVDECActive() {
++        return nvdec_active;
++    }
++
+     void InitializeDebugger(System& system, u16 port) {
+         debugger = std::make_unique<Debugger>(system, port);
+     }
+@@ -485,6 +493,8 @@ struct System::Impl {
+     std::atomic_bool is_powered_on{};
+     bool exit_lock = false;
+ 
++    bool nvdec_active{};
++
+     Reporter reporter;
+     std::unique_ptr<Memory::CheatEngine> cheat_engine;
+     std::unique_ptr<Tools::Freezer> memory_freezer;
+@@ -594,6 +604,14 @@ void System::UnstallApplication() {
+     impl->UnstallApplication();
+ }
+ 
++void System::SetNVDECActive(bool is_nvdec_active) {
++    impl->SetNVDECActive(is_nvdec_active);
++}
++
++bool System::GetNVDECActive() {
++    return impl->GetNVDECActive();
++}
++
+ void System::InitializeDebugger() {
+     impl->InitializeDebugger(*this, Settings::values.gdbstub_port.GetValue());
+ }
+diff --git a/src/core/core.h b/src/core/core.h
+index 4f153154fcf..ff2e4bd305f 100644
+--- a/src/core/core.h
++++ b/src/core/core.h
+@@ -189,6 +189,9 @@ class System {
+     std::unique_lock<std::mutex> StallApplication();
+     void UnstallApplication();
+ 
++    void SetNVDECActive(bool is_nvdec_active);
++    [[nodiscard]] bool GetNVDECActive();
++
+     /**
+      * Initialize the debugger.
+      */
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_nvdec.cpp b/src/core/hle/service/nvdrv/devices/nvhost_nvdec.cpp
+index 0c7aee1b83a..dc45169ad9d 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_nvdec.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_nvdec.cpp
+@@ -69,7 +69,7 @@ NvResult nvhost_nvdec::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> in
+ 
+ void nvhost_nvdec::OnOpen(DeviceFD fd) {
+     LOG_INFO(Service_NVDRV, "NVDEC video stream started");
+-    system.AudioCore().SetNVDECActive(true);
++    system.SetNVDECActive(true);
+ }
+ 
+ void nvhost_nvdec::OnClose(DeviceFD fd) {
+@@ -79,7 +79,7 @@ void nvhost_nvdec::OnClose(DeviceFD fd) {
+     if (iter != host1x_file.fd_to_id.end()) {
+         system.GPU().ClearCdmaInstance(iter->second);
+     }
+-    system.AudioCore().SetNVDECActive(false);
++    system.SetNVDECActive(false);
+ }
+ 
+ } // namespace Service::Nvidia::Devices
+diff --git a/src/core/hle/service/nvnflinger/nvnflinger.cpp b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+index 4988e6e1760..da2d5890f7c 100644
+--- a/src/core/hle/service/nvnflinger/nvnflinger.cpp
++++ b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+@@ -324,6 +324,10 @@ s64 Nvnflinger::GetNextTicks() const {
+             speed_scale = 0.01f;
+         }
+     }
++    if (system.GetNVDECActive() && settings.use_video_framerate.GetValue()) {
++        // Run at intended presentation rate during video playback.
++        speed_scale = 1.f;
++    }
+ 
+     // As an extension, treat nonpositive swap interval as framerate multiplier.
+     const f32 effective_fps = swap_interval <= 0 ? 120.f * static_cast<f32>(1 - swap_interval)
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.cpp b/src/yuzu/configuration/configure_graphics_advanced.cpp
+index 896863f8710..0463ac8b9fc 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.cpp
++++ b/src/yuzu/configuration/configure_graphics_advanced.cpp
+@@ -42,6 +42,7 @@ void ConfigureGraphicsAdvanced::SetConfiguration() {
+         Settings::values.use_vulkan_driver_pipeline_cache.GetValue());
+     ui->enable_compute_pipelines_checkbox->setChecked(
+         Settings::values.enable_compute_pipelines.GetValue());
++    ui->use_video_framerate_checkbox->setChecked(Settings::values.use_video_framerate.GetValue());
+ 
+     if (Settings::IsConfiguringGlobal()) {
+         ui->gpu_accuracy->setCurrentIndex(
+@@ -91,6 +92,8 @@ void ConfigureGraphicsAdvanced::ApplyConfiguration() {
+     ConfigurationShared::ApplyPerGameSetting(&Settings::values.enable_compute_pipelines,
+                                              ui->enable_compute_pipelines_checkbox,
+                                              enable_compute_pipelines);
++    ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_video_framerate,
++                                             ui->use_video_framerate_checkbox, use_video_framerate);
+ }
+ 
+ void ConfigureGraphicsAdvanced::changeEvent(QEvent* event) {
+@@ -125,6 +128,8 @@ void ConfigureGraphicsAdvanced::SetupPerGameUI() {
+             Settings::values.max_anisotropy.UsingGlobal());
+         ui->enable_compute_pipelines_checkbox->setEnabled(
+             Settings::values.enable_compute_pipelines.UsingGlobal());
++        ui->use_video_framerate_checkbox->setEnabled(
++            Settings::values.use_video_framerate.UsingGlobal());
+ 
+         return;
+     }
+@@ -149,6 +154,9 @@ void ConfigureGraphicsAdvanced::SetupPerGameUI() {
+     ConfigurationShared::SetColoredTristate(ui->enable_compute_pipelines_checkbox,
+                                             Settings::values.enable_compute_pipelines,
+                                             enable_compute_pipelines);
++    ConfigurationShared::SetColoredTristate(ui->use_video_framerate_checkbox,
++                                            Settings::values.use_video_framerate,
++                                            use_video_framerate);
+     ConfigurationShared::SetColoredComboBox(
+         ui->gpu_accuracy, ui->label_gpu_accuracy,
+         static_cast<int>(Settings::values.gpu_accuracy.GetValue(true)));
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.h b/src/yuzu/configuration/configure_graphics_advanced.h
+index 1c7b636b96a..a4dc8ceb09a 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.h
++++ b/src/yuzu/configuration/configure_graphics_advanced.h
+@@ -47,6 +47,7 @@ class ConfigureGraphicsAdvanced : public QWidget {
+     ConfigurationShared::CheckState use_fast_gpu_time;
+     ConfigurationShared::CheckState use_vulkan_driver_pipeline_cache;
+     ConfigurationShared::CheckState enable_compute_pipelines;
++    ConfigurationShared::CheckState use_video_framerate;
+ 
+     const Core::System& system;
+ };
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.ui b/src/yuzu/configuration/configure_graphics_advanced.ui
+index 37757a918a0..e7f0ef6be49 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.ui
++++ b/src/yuzu/configuration/configure_graphics_advanced.ui
+@@ -191,6 +191,16 @@ Compute pipelines are always enabled on all other drivers.</string>
+           </property>
+          </widget>
+         </item>
++        <item>
++         <widget class="QCheckBox" name="use_video_framerate_checkbox">
++          <property name="toolTip">
++           <string>Run the game at normal speed during video playback, even when the framerate is unlocked.</string>
++          </property>
++          <property name="text">
++           <string>Sync to framerate of video playback</string>
++          </property>
++         </widget>
++        </item>
+         <item>
+          <widget class="QWidget" name="af_layout" native="true">
+           <layout class="QHBoxLayout" name="horizontalLayout_1">

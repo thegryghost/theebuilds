@@ -1,0 +1,947 @@
+diff --git a/src/common/settings.h b/src/common/settings.h
+index 9682281b08b..3c775d3d213 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -524,9 +524,16 @@ struct Values {
+     Setting<bool> tas_loop{false, "tas_loop"};
+ 
+     Setting<bool> mouse_panning{false, "mouse_panning"};
+-    Setting<u8, true> mouse_panning_sensitivity{50, 1, 100, "mouse_panning_sensitivity"};
+-    Setting<bool> mouse_enabled{false, "mouse_enabled"};
++    Setting<u8, true> mouse_panning_x_sensitivity{50, 1, 100, "mouse_panning_x_sensitivity"};
++    Setting<u8, true> mouse_panning_y_sensitivity{50, 1, 100, "mouse_panning_y_sensitivity"};
++    Setting<u8, true> mouse_panning_deadzone_x_counterweight{
++        0, 0, 100, "mouse_panning_deadzone_x_counterweight"};
++    Setting<u8, true> mouse_panning_deadzone_y_counterweight{
++        0, 0, 100, "mouse_panning_deadzone_y_counterweight"};
++    Setting<u8, true> mouse_panning_decay_strength{22, 0, 100, "mouse_panning_decay_strength"};
++    Setting<u8, true> mouse_panning_min_decay{5, 0, 100, "mouse_panning_min_decay"};
+ 
++    Setting<bool> mouse_enabled{false, "mouse_enabled"};
+     Setting<bool> emulate_analog_keyboard{false, "emulate_analog_keyboard"};
+     Setting<bool> keyboard_enabled{false, "keyboard_enabled"};
+ 
+diff --git a/src/input_common/drivers/mouse.cpp b/src/input_common/drivers/mouse.cpp
+index 0c9f642bb5e..f07cf8a0ecd 100644
+--- a/src/input_common/drivers/mouse.cpp
++++ b/src/input_common/drivers/mouse.cpp
+@@ -76,9 +76,6 @@ void Mouse::UpdateThread(std::stop_token stop_token) {
+         UpdateStickInput();
+         UpdateMotionInput();
+ 
+-        if (mouse_panning_timeout++ > 20) {
+-            StopPanning();
+-        }
+         std::this_thread::sleep_for(std::chrono::milliseconds(update_time));
+     }
+ }
+@@ -88,18 +85,45 @@ void Mouse::UpdateStickInput() {
+         return;
+     }
+ 
+-    const float sensitivity =
+-        Settings::values.mouse_panning_sensitivity.GetValue() * default_stick_sensitivity;
++    const float length = last_mouse_change.Length();
+ 
+-    // Slow movement by 4%
+-    last_mouse_change *= 0.96f;
+-    SetAxis(identifier, mouse_axis_x, last_mouse_change.x * sensitivity);
+-    SetAxis(identifier, mouse_axis_y, -last_mouse_change.y * sensitivity);
++    // Prevent input from exceeding the max range (1.0f) too much,
++    // but allow some room to make it easier to sustain
++    if (length > 1.2f) {
++        last_mouse_change /= length;
++        last_mouse_change *= 1.2f;
++    }
++
++    auto mouse_change = last_mouse_change;
++
++    // Bind the mouse change to [0 <= deadzone_counterweight <= 1,1]
++    if (length < 1.0f) {
++        const float deadzone_h_counterweight =
++            Settings::values.mouse_panning_deadzone_x_counterweight.GetValue();
++        const float deadzone_v_counterweight =
++            Settings::values.mouse_panning_deadzone_y_counterweight.GetValue();
++        mouse_change /= length;
++        mouse_change.x *= length + (1 - length) * deadzone_h_counterweight * 0.01f;
++        mouse_change.y *= length + (1 - length) * deadzone_v_counterweight * 0.01f;
++    }
++
++    SetAxis(identifier, mouse_axis_x, mouse_change.x);
++    SetAxis(identifier, mouse_axis_y, -mouse_change.y);
++
++    // Decay input over time
++    const float clamped_length = std::min(1.0f, length);
++    const float decay_strength = Settings::values.mouse_panning_decay_strength.GetValue();
++    const float decay = 1 - clamped_length * clamped_length * decay_strength * 0.01f;
++    const float min_decay = Settings::values.mouse_panning_min_decay.GetValue();
++    const float clamped_decay = std::min(1 - min_decay / 100.0f, decay);
++    last_mouse_change *= clamped_decay;
+ }
+ 
+ void Mouse::UpdateMotionInput() {
+-    const float sensitivity =
+-        Settings::values.mouse_panning_sensitivity.GetValue() * default_motion_sensitivity;
++    // This may need its own sensitivity instead of using the average
++    const float sensitivity = (Settings::values.mouse_panning_x_sensitivity.GetValue() +
++                               Settings::values.mouse_panning_y_sensitivity.GetValue()) /
++                              2.0f * default_motion_sensitivity;
+ 
+     const float rotation_velocity = std::sqrt(last_motion_change.x * last_motion_change.x +
+                                               last_motion_change.y * last_motion_change.y);
+@@ -131,49 +155,28 @@ void Mouse::UpdateMotionInput() {
+ 
+ void Mouse::Move(int x, int y, int center_x, int center_y) {
+     if (Settings::values.mouse_panning) {
+-        mouse_panning_timeout = 0;
+-
+-        auto mouse_change =
++        const auto mouse_change =
+             (Common::MakeVec(x, y) - Common::MakeVec(center_x, center_y)).Cast<float>();
+-        last_motion_change += {-mouse_change.y, -mouse_change.x, 0};
+-
+-        const auto move_distance = mouse_change.Length();
+-        if (move_distance == 0) {
+-            return;
+-        }
++        const float x_sensitivity =
++            Settings::values.mouse_panning_x_sensitivity.GetValue() * default_stick_sensitivity;
++        const float y_sensitivity =
++            Settings::values.mouse_panning_y_sensitivity.GetValue() * default_stick_sensitivity;
+ 
+-        // Make slow movements at least 3 units on length
+-        if (move_distance < 3.0f) {
+-            // Normalize value
+-            mouse_change /= move_distance;
+-            mouse_change *= 3.0f;
+-        }
+-
+-        // Average mouse movements
+-        last_mouse_change = (last_mouse_change * 0.91f) + (mouse_change * 0.09f);
+-
+-        const auto last_move_distance = last_mouse_change.Length();
+-
+-        // Make fast movements clamp to 8 units on length
+-        if (last_move_distance > 8.0f) {
+-            // Normalize value
+-            last_mouse_change /= last_move_distance;
+-            last_mouse_change *= 8.0f;
+-        }
+-
+-        // Ignore average if it's less than 1 unit and use current movement value
+-        if (last_move_distance < 1.0f) {
+-            last_mouse_change = mouse_change / mouse_change.Length();
+-        }
++        last_motion_change += {-mouse_change.y, -mouse_change.x, 0};
++        last_mouse_change.x += mouse_change.x * x_sensitivity * 0.09f;
++        last_mouse_change.y += mouse_change.y * y_sensitivity * 0.09f;
+ 
+         return;
+     }
+ 
+     if (button_pressed) {
+         const auto mouse_move = Common::MakeVec<int>(x, y) - mouse_origin;
+-        const float sensitivity = Settings::values.mouse_panning_sensitivity.GetValue() * 0.0012f;
+-        SetAxis(identifier, mouse_axis_x, static_cast<float>(mouse_move.x) * sensitivity);
+-        SetAxis(identifier, mouse_axis_y, static_cast<float>(-mouse_move.y) * sensitivity);
++        const float x_sensitivity = Settings::values.mouse_panning_x_sensitivity.GetValue();
++        const float y_sensitivity = Settings::values.mouse_panning_y_sensitivity.GetValue();
++        SetAxis(identifier, mouse_axis_x,
++                static_cast<float>(mouse_move.x) * x_sensitivity * 0.0012f);
++        SetAxis(identifier, mouse_axis_y,
++                static_cast<float>(-mouse_move.y) * y_sensitivity * 0.0012f);
+ 
+         last_motion_change = {
+             static_cast<float>(-mouse_move.y) / 50.0f,
+@@ -241,10 +244,6 @@ void Mouse::ReleaseAllButtons() {
+     button_pressed = false;
+ }
+ 
+-void Mouse::StopPanning() {
+-    last_mouse_change = {};
+-}
+-
+ std::vector<Common::ParamPackage> Mouse::GetInputDevices() const {
+     std::vector<Common::ParamPackage> devices;
+     devices.emplace_back(Common::ParamPackage{
+diff --git a/src/input_common/drivers/mouse.h b/src/input_common/drivers/mouse.h
+index b872c7a0f05..0e8edcce15c 100644
+--- a/src/input_common/drivers/mouse.h
++++ b/src/input_common/drivers/mouse.h
+@@ -98,7 +98,6 @@ class Mouse final : public InputEngine {
+     void UpdateThread(std::stop_token stop_token);
+     void UpdateStickInput();
+     void UpdateMotionInput();
+-    void StopPanning();
+ 
+     Common::Input::ButtonNames GetUIButtonName(const Common::ParamPackage& params) const;
+ 
+@@ -108,7 +107,6 @@ class Mouse final : public InputEngine {
+     Common::Vec3<float> last_motion_change;
+     Common::Vec2<int> wheel_position;
+     bool button_pressed;
+-    int mouse_panning_timeout{};
+     std::jthread update_thread;
+ };
+ 
+diff --git a/src/yuzu/CMakeLists.txt b/src/yuzu/CMakeLists.txt
+index 84d9ca796b7..8676bfd8aab 100644
+--- a/src/yuzu/CMakeLists.txt
++++ b/src/yuzu/CMakeLists.txt
+@@ -98,6 +98,9 @@ add_executable(yuzu
+     configuration/configure_input_profile_dialog.cpp
+     configuration/configure_input_profile_dialog.h
+     configuration/configure_input_profile_dialog.ui
++    configuration/configure_mouse_panning.cpp
++    configuration/configure_mouse_panning.h
++    configuration/configure_mouse_panning.ui
+     configuration/configure_motion_touch.cpp
+     configuration/configure_motion_touch.h
+     configuration/configure_motion_touch.ui
+diff --git a/src/yuzu/configuration/config.cpp b/src/yuzu/configuration/config.cpp
+index bac9dff90b5..b58a1e9d1ca 100644
+--- a/src/yuzu/configuration/config.cpp
++++ b/src/yuzu/configuration/config.cpp
+@@ -351,6 +351,10 @@ void Config::ReadPlayerValue(std::size_t player_index) {
+             player_motions = default_param;
+         }
+     }
++
++    if (player_index == 0) {
++        ReadMousePanningValues();
++    }
+ }
+ 
+ void Config::ReadDebugValues() {
+@@ -471,6 +475,7 @@ void Config::ReadControlValues() {
+     ReadKeyboardValues();
+     ReadMouseValues();
+     ReadTouchscreenValues();
++    ReadMousePanningValues();
+     ReadMotionTouchValues();
+     ReadHidbusValues();
+     ReadIrCameraValues();
+@@ -481,8 +486,6 @@ void Config::ReadControlValues() {
+     Settings::values.enable_raw_input = false;
+ #endif
+     ReadBasicSetting(Settings::values.emulate_analog_keyboard);
+-    Settings::values.mouse_panning = false;
+-    ReadBasicSetting(Settings::values.mouse_panning_sensitivity);
+     ReadBasicSetting(Settings::values.enable_joycon_driver);
+     ReadBasicSetting(Settings::values.enable_procon_driver);
+     ReadBasicSetting(Settings::values.random_amiibo_id);
+@@ -496,6 +499,16 @@ void Config::ReadControlValues() {
+     qt_config->endGroup();
+ }
+ 
++void Config::ReadMousePanningValues() {
++    ReadBasicSetting(Settings::values.mouse_panning);
++    ReadBasicSetting(Settings::values.mouse_panning_x_sensitivity);
++    ReadBasicSetting(Settings::values.mouse_panning_y_sensitivity);
++    ReadBasicSetting(Settings::values.mouse_panning_deadzone_x_counterweight);
++    ReadBasicSetting(Settings::values.mouse_panning_deadzone_y_counterweight);
++    ReadBasicSetting(Settings::values.mouse_panning_decay_strength);
++    ReadBasicSetting(Settings::values.mouse_panning_min_decay);
++}
++
+ void Config::ReadMotionTouchValues() {
+     int num_touch_from_button_maps =
+         qt_config->beginReadArray(QStringLiteral("touch_from_button_maps"));
+@@ -1063,6 +1076,10 @@ void Config::SavePlayerValue(std::size_t player_index) {
+                      QString::fromStdString(player.motions[i]),
+                      QString::fromStdString(default_param));
+     }
++
++    if (player_index == 0) {
++        SaveMousePanningValues();
++    }
+ }
+ 
+ void Config::SaveDebugValues() {
+@@ -1099,6 +1116,16 @@ void Config::SaveTouchscreenValues() {
+     WriteSetting(QStringLiteral("touchscreen_diameter_y"), touchscreen.diameter_y, 15);
+ }
+ 
++void Config::SaveMousePanningValues() {
++    // Don't overwrite values.mouse_panning
++    WriteBasicSetting(Settings::values.mouse_panning_x_sensitivity);
++    WriteBasicSetting(Settings::values.mouse_panning_y_sensitivity);
++    WriteBasicSetting(Settings::values.mouse_panning_deadzone_x_counterweight);
++    WriteBasicSetting(Settings::values.mouse_panning_deadzone_y_counterweight);
++    WriteBasicSetting(Settings::values.mouse_panning_decay_strength);
++    WriteBasicSetting(Settings::values.mouse_panning_min_decay);
++}
++
+ void Config::SaveMotionTouchValues() {
+     WriteBasicSetting(Settings::values.touch_device);
+     WriteBasicSetting(Settings::values.touch_from_button_map_index);
+@@ -1185,6 +1212,7 @@ void Config::SaveControlValues() {
+     SaveDebugValues();
+     SaveMouseValues();
+     SaveTouchscreenValues();
++    SaveMousePanningValues();
+     SaveMotionTouchValues();
+     SaveHidbusValues();
+     SaveIrCameraValues();
+@@ -1199,7 +1227,6 @@ void Config::SaveControlValues() {
+     WriteBasicSetting(Settings::values.random_amiibo_id);
+     WriteBasicSetting(Settings::values.keyboard_enabled);
+     WriteBasicSetting(Settings::values.emulate_analog_keyboard);
+-    WriteBasicSetting(Settings::values.mouse_panning_sensitivity);
+     WriteBasicSetting(Settings::values.controller_navigation);
+ 
+     WriteBasicSetting(Settings::values.tas_enable);
+diff --git a/src/yuzu/configuration/config.h b/src/yuzu/configuration/config.h
+index 0fd4baf6b54..1211389d27c 100644
+--- a/src/yuzu/configuration/config.h
++++ b/src/yuzu/configuration/config.h
+@@ -74,6 +74,7 @@ class Config {
+     void ReadKeyboardValues();
+     void ReadMouseValues();
+     void ReadTouchscreenValues();
++    void ReadMousePanningValues();
+     void ReadMotionTouchValues();
+     void ReadHidbusValues();
+     void ReadIrCameraValues();
+@@ -104,6 +105,7 @@ class Config {
+     void SaveDebugValues();
+     void SaveMouseValues();
+     void SaveTouchscreenValues();
++    void SaveMousePanningValues();
+     void SaveMotionTouchValues();
+     void SaveHidbusValues();
+     void SaveIrCameraValues();
+diff --git a/src/yuzu/configuration/configure_input_advanced.cpp b/src/yuzu/configuration/configure_input_advanced.cpp
+index f131564343c..3cfd5d4394b 100644
+--- a/src/yuzu/configuration/configure_input_advanced.cpp
++++ b/src/yuzu/configuration/configure_input_advanced.cpp
+@@ -129,9 +129,6 @@ void ConfigureInputAdvanced::ApplyConfiguration() {
+     Settings::values.mouse_enabled = ui->mouse_enabled->isChecked();
+     Settings::values.keyboard_enabled = ui->keyboard_enabled->isChecked();
+     Settings::values.emulate_analog_keyboard = ui->emulate_analog_keyboard->isChecked();
+-    Settings::values.mouse_panning = ui->mouse_panning->isChecked();
+-    Settings::values.mouse_panning_sensitivity =
+-        static_cast<float>(ui->mouse_panning_sensitivity->value());
+     Settings::values.touchscreen.enabled = ui->touchscreen_enabled->isChecked();
+     Settings::values.enable_raw_input = ui->enable_raw_input->isChecked();
+     Settings::values.enable_udp_controller = ui->enable_udp_controller->isChecked();
+@@ -167,8 +164,6 @@ void ConfigureInputAdvanced::LoadConfiguration() {
+     ui->mouse_enabled->setChecked(Settings::values.mouse_enabled.GetValue());
+     ui->keyboard_enabled->setChecked(Settings::values.keyboard_enabled.GetValue());
+     ui->emulate_analog_keyboard->setChecked(Settings::values.emulate_analog_keyboard.GetValue());
+-    ui->mouse_panning->setChecked(Settings::values.mouse_panning.GetValue());
+-    ui->mouse_panning_sensitivity->setValue(Settings::values.mouse_panning_sensitivity.GetValue());
+     ui->touchscreen_enabled->setChecked(Settings::values.touchscreen.enabled);
+     ui->enable_raw_input->setChecked(Settings::values.enable_raw_input.GetValue());
+     ui->enable_udp_controller->setChecked(Settings::values.enable_udp_controller.GetValue());
+@@ -197,8 +192,6 @@ void ConfigureInputAdvanced::RetranslateUI() {
+ void ConfigureInputAdvanced::UpdateUIEnabled() {
+     ui->debug_configure->setEnabled(ui->debug_enabled->isChecked());
+     ui->touchscreen_advanced->setEnabled(ui->touchscreen_enabled->isChecked());
+-    ui->mouse_panning->setEnabled(!ui->mouse_enabled->isChecked());
+-    ui->mouse_panning_sensitivity->setEnabled(!ui->mouse_enabled->isChecked());
+     ui->ring_controller_configure->setEnabled(ui->enable_ring_controller->isChecked());
+ #if QT_VERSION > QT_VERSION_CHECK(6, 0, 0) || !defined(YUZU_USE_QT_MULTIMEDIA)
+     ui->enable_ir_sensor->setEnabled(false);
+diff --git a/src/yuzu/configuration/configure_input_advanced.ui b/src/yuzu/configuration/configure_input_advanced.ui
+index 2e8b1366000..2994d0ab48d 100644
+--- a/src/yuzu/configuration/configure_input_advanced.ui
++++ b/src/yuzu/configuration/configure_input_advanced.ui
+@@ -2744,48 +2744,13 @@
+                      </widget>
+                    </item>
+                    <item row="8" column="0">
+-                     <widget class="QCheckBox" name="mouse_panning">
+-                       <property name="minimumSize">
+-                         <size>
+-                           <width>0</width>
+-                           <height>23</height>
+-                         </size>
+-                       </property>
+-                       <property name="text">
+-                         <string>Enable mouse panning</string>
+-                       </property>
+-                     </widget>
+-                   </item>
+-                   <item row="8" column="2">
+-                     <widget class="QSpinBox" name="mouse_panning_sensitivity">
+-                       <property name="toolTip">
+-                         <string>Mouse sensitivity</string>
+-                       </property>
+-                       <property name="alignment">
+-                         <set>Qt::AlignCenter</set>
+-                       </property>
+-                       <property name="suffix">
+-                         <string>%</string>
+-                       </property>
+-                       <property name="minimum">
+-                         <number>1</number>
+-                       </property>
+-                       <property name="maximum">
+-                         <number>100</number>
+-                       </property>
+-                       <property name="value">
+-                         <number>100</number>
+-                       </property>
+-                     </widget>
+-                   </item>
+-                   <item row="9" column="0">
+                      <widget class="QLabel" name="motion_touch">
+                        <property name="text">
+                          <string>Motion / Touch</string>
+                        </property>
+                      </widget>
+                    </item>
+-                   <item row="9" column="2">
++                   <item row="8" column="2">
+                      <widget class="QPushButton" name="buttonMotionTouch">
+                        <property name="text">
+                          <string>Configure</string>
+diff --git a/src/yuzu/configuration/configure_input_player.cpp b/src/yuzu/configuration/configure_input_player.cpp
+index 2c2e7e47b7a..576f5b5711c 100644
+--- a/src/yuzu/configuration/configure_input_player.cpp
++++ b/src/yuzu/configuration/configure_input_player.cpp
+@@ -23,6 +23,7 @@
+ #include "yuzu/configuration/config.h"
+ #include "yuzu/configuration/configure_input_player.h"
+ #include "yuzu/configuration/configure_input_player_widget.h"
++#include "yuzu/configuration/configure_mouse_panning.h"
+ #include "yuzu/configuration/input_profiles.h"
+ #include "yuzu/util/limitable_input_dialog.h"
+ 
+@@ -711,6 +712,21 @@ ConfigureInputPlayer::ConfigureInputPlayer(QWidget* parent, std::size_t player_i
+         });
+     }
+ 
++    if (player_index_ == 0) {
++        connect(ui->mousePanningButton, &QPushButton::clicked, [this, input_subsystem_] {
++            const auto right_stick_param =
++                emulated_controller->GetStickParam(Settings::NativeAnalog::RStick);
++            ConfigureMousePanning dialog(this, input_subsystem_,
++                                         right_stick_param.Get("deadzone", 0.0f),
++                                         right_stick_param.Get("range", 1.0f));
++            if (dialog.exec() == QDialog::Accepted) {
++                dialog.ApplyConfiguration();
++            }
++        });
++    } else {
++        ui->mousePanningWidget->hide();
++    }
++
+     // Player Connected checkbox
+     connect(ui->groupConnectedController, &QGroupBox::toggled,
+             [this](bool checked) { emit Connected(checked); });
+diff --git a/src/yuzu/configuration/configure_input_player.ui b/src/yuzu/configuration/configure_input_player.ui
+index a9567c6eea9..43f6c7b50b1 100644
+--- a/src/yuzu/configuration/configure_input_player.ui
++++ b/src/yuzu/configuration/configure_input_player.ui
+@@ -3048,6 +3048,102 @@
+                 </item>
+                </layout>
+               </item>
++              <item>
++               <widget class="QWidget" name="mousePanningWidget" native="true">
++                <layout class="QHBoxLayout" name="mousePanningHorizontalLayout">
++                 <property name="spacing">
++                  <number>0</number>
++                 </property>
++                 <property name="leftMargin">
++                  <number>0</number>
++                 </property>
++                 <property name="topMargin">
++                  <number>0</number>
++                 </property>
++                 <property name="rightMargin">
++                  <number>0</number>
++                 </property>
++                 <property name="bottomMargin">
++                  <number>3</number>
++                 </property>
++                 <item>
++                  <spacer name="mousePanningHorizontalSpacerLeft">
++                   <property name="orientation">
++                    <enum>Qt::Horizontal</enum>
++                   </property>
++                   <property name="sizeHint" stdset="0">
++                    <size>
++                     <width>20</width>
++                     <height>20</height>
++                    </size>
++                   </property>
++                  </spacer>
++                 </item>
++                 <item>
++                  <widget class="QGroupBox" name="mousePanningGroup">
++                   <property name="title">
++                    <string>Mouse panning</string>
++                   </property>
++                   <property name="alignment">
++                    <set>Qt::AlignCenter</set>
++                   </property>
++                   <layout class="QVBoxLayout" name="mousePanningVerticalLayout">
++                    <property name="spacing">
++                     <number>3</number>
++                    </property>
++                    <property name="leftMargin">
++                     <number>3</number>
++                    </property>
++                    <property name="topMargin">
++                     <number>3</number>
++                    </property>
++                    <property name="rightMargin">
++                     <number>3</number>
++                    </property>
++                    <property name="bottomMargin">
++                     <number>3</number>
++                    </property>
++                    <item>
++                     <widget class="QPushButton" name="mousePanningButton">
++                      <property name="minimumSize">
++                       <size>
++                        <width>68</width>
++                        <height>0</height>
++                       </size>
++                      </property>
++                      <property name="maximumSize">
++                       <size>
++                        <width>68</width>
++                        <height>16777215</height>
++                       </size>
++                      </property>
++                      <property name="styleSheet">
++                       <string notr="true">min-width: 68px;</string>
++                      </property>
++                      <property name="text">
++                       <string>Configure</string>
++                      </property>
++                     </widget>
++                    </item>
++                   </layout>
++                  </widget>
++                 </item>
++                 <item>
++                  <spacer name="mousePanningHorizontalSpacerRight">
++                   <property name="orientation">
++                    <enum>Qt::Horizontal</enum>
++                   </property>
++                   <property name="sizeHint" stdset="0">
++                    <size>
++                     <width>20</width>
++                     <height>20</height>
++                    </size>
++                   </property>
++                  </spacer>
++                 </item>
++                </layout>
++               </widget>
++              </item>
+              </layout>
+             </widget>
+            </item>
+diff --git a/src/yuzu/configuration/configure_mouse_panning.cpp b/src/yuzu/configuration/configure_mouse_panning.cpp
+new file mode 100644
+index 00000000000..f183d2740d4
+--- /dev/null
++++ b/src/yuzu/configuration/configure_mouse_panning.cpp
+@@ -0,0 +1,79 @@
++// SPDX-FileCopyrightText: 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <QCloseEvent>
++
++#include "common/settings.h"
++#include "ui_configure_mouse_panning.h"
++#include "yuzu/configuration/configure_mouse_panning.h"
++
++ConfigureMousePanning::ConfigureMousePanning(QWidget* parent,
++                                             InputCommon::InputSubsystem* input_subsystem_,
++                                             float right_stick_deadzone, float right_stick_range)
++    : QDialog(parent), input_subsystem{input_subsystem_},
++      ui(std::make_unique<Ui::ConfigureMousePanning>()) {
++    ui->setupUi(this);
++    SetConfiguration(right_stick_deadzone, right_stick_range);
++    ConnectEvents();
++}
++
++ConfigureMousePanning::~ConfigureMousePanning() = default;
++
++void ConfigureMousePanning::closeEvent(QCloseEvent* event) {
++    event->accept();
++}
++
++void ConfigureMousePanning::SetConfiguration(float right_stick_deadzone, float right_stick_range) {
++    ui->enable->setChecked(Settings::values.mouse_panning.GetValue());
++    ui->x_sensitivity->setValue(Settings::values.mouse_panning_x_sensitivity.GetValue());
++    ui->y_sensitivity->setValue(Settings::values.mouse_panning_y_sensitivity.GetValue());
++    ui->deadzone_x_counterweight->setValue(
++        Settings::values.mouse_panning_deadzone_x_counterweight.GetValue());
++    ui->deadzone_y_counterweight->setValue(
++        Settings::values.mouse_panning_deadzone_y_counterweight.GetValue());
++    ui->decay_strength->setValue(Settings::values.mouse_panning_decay_strength.GetValue());
++    ui->min_decay->setValue(Settings::values.mouse_panning_min_decay.GetValue());
++
++    if (right_stick_deadzone > 0.0f || right_stick_range != 1.0f) {
++        ui->warning_label->setText(QString::fromStdString(
++            "Mouse panning works better with a deadzone of 0% and a range of 100%.\n"
++            "Current values are " +
++            std::to_string(static_cast<int>(right_stick_deadzone * 100.0f)) + "% and " +
++            std::to_string(static_cast<int>(right_stick_range * 100.0f)) + "% respectively."));
++    } else {
++        ui->warning_label->hide();
++    }
++}
++
++void ConfigureMousePanning::SetDefaultConfiguration() {
++    ui->x_sensitivity->setValue(Settings::values.mouse_panning_x_sensitivity.GetDefault());
++    ui->y_sensitivity->setValue(Settings::values.mouse_panning_y_sensitivity.GetDefault());
++    ui->deadzone_x_counterweight->setValue(
++        Settings::values.mouse_panning_deadzone_x_counterweight.GetDefault());
++    ui->deadzone_y_counterweight->setValue(
++        Settings::values.mouse_panning_deadzone_y_counterweight.GetDefault());
++    ui->decay_strength->setValue(Settings::values.mouse_panning_decay_strength.GetDefault());
++    ui->min_decay->setValue(Settings::values.mouse_panning_min_decay.GetDefault());
++}
++
++void ConfigureMousePanning::ConnectEvents() {
++    connect(ui->default_button, &QPushButton::clicked, this,
++            &ConfigureMousePanning::SetDefaultConfiguration);
++    connect(ui->button_box, &QDialogButtonBox::accepted, this,
++            &ConfigureMousePanning::ApplyConfiguration);
++    connect(ui->button_box, &QDialogButtonBox::rejected, this, [this] { reject(); });
++}
++
++void ConfigureMousePanning::ApplyConfiguration() {
++    Settings::values.mouse_panning = ui->enable->isChecked();
++    Settings::values.mouse_panning_x_sensitivity = static_cast<float>(ui->x_sensitivity->value());
++    Settings::values.mouse_panning_y_sensitivity = static_cast<float>(ui->y_sensitivity->value());
++    Settings::values.mouse_panning_deadzone_x_counterweight =
++        static_cast<float>(ui->deadzone_x_counterweight->value());
++    Settings::values.mouse_panning_deadzone_y_counterweight =
++        static_cast<float>(ui->deadzone_y_counterweight->value());
++    Settings::values.mouse_panning_decay_strength = static_cast<float>(ui->decay_strength->value());
++    Settings::values.mouse_panning_min_decay = static_cast<float>(ui->min_decay->value());
++
++    accept();
++}
+diff --git a/src/yuzu/configuration/configure_mouse_panning.h b/src/yuzu/configuration/configure_mouse_panning.h
+new file mode 100644
+index 00000000000..08c6e1f621c
+--- /dev/null
++++ b/src/yuzu/configuration/configure_mouse_panning.h
+@@ -0,0 +1,35 @@
++// SPDX-FileCopyrightText: 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <memory>
++#include <QDialog>
++
++namespace InputCommon {
++class InputSubsystem;
++}
++
++namespace Ui {
++class ConfigureMousePanning;
++}
++
++class ConfigureMousePanning : public QDialog {
++    Q_OBJECT
++public:
++    explicit ConfigureMousePanning(QWidget* parent, InputCommon::InputSubsystem* input_subsystem_,
++                                   float right_stick_deadzone, float right_stick_range);
++    ~ConfigureMousePanning() override;
++
++public slots:
++    void ApplyConfiguration();
++
++private:
++    void closeEvent(QCloseEvent* event) override;
++    void SetConfiguration(float right_stick_deadzone, float right_stick_range);
++    void SetDefaultConfiguration();
++    void ConnectEvents();
++
++    InputCommon::InputSubsystem* input_subsystem;
++    std::unique_ptr<Ui::ConfigureMousePanning> ui;
++};
+diff --git a/src/yuzu/configuration/configure_mouse_panning.ui b/src/yuzu/configuration/configure_mouse_panning.ui
+new file mode 100644
+index 00000000000..75795b7270f
+--- /dev/null
++++ b/src/yuzu/configuration/configure_mouse_panning.ui
+@@ -0,0 +1,238 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<ui version="4.0">
++ <class>ConfigureMousePanning</class>
++ <widget class="QDialog" name="configure_mouse_panning">
++  <property name="windowTitle">
++   <string>Configure mouse panning</string>
++  </property>
++  <layout class="QVBoxLayout">
++   <item>
++    <widget class="QCheckBox" name="enable">
++     <property name="text">
++      <string>Enable</string>
++     </property>
++     <property name="toolTip">
++      <string>Can be toggled via a hotkey</string>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <layout class="QHBoxLayout">
++     <item>
++      <widget class="QGroupBox" name="sensitivity_box">
++       <property name="title">
++        <string>Sensitivity</string>
++       </property>
++       <layout class="QGridLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="x_sensitivity_label">
++          <property name="text">
++           <string>Horizontal</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="x_sensitivity">
++          <property name="alignment">
++           <set>Qt::AlignCenter</set>
++          </property>
++          <property name="suffix">
++           <string>%</string>
++          </property>
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>100</number>
++          </property>
++          <property name="value">
++           <number>50</number>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="0">
++         <widget class="QLabel" name="y_sensitivity_label">
++          <property name="text">
++           <string>Vertical</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="1">
++         <widget class="QSpinBox" name="y_sensitivity">
++          <property name="alignment">
++           <set>Qt::AlignCenter</set>
++          </property>
++          <property name="suffix">
++           <string>%</string>
++          </property>
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>100</number>
++          </property>
++          <property name="value">
++           <number>50</number>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </widget>
++     </item>
++     <item>
++      <widget class="QGroupBox" name="deadzone_counterweight_box">
++       <property name="title">
++        <string>Deadzone counterweight</string>
++       </property>
++       <property name="toolTip">
++        <string>Counteracts a game's built-in deadzone</string>
++       </property>
++       <layout class="QGridLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="deadzone_x_counterweight_label">
++          <property name="text">
++           <string>Horizontal</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="deadzone_x_counterweight">
++          <property name="alignment">
++           <set>Qt::AlignCenter</set>
++          </property>
++          <property name="suffix">
++           <string>%</string>
++          </property>
++          <property name="minimum">
++           <number>0</number>
++          </property>
++          <property name="maximum">
++           <number>100</number>
++          </property>
++          <property name="value">
++           <number>0</number>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="0">
++         <widget class="QLabel" name="deadzone_y_counterweight_label">
++          <property name="text">
++           <string>Vertical</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="1">
++         <widget class="QSpinBox" name="deadzone_y_counterweight">
++          <property name="alignment">
++           <set>Qt::AlignCenter</set>
++          </property>
++          <property name="suffix">
++           <string>%</string>
++          </property>
++          <property name="minimum">
++           <number>0</number>
++          </property>
++          <property name="maximum">
++           <number>100</number>
++          </property>
++          <property name="value">
++           <number>0</number>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </widget>
++     </item>
++     <item>
++      <widget class="QGroupBox" name="decay_box">
++       <property name="title">
++        <string>Stick decay</string>
++       </property>
++       <layout class="QGridLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="decay_strength_label">
++          <property name="text">
++           <string>Strength</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="decay_strength">
++          <property name="alignment">
++           <set>Qt::AlignCenter</set>
++          </property>
++          <property name="suffix">
++           <string>%</string>
++          </property>
++          <property name="minimum">
++           <number>0</number>
++          </property>
++          <property name="maximum">
++           <number>100</number>
++          </property>
++          <property name="value">
++           <number>22</number>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="0">
++         <widget class="QLabel" name="min_decay_label">
++          <property name="text">
++           <string>Minimum</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="1">
++         <widget class="QSpinBox" name="min_decay">
++          <property name="alignment">
++           <set>Qt::AlignCenter</set>
++          </property>
++          <property name="suffix">
++           <string>%</string>
++          </property>
++          <property name="minimum">
++           <number>0</number>
++          </property>
++          <property name="maximum">
++           <number>100</number>
++          </property>
++          <property name="value">
++           <number>5</number>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </widget>
++     </item>
++    </layout>
++   </item>
++   <item>
++    <widget class="QLabel" name="warning_label">
++     <property name="text">
++      <string/>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <layout class="QHBoxLayout">
++     <item>
++      <widget class="QPushButton" name="default_button">
++       <property name="text">
++        <string>Default</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QDialogButtonBox" name="button_box">
++       <property name="standardButtons">
++        <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
++       </property>
++      </widget>
++     </item>
++    </layout>
++   </item>
++  </layout>
++ </widget>
++ <resources/>
++ <connections/>
++</ui>
+diff --git a/src/yuzu_cmd/default_ini.h b/src/yuzu_cmd/default_ini.h
+index 911d461e402..119e22183e2 100644
+--- a/src/yuzu_cmd/default_ini.h
++++ b/src/yuzu_cmd/default_ini.h
+@@ -140,9 +140,29 @@ udp_input_servers =
+ # 0 (default): Off, 1: On
+ mouse_panning =
+ 
+-# Set mouse sensitivity.
+-# Default: 1.0
+-mouse_panning_sensitivity =
++# Set mouse panning horizontal sensitivity.
++# Default: 50.0
++mouse_panning_x_sensitivity =
++
++# Set mouse panning vertical sensitivity.
++# Default: 50.0
++mouse_panning_y_sensitivity =
++
++# Set mouse panning deadzone horizontal counterweight.
++# Default: 0.0
++mouse_panning_deadzone_x_counterweight =
++
++# Set mouse panning deadzone vertical counterweight.
++# Default: 0.0
++mouse_panning_deadzone_y_counterweight =
++
++# Set mouse panning stick decay strength.
++# Default: 22.0
++mouse_panning_decay_strength =
++
++# Set mouse panning stick minimum decay.
++# Default: 5.0
++mouse_panning_minimum_decay =
+ 
+ # Emulate an analog control stick from keyboard inputs.
+ # 0 (default): Disabled, 1: Enabled

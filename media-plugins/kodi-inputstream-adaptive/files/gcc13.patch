@@ -1,0 +1,84 @@
+diff --git a/src/Iaes_decrypter.h b/src/Iaes_decrypter.h
+index 7fdf604..08f7dcc 100644
+--- a/src/Iaes_decrypter.h
++++ b/src/Iaes_decrypter.h
+@@ -11,6 +11,7 @@
+ #include <bento4/Ap4Types.h>
+ 
+ #include <string>
++#include <cinttypes>
+ 
+ class IAESDecrypter
+ {
+diff --git a/src/SSD_dll.h b/src/SSD_dll.h
+index 6298d09..f6eb029 100644
+--- a/src/SSD_dll.h
++++ b/src/SSD_dll.h
+@@ -10,6 +10,7 @@
+ 
+ #include <stdarg.h> // va_list, va_start, va_arg, va_end
+ #include <string_view>
++#include <cinttypes>
+ 
+ //Functionality wich is supported by the Decrypter
+ class Adaptive_CencSingleSampleDecrypter;
+diff --git a/src/aes_decrypter.h b/src/aes_decrypter.h
+index a396f3e..221a00c 100644
+--- a/src/aes_decrypter.h
++++ b/src/aes_decrypter.h
+@@ -13,6 +13,7 @@
+ #include <bento4/Ap4Types.h>
+ 
+ #include <string>
++#include <cinttypes>
+ 
+ #ifdef INPUTSTREAM_TEST_BUILD
+ #include "test/KodiStubs.h"
+diff --git a/src/utils/FileUtils.h b/src/utils/FileUtils.h
+index 40745b0..bff1b9d 100644
+--- a/src/utils/FileUtils.h
++++ b/src/utils/FileUtils.h
+@@ -10,6 +10,7 @@
+ 
+ #include <string>
+ #include <string_view>
++#include <cinttypes>
+ 
+ namespace UTILS
+ {
+diff --git a/src/utils/PropertiesUtils.h b/src/utils/PropertiesUtils.h
+index b277f58..2e51c60 100644
+--- a/src/utils/PropertiesUtils.h
++++ b/src/utils/PropertiesUtils.h
+@@ -11,6 +11,7 @@
+ #include <map>
+ #include <string>
+ #include <utility>
++#include <cinttypes>
+ 
+ namespace UTILS
+ {
+diff --git a/src/utils/StringUtils.h b/src/utils/StringUtils.h
+index fbafccd..2e840d6 100644
+--- a/src/utils/StringUtils.h
++++ b/src/utils/StringUtils.h
+@@ -11,6 +11,7 @@
+ #include <string>
+ #include <string_view>
+ #include <vector>
++#include <cinttypes>
+ 
+ namespace UTILS
+ {
+diff --git a/src/utils/Utils.h b/src/utils/Utils.h
+index e7ae209..9cb33fe 100644
+--- a/src/utils/Utils.h
++++ b/src/utils/Utils.h
+@@ -12,6 +12,7 @@
+ #include <string>
+ #include <string_view>
+ #include <vector>
++#include <cinttypes>
+ 
+ namespace UTILS
+ {

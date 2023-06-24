@@ -1,0 +1,3291 @@
+diff --git a/src/audio_core/device/audio_buffers.h b/src/audio_core/device/audio_buffers.h
+index 15082f6c62d..5d8ed0ef7eb 100644
+--- a/src/audio_core/device/audio_buffers.h
++++ b/src/audio_core/device/audio_buffers.h
+@@ -7,6 +7,7 @@
+ #include <mutex>
+ #include <span>
+ #include <vector>
++#include <boost/container/static_vector.hpp>
+ 
+ #include "audio_buffer.h"
+ #include "audio_core/device/device_session.h"
+@@ -48,7 +49,7 @@ class AudioBuffers {
+      *
+      * @param out_buffers - The buffers which were registered.
+      */
+-    void RegisterBuffers(std::vector<AudioBuffer>& out_buffers) {
++    void RegisterBuffers(boost::container::static_vector<AudioBuffer, N>& out_buffers) {
+         std::scoped_lock l{lock};
+         const s32 to_register{std::min(std::min(appended_count, BufferAppendLimit),
+                                        BufferAppendLimit - registered_count)};
+@@ -162,7 +163,8 @@ class AudioBuffers {
+      * @param max_buffers     - Maximum number of buffers to released.
+      * @return The number of buffers released.
+      */
+-    u32 GetRegisteredAppendedBuffers(std::vector<AudioBuffer>& buffers_flushed, u32 max_buffers) {
++    u32 GetRegisteredAppendedBuffers(
++        boost::container::static_vector<AudioBuffer, N>& buffers_flushed, u32 max_buffers) {
+         std::scoped_lock l{lock};
+         if (registered_count + appended_count == 0) {
+             return 0;
+@@ -270,7 +272,7 @@ class AudioBuffers {
+      */
+     bool FlushBuffers(u32& buffers_released) {
+         std::scoped_lock l{lock};
+-        std::vector<AudioBuffer> buffers_flushed{};
++        boost::container::static_vector<AudioBuffer, N> buffers_flushed{};
+ 
+         buffers_released = GetRegisteredAppendedBuffers(buffers_flushed, append_limit);
+ 
+diff --git a/src/audio_core/device/device_session.cpp b/src/audio_core/device/device_session.cpp
+index b5c0ef0e6f2..86811fcb8f5 100644
+--- a/src/audio_core/device/device_session.cpp
++++ b/src/audio_core/device/device_session.cpp
+@@ -79,7 +79,7 @@ void DeviceSession::ClearBuffers() {
+     }
+ }
+ 
+-void DeviceSession::AppendBuffers(std::span<const AudioBuffer> buffers) const {
++void DeviceSession::AppendBuffers(std::span<const AudioBuffer> buffers) {
+     for (const auto& buffer : buffers) {
+         Sink::SinkBuffer new_buffer{
+             .frames = buffer.size / (channel_count * sizeof(s16)),
+@@ -88,13 +88,13 @@ void DeviceSession::AppendBuffers(std::span<const AudioBuffer> buffers) const {
+             .consumed = false,
+         };
+ 
++        tmp_samples.resize_destructive(buffer.size / sizeof(s16));
+         if (type == Sink::StreamType::In) {
+-            std::vector<s16> samples{};
+-            stream->AppendBuffer(new_buffer, samples);
++            stream->AppendBuffer(new_buffer, tmp_samples);
+         } else {
+-            std::vector<s16> samples(buffer.size / sizeof(s16));
+-            system.ApplicationMemory().ReadBlockUnsafe(buffer.samples, samples.data(), buffer.size);
+-            stream->AppendBuffer(new_buffer, samples);
++            system.ApplicationMemory().ReadBlockUnsafe(buffer.samples, tmp_samples.data(),
++                                                       buffer.size);
++            stream->AppendBuffer(new_buffer, tmp_samples);
+         }
+     }
+ }
+diff --git a/src/audio_core/device/device_session.h b/src/audio_core/device/device_session.h
+index 75f766c68fa..7d52f362d93 100644
+--- a/src/audio_core/device/device_session.h
++++ b/src/audio_core/device/device_session.h
+@@ -10,6 +10,7 @@
+ 
+ #include "audio_core/common/common.h"
+ #include "audio_core/sink/sink.h"
++#include "common/scratch_buffer.h"
+ #include "core/hle/service/audio/errors.h"
+ 
+ namespace Core {
+@@ -62,7 +63,7 @@ class DeviceSession {
+      *
+      * @param buffers - The buffers to play.
+      */
+-    void AppendBuffers(std::span<const AudioBuffer> buffers) const;
++    void AppendBuffers(std::span<const AudioBuffer> buffers);
+ 
+     /**
+      * (Audio In only) Pop samples from the backend, and write them back to this buffer's address.
+@@ -146,8 +147,8 @@ class DeviceSession {
+     std::shared_ptr<Core::Timing::EventType> thread_event;
+     /// Is this session initialised?
+     bool initialized{};
+-    /// Buffer queue
+-    std::vector<AudioBuffer> buffer_queue{};
++    /// Temporary sample buffer
++    Common::ScratchBuffer<s16> tmp_samples{};
+ };
+ 
+ } // namespace AudioCore
+diff --git a/src/audio_core/in/audio_in_system.cpp b/src/audio_core/in/audio_in_system.cpp
+index e23e51758cc..57912912132 100644
+--- a/src/audio_core/in/audio_in_system.cpp
++++ b/src/audio_core/in/audio_in_system.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <mutex>
++
+ #include "audio_core/audio_event.h"
+ #include "audio_core/audio_manager.h"
+ #include "audio_core/in/audio_in_system.h"
+@@ -89,7 +90,7 @@ Result System::Start() {
+     session->Start();
+     state = State::Started;
+ 
+-    std::vector<AudioBuffer> buffers_to_flush{};
++    boost::container::static_vector<AudioBuffer, BufferCount> buffers_to_flush{};
+     buffers.RegisterBuffers(buffers_to_flush);
+     session->AppendBuffers(buffers_to_flush);
+     session->SetRingSize(static_cast<u32>(buffers_to_flush.size()));
+@@ -134,7 +135,7 @@ bool System::AppendBuffer(const AudioInBuffer& buffer, const u64 tag) {
+ 
+ void System::RegisterBuffers() {
+     if (state == State::Started) {
+-        std::vector<AudioBuffer> registered_buffers{};
++        boost::container::static_vector<AudioBuffer, BufferCount> registered_buffers{};
+         buffers.RegisterBuffers(registered_buffers);
+         session->AppendBuffers(registered_buffers);
+     }
+diff --git a/src/audio_core/out/audio_out_system.cpp b/src/audio_core/out/audio_out_system.cpp
+index bd13f721942..0adf64bd348 100644
+--- a/src/audio_core/out/audio_out_system.cpp
++++ b/src/audio_core/out/audio_out_system.cpp
+@@ -89,7 +89,7 @@ Result System::Start() {
+     session->Start();
+     state = State::Started;
+ 
+-    std::vector<AudioBuffer> buffers_to_flush{};
++    boost::container::static_vector<AudioBuffer, BufferCount> buffers_to_flush{};
+     buffers.RegisterBuffers(buffers_to_flush);
+     session->AppendBuffers(buffers_to_flush);
+     session->SetRingSize(static_cast<u32>(buffers_to_flush.size()));
+@@ -134,7 +134,7 @@ bool System::AppendBuffer(const AudioOutBuffer& buffer, u64 tag) {
+ 
+ void System::RegisterBuffers() {
+     if (state == State::Started) {
+-        std::vector<AudioBuffer> registered_buffers{};
++        boost::container::static_vector<AudioBuffer, BufferCount> registered_buffers{};
+         buffers.RegisterBuffers(registered_buffers);
+         session->AppendBuffers(registered_buffers);
+     }
+diff --git a/src/audio_core/renderer/command/data_source/decode.cpp b/src/audio_core/renderer/command/data_source/decode.cpp
+index ff5d31bd6f8..f459332034c 100644
+--- a/src/audio_core/renderer/command/data_source/decode.cpp
++++ b/src/audio_core/renderer/command/data_source/decode.cpp
+@@ -8,6 +8,7 @@
+ #include "audio_core/renderer/command/resample/resample.h"
+ #include "common/fixed_point.h"
+ #include "common/logging/log.h"
++#include "common/scratch_buffer.h"
+ #include "core/memory.h"
+ 
+ namespace AudioCore::AudioRenderer {
+@@ -27,6 +28,7 @@ constexpr std::array<u8, 3> PitchBySrcQuality = {4, 8, 4};
+ template <typename T>
+ static u32 DecodePcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+                      const DecodeArg& req) {
++    std::array<T, TempBufferSize> tmp_samples{};
+     constexpr s32 min{std::numeric_limits<s16>::min()};
+     constexpr s32 max{std::numeric_limits<s16>::max()};
+ 
+@@ -49,18 +51,17 @@ static u32 DecodePcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+         const u64 size{channel_count * samples_to_decode};
+         const u64 size_bytes{size * sizeof(T)};
+ 
+-        std::vector<T> samples(size);
+-        memory.ReadBlockUnsafe(source, samples.data(), size_bytes);
++        memory.ReadBlockUnsafe(source, tmp_samples.data(), size_bytes);
+ 
+         if constexpr (std::is_floating_point_v<T>) {
+             for (u32 i = 0; i < samples_to_decode; i++) {
+-                auto sample{static_cast<s32>(samples[i * channel_count + req.target_channel] *
++                auto sample{static_cast<s32>(tmp_samples[i * channel_count + req.target_channel] *
+                                              std::numeric_limits<s16>::max())};
+                 out_buffer[i] = static_cast<s16>(std::clamp(sample, min, max));
+             }
+         } else {
+             for (u32 i = 0; i < samples_to_decode; i++) {
+-                out_buffer[i] = samples[i * channel_count + req.target_channel];
++                out_buffer[i] = tmp_samples[i * channel_count + req.target_channel];
+             }
+         }
+     } break;
+@@ -73,17 +74,16 @@ static u32 DecodePcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+         }
+ 
+         const VAddr source{req.buffer + ((req.start_offset + req.offset) * sizeof(T))};
+-        std::vector<T> samples(samples_to_decode);
+-        memory.ReadBlockUnsafe(source, samples.data(), samples_to_decode * sizeof(T));
++        memory.ReadBlockUnsafe(source, tmp_samples.data(), samples_to_decode * sizeof(T));
+ 
+         if constexpr (std::is_floating_point_v<T>) {
+             for (u32 i = 0; i < samples_to_decode; i++) {
+-                auto sample{static_cast<s32>(samples[i * channel_count + req.target_channel] *
++                auto sample{static_cast<s32>(tmp_samples[i * channel_count + req.target_channel] *
+                                              std::numeric_limits<s16>::max())};
+                 out_buffer[i] = static_cast<s16>(std::clamp(sample, min, max));
+             }
+         } else {
+-            std::memcpy(out_buffer.data(), samples.data(), samples_to_decode * sizeof(s16));
++            std::memcpy(out_buffer.data(), tmp_samples.data(), samples_to_decode * sizeof(s16));
+         }
+         break;
+     }
+@@ -101,6 +101,7 @@ static u32 DecodePcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+  */
+ static u32 DecodeAdpcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+                        const DecodeArg& req) {
++    std::array<u8, TempBufferSize> wavebuffer{};
+     constexpr u32 SamplesPerFrame{14};
+     constexpr u32 NibblesPerFrame{16};
+ 
+@@ -138,9 +139,7 @@ static u32 DecodeAdpcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+     }
+ 
+     const auto size{std::max((samples_to_process / 8U) * SamplesPerFrame, 8U)};
+-    std::vector<u8> wavebuffer(size);
+-    memory.ReadBlockUnsafe(req.buffer + position_in_frame / 2, wavebuffer.data(),
+-                           wavebuffer.size());
++    memory.ReadBlockUnsafe(req.buffer + position_in_frame / 2, wavebuffer.data(), size);
+ 
+     auto context{req.adpcm_context};
+     auto header{context->header};
+@@ -258,7 +257,7 @@ void DecodeFromWaveBuffers(Core::Memory::Memory& memory, const DecodeFromWaveBuf
+     u32 offset{voice_state.offset};
+ 
+     auto output_buffer{args.output};
+-    std::vector<s16> temp_buffer(TempBufferSize, 0);
++    std::array<s16, TempBufferSize> temp_buffer{};
+ 
+     while (remaining_sample_count > 0) {
+         const auto samples_to_write{std::min(remaining_sample_count, max_remaining_sample_count)};
+diff --git a/src/audio_core/renderer/command/effect/compressor.cpp b/src/audio_core/renderer/command/effect/compressor.cpp
+index 7229618e876..ee9b68d5bd2 100644
+--- a/src/audio_core/renderer/command/effect/compressor.cpp
++++ b/src/audio_core/renderer/command/effect/compressor.cpp
+@@ -44,8 +44,8 @@ static void InitializeCompressorEffect(const CompressorInfo::ParameterVersion2&
+ 
+ static void ApplyCompressorEffect(const CompressorInfo::ParameterVersion2& params,
+                                   CompressorInfo::State& state, bool enabled,
+-                                  std::vector<std::span<const s32>> input_buffers,
+-                                  std::vector<std::span<s32>> output_buffers, u32 sample_count) {
++                                  std::span<std::span<const s32>> input_buffers,
++                                  std::span<std::span<s32>> output_buffers, u32 sample_count) {
+     if (enabled) {
+         auto state_00{state.unk_00};
+         auto state_04{state.unk_04};
+@@ -124,8 +124,8 @@ void CompressorCommand::Dump([[maybe_unused]] const ADSP::CommandListProcessor&
+ }
+ 
+ void CompressorCommand::Process(const ADSP::CommandListProcessor& processor) {
+-    std::vector<std::span<const s32>> input_buffers(parameter.channel_count);
+-    std::vector<std::span<s32>> output_buffers(parameter.channel_count);
++    std::array<std::span<const s32>, MaxChannels> input_buffers{};
++    std::array<std::span<s32>, MaxChannels> output_buffers{};
+ 
+     for (s16 i = 0; i < parameter.channel_count; i++) {
+         input_buffers[i] = processor.mix_buffers.subspan(inputs[i] * processor.sample_count,
+diff --git a/src/audio_core/renderer/command/effect/delay.cpp b/src/audio_core/renderer/command/effect/delay.cpp
+index a4e408d4034..e536cbb1e4f 100644
+--- a/src/audio_core/renderer/command/effect/delay.cpp
++++ b/src/audio_core/renderer/command/effect/delay.cpp
+@@ -51,7 +51,7 @@ static void InitializeDelayEffect(const DelayInfo::ParameterVersion1& params,
+         state.delay_lines[channel].sample_count_max = sample_count_max.to_int_floor();
+         state.delay_lines[channel].sample_count = sample_count.to_int_floor();
+         state.delay_lines[channel].buffer.resize(state.delay_lines[channel].sample_count, 0);
+-        if (state.delay_lines[channel].buffer.size() == 0) {
++        if (state.delay_lines[channel].sample_count == 0) {
+             state.delay_lines[channel].buffer.push_back(0);
+         }
+         state.delay_lines[channel].buffer_pos = 0;
+@@ -74,8 +74,8 @@ static void InitializeDelayEffect(const DelayInfo::ParameterVersion1& params,
+  */
+ template <size_t NumChannels>
+ static void ApplyDelay(const DelayInfo::ParameterVersion1& params, DelayInfo::State& state,
+-                       std::vector<std::span<const s32>>& inputs,
+-                       std::vector<std::span<s32>>& outputs, const u32 sample_count) {
++                       std::span<std::span<const s32>> inputs, std::span<std::span<s32>> outputs,
++                       const u32 sample_count) {
+     for (u32 sample_index = 0; sample_index < sample_count; sample_index++) {
+         std::array<Common::FixedPoint<50, 14>, NumChannels> input_samples{};
+         for (u32 channel = 0; channel < NumChannels; channel++) {
+@@ -153,8 +153,8 @@ static void ApplyDelay(const DelayInfo::ParameterVersion1& params, DelayInfo::St
+  * @param sample_count - Number of samples to process.
+  */
+ static void ApplyDelayEffect(const DelayInfo::ParameterVersion1& params, DelayInfo::State& state,
+-                             const bool enabled, std::vector<std::span<const s32>>& inputs,
+-                             std::vector<std::span<s32>>& outputs, const u32 sample_count) {
++                             const bool enabled, std::span<std::span<const s32>> inputs,
++                             std::span<std::span<s32>> outputs, const u32 sample_count) {
+ 
+     if (!IsChannelCountValid(params.channel_count)) {
+         LOG_ERROR(Service_Audio, "Invalid delay channels {}", params.channel_count);
+@@ -208,8 +208,8 @@ void DelayCommand::Dump([[maybe_unused]] const ADSP::CommandListProcessor& proce
+ }
+ 
+ void DelayCommand::Process(const ADSP::CommandListProcessor& processor) {
+-    std::vector<std::span<const s32>> input_buffers(parameter.channel_count);
+-    std::vector<std::span<s32>> output_buffers(parameter.channel_count);
++    std::array<std::span<const s32>, MaxChannels> input_buffers{};
++    std::array<std::span<s32>, MaxChannels> output_buffers{};
+ 
+     for (s16 i = 0; i < parameter.channel_count; i++) {
+         input_buffers[i] = processor.mix_buffers.subspan(inputs[i] * processor.sample_count,
+diff --git a/src/audio_core/renderer/command/effect/i3dl2_reverb.cpp b/src/audio_core/renderer/command/effect/i3dl2_reverb.cpp
+index 27d8b984453..d2bfb67cc00 100644
+--- a/src/audio_core/renderer/command/effect/i3dl2_reverb.cpp
++++ b/src/audio_core/renderer/command/effect/i3dl2_reverb.cpp
+@@ -408,8 +408,8 @@ void I3dl2ReverbCommand::Dump([[maybe_unused]] const ADSP::CommandListProcessor&
+ }
+ 
+ void I3dl2ReverbCommand::Process(const ADSP::CommandListProcessor& processor) {
+-    std::vector<std::span<const s32>> input_buffers(parameter.channel_count);
+-    std::vector<std::span<s32>> output_buffers(parameter.channel_count);
++    std::array<std::span<const s32>, MaxChannels> input_buffers{};
++    std::array<std::span<s32>, MaxChannels> output_buffers{};
+ 
+     for (u32 i = 0; i < parameter.channel_count; i++) {
+         input_buffers[i] = processor.mix_buffers.subspan(inputs[i] * processor.sample_count,
+diff --git a/src/audio_core/renderer/command/effect/light_limiter.cpp b/src/audio_core/renderer/command/effect/light_limiter.cpp
+index e8fb0e2fc79..4161a98217d 100644
+--- a/src/audio_core/renderer/command/effect/light_limiter.cpp
++++ b/src/audio_core/renderer/command/effect/light_limiter.cpp
+@@ -47,8 +47,8 @@ static void InitializeLightLimiterEffect(const LightLimiterInfo::ParameterVersio
+  */
+ static void ApplyLightLimiterEffect(const LightLimiterInfo::ParameterVersion2& params,
+                                     LightLimiterInfo::State& state, const bool enabled,
+-                                    std::vector<std::span<const s32>>& inputs,
+-                                    std::vector<std::span<s32>>& outputs, const u32 sample_count,
++                                    std::span<std::span<const s32>> inputs,
++                                    std::span<std::span<s32>> outputs, const u32 sample_count,
+                                     LightLimiterInfo::StatisticsInternal* statistics) {
+     constexpr s64 min{std::numeric_limits<s32>::min()};
+     constexpr s64 max{std::numeric_limits<s32>::max()};
+@@ -147,8 +147,8 @@ void LightLimiterVersion1Command::Dump([[maybe_unused]] const ADSP::CommandListP
+ }
+ 
+ void LightLimiterVersion1Command::Process(const ADSP::CommandListProcessor& processor) {
+-    std::vector<std::span<const s32>> input_buffers(parameter.channel_count);
+-    std::vector<std::span<s32>> output_buffers(parameter.channel_count);
++    std::array<std::span<const s32>, MaxChannels> input_buffers{};
++    std::array<std::span<s32>, MaxChannels> output_buffers{};
+ 
+     for (u32 i = 0; i < parameter.channel_count; i++) {
+         input_buffers[i] = processor.mix_buffers.subspan(inputs[i] * processor.sample_count,
+@@ -190,8 +190,8 @@ void LightLimiterVersion2Command::Dump([[maybe_unused]] const ADSP::CommandListP
+ }
+ 
+ void LightLimiterVersion2Command::Process(const ADSP::CommandListProcessor& processor) {
+-    std::vector<std::span<const s32>> input_buffers(parameter.channel_count);
+-    std::vector<std::span<s32>> output_buffers(parameter.channel_count);
++    std::array<std::span<const s32>, MaxChannels> input_buffers{};
++    std::array<std::span<s32>, MaxChannels> output_buffers{};
+ 
+     for (u32 i = 0; i < parameter.channel_count; i++) {
+         input_buffers[i] = processor.mix_buffers.subspan(inputs[i] * processor.sample_count,
+diff --git a/src/audio_core/renderer/command/effect/reverb.cpp b/src/audio_core/renderer/command/effect/reverb.cpp
+index 8b9b65214ad..fc2f15a5ee0 100644
+--- a/src/audio_core/renderer/command/effect/reverb.cpp
++++ b/src/audio_core/renderer/command/effect/reverb.cpp
+@@ -250,8 +250,8 @@ static Common::FixedPoint<50, 14> Axfx2AllPassTick(ReverbInfo::ReverbDelayLine&
+  */
+ template <size_t NumChannels>
+ static void ApplyReverbEffect(const ReverbInfo::ParameterVersion2& params, ReverbInfo::State& state,
+-                              std::vector<std::span<const s32>>& inputs,
+-                              std::vector<std::span<s32>>& outputs, const u32 sample_count) {
++                              std::span<std::span<const s32>> inputs,
++                              std::span<std::span<s32>> outputs, const u32 sample_count) {
+     static constexpr std::array<u8, ReverbInfo::MaxDelayTaps> OutTapIndexes1Ch{
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+     };
+@@ -369,8 +369,8 @@ static void ApplyReverbEffect(const ReverbInfo::ParameterVersion2& params, Rever
+  * @param sample_count - Number of samples to process.
+  */
+ static void ApplyReverbEffect(const ReverbInfo::ParameterVersion2& params, ReverbInfo::State& state,
+-                              const bool enabled, std::vector<std::span<const s32>>& inputs,
+-                              std::vector<std::span<s32>>& outputs, const u32 sample_count) {
++                              const bool enabled, std::span<std::span<const s32>> inputs,
++                              std::span<std::span<s32>> outputs, const u32 sample_count) {
+     if (enabled) {
+         switch (params.channel_count) {
+         case 0:
+@@ -412,8 +412,8 @@ void ReverbCommand::Dump([[maybe_unused]] const ADSP::CommandListProcessor& proc
+ }
+ 
+ void ReverbCommand::Process(const ADSP::CommandListProcessor& processor) {
+-    std::vector<std::span<const s32>> input_buffers(parameter.channel_count);
+-    std::vector<std::span<s32>> output_buffers(parameter.channel_count);
++    std::array<std::span<const s32>, MaxChannels> input_buffers{};
++    std::array<std::span<s32>, MaxChannels> output_buffers{};
+ 
+     for (u32 i = 0; i < parameter.channel_count; i++) {
+         input_buffers[i] = processor.mix_buffers.subspan(inputs[i] * processor.sample_count,
+diff --git a/src/audio_core/renderer/command/sink/circular_buffer.cpp b/src/audio_core/renderer/command/sink/circular_buffer.cpp
+index ded5afc94f1..e2ce5979238 100644
+--- a/src/audio_core/renderer/command/sink/circular_buffer.cpp
++++ b/src/audio_core/renderer/command/sink/circular_buffer.cpp
+@@ -24,7 +24,7 @@ void CircularBufferSinkCommand::Process(const ADSP::CommandListProcessor& proces
+     constexpr s32 min{std::numeric_limits<s16>::min()};
+     constexpr s32 max{std::numeric_limits<s16>::max()};
+ 
+-    std::vector<s16> output(processor.sample_count);
++    std::array<s16, TargetSampleCount * MaxChannels> output{};
+     for (u32 channel = 0; channel < input_count; channel++) {
+         auto input{processor.mix_buffers.subspan(inputs[channel] * processor.sample_count,
+                                                  processor.sample_count)};
+@@ -33,7 +33,7 @@ void CircularBufferSinkCommand::Process(const ADSP::CommandListProcessor& proces
+         }
+ 
+         processor.memory->WriteBlockUnsafe(address + pos, output.data(),
+-                                           output.size() * sizeof(s16));
++                                           processor.sample_count * sizeof(s16));
+         pos += static_cast<u32>(processor.sample_count * sizeof(s16));
+         if (pos >= size) {
+             pos = 0;
+diff --git a/src/audio_core/renderer/command/sink/device.cpp b/src/audio_core/renderer/command/sink/device.cpp
+index e88372a75ec..5f74dd7adbf 100644
+--- a/src/audio_core/renderer/command/sink/device.cpp
++++ b/src/audio_core/renderer/command/sink/device.cpp
+@@ -33,8 +33,7 @@ void DeviceSinkCommand::Process(const ADSP::CommandListProcessor& processor) {
+         .consumed{false},
+     };
+ 
+-    std::vector<s16> samples(out_buffer.frames * input_count);
+-
++    std::array<s16, TargetSampleCount * MaxChannels> samples{};
+     for (u32 channel = 0; channel < input_count; channel++) {
+         const auto offset{inputs[channel] * out_buffer.frames};
+ 
+@@ -45,7 +44,7 @@ void DeviceSinkCommand::Process(const ADSP::CommandListProcessor& processor) {
+     }
+ 
+     out_buffer.tag = reinterpret_cast<u64>(samples.data());
+-    stream->AppendBuffer(out_buffer, samples);
++    stream->AppendBuffer(out_buffer, {samples.data(), out_buffer.frames * input_count});
+ 
+     if (stream->IsPaused()) {
+         stream->Start();
+diff --git a/src/audio_core/renderer/mix/mix_context.cpp b/src/audio_core/renderer/mix/mix_context.cpp
+index 35b748ede88..3a18ae7c2be 100644
+--- a/src/audio_core/renderer/mix/mix_context.cpp
++++ b/src/audio_core/renderer/mix/mix_context.cpp
+@@ -125,10 +125,10 @@ bool MixContext::TSortInfo(const SplitterContext& splitter_context) {
+         return false;
+     }
+ 
+-    std::vector<s32> sorted_results{node_states.GetSortedResuls()};
+-    const auto result_size{std::min(count, static_cast<s32>(sorted_results.size()))};
++    auto sorted_results{node_states.GetSortedResuls()};
++    const auto result_size{std::min(count, static_cast<s32>(sorted_results.second))};
+     for (s32 i = 0; i < result_size; i++) {
+-        sorted_mix_infos[i] = &mix_infos[sorted_results[i]];
++        sorted_mix_infos[i] = &mix_infos[sorted_results.first[i]];
+     }
+ 
+     CalcMixBufferOffset();
+diff --git a/src/audio_core/renderer/nodes/node_states.cpp b/src/audio_core/renderer/nodes/node_states.cpp
+index 1821a51e663..b7a44a54cfb 100644
+--- a/src/audio_core/renderer/nodes/node_states.cpp
++++ b/src/audio_core/renderer/nodes/node_states.cpp
+@@ -134,8 +134,8 @@ u32 NodeStates::GetNodeCount() const {
+     return node_count;
+ }
+ 
+-std::vector<s32> NodeStates::GetSortedResuls() const {
+-    return {results.rbegin(), results.rbegin() + result_pos};
++std::pair<std::span<u32>::reverse_iterator, size_t> NodeStates::GetSortedResuls() const {
++    return {results.rbegin(), result_pos};
+ }
+ 
+ } // namespace AudioCore::AudioRenderer
+diff --git a/src/audio_core/renderer/nodes/node_states.h b/src/audio_core/renderer/nodes/node_states.h
+index 94b1d1254e8..e768cd4b54d 100644
+--- a/src/audio_core/renderer/nodes/node_states.h
++++ b/src/audio_core/renderer/nodes/node_states.h
+@@ -175,7 +175,7 @@ class NodeStates {
+      *
+      * @return Vector of nodes in reverse order.
+      */
+-    std::vector<s32> GetSortedResuls() const;
++    std::pair<std::span<u32>::reverse_iterator, size_t> GetSortedResuls() const;
+ 
+ private:
+     /// Number of nodes in the graph
+diff --git a/src/audio_core/renderer/system.cpp b/src/audio_core/renderer/system.cpp
+index 53b258c4f4c..a23627472f9 100644
+--- a/src/audio_core/renderer/system.cpp
++++ b/src/audio_core/renderer/system.cpp
+@@ -444,6 +444,7 @@ Result System::Update(std::span<const u8> input, std::span<u8> performance, std:
+     std::scoped_lock l{lock};
+ 
+     const auto start_time{core.CoreTiming().GetClockTicks()};
++    std::memset(output.data(), 0, output.size());
+ 
+     InfoUpdater info_updater(input, output, process_handle, behavior);
+ 
+diff --git a/src/audio_core/sink/null_sink.h b/src/audio_core/sink/null_sink.h
+index 1215d3cd251..b6b43c93e16 100644
+--- a/src/audio_core/sink/null_sink.h
++++ b/src/audio_core/sink/null_sink.h
+@@ -20,7 +20,7 @@ class NullSinkStreamImpl final : public SinkStream {
+     explicit NullSinkStreamImpl(Core::System& system_, StreamType type_)
+         : SinkStream{system_, type_} {}
+     ~NullSinkStreamImpl() override {}
+-    void AppendBuffer(SinkBuffer&, std::vector<s16>&) override {}
++    void AppendBuffer(SinkBuffer&, std::span<s16>) override {}
+     std::vector<s16> ReleaseBuffer(u64) override {
+         return {};
+     }
+diff --git a/src/audio_core/sink/sink_stream.cpp b/src/audio_core/sink/sink_stream.cpp
+index 9a718a9cc58..404dcd0e90a 100644
+--- a/src/audio_core/sink/sink_stream.cpp
++++ b/src/audio_core/sink/sink_stream.cpp
+@@ -18,7 +18,7 @@
+ 
+ namespace AudioCore::Sink {
+ 
+-void SinkStream::AppendBuffer(SinkBuffer& buffer, std::vector<s16>& samples) {
++void SinkStream::AppendBuffer(SinkBuffer& buffer, std::span<s16> samples) {
+     if (type == StreamType::In) {
+         queue.enqueue(buffer);
+         queued_buffers++;
+@@ -66,15 +66,16 @@ void SinkStream::AppendBuffer(SinkBuffer& buffer, std::vector<s16>& samples) {
+                 static_cast<s16>(std::clamp(right_sample, min, max));
+         }
+ 
+-        samples.resize(samples.size() / system_channels * device_channels);
++        samples = samples.subspan(0, samples.size() / system_channels * device_channels);
+ 
+     } else if (system_channels == 2 && device_channels == 6) {
+         // We need moar samples! Not all games will provide 6 channel audio.
+         // TODO: Implement some upmixing here. Currently just passthrough, with other
+         // channels left as silence.
+-        std::vector<s16> new_samples(samples.size() / system_channels * device_channels, 0);
++        auto new_size = samples.size() / system_channels * device_channels;
++        tmp_samples.resize_destructive(new_size);
+ 
+-        for (u32 read_index = 0, write_index = 0; read_index < samples.size();
++        for (u32 read_index = 0, write_index = 0; read_index < new_size;
+              read_index += system_channels, write_index += device_channels) {
+             const auto left_sample{static_cast<s16>(std::clamp(
+                 static_cast<s32>(
+@@ -82,7 +83,7 @@ void SinkStream::AppendBuffer(SinkBuffer& buffer, std::vector<s16>& samples) {
+                     volume),
+                 min, max))};
+ 
+-            new_samples[write_index + static_cast<u32>(Channels::FrontLeft)] = left_sample;
++            tmp_samples[write_index + static_cast<u32>(Channels::FrontLeft)] = left_sample;
+ 
+             const auto right_sample{static_cast<s16>(std::clamp(
+                 static_cast<s32>(
+@@ -90,9 +91,9 @@ void SinkStream::AppendBuffer(SinkBuffer& buffer, std::vector<s16>& samples) {
+                     volume),
+                 min, max))};
+ 
+-            new_samples[write_index + static_cast<u32>(Channels::FrontRight)] = right_sample;
++            tmp_samples[write_index + static_cast<u32>(Channels::FrontRight)] = right_sample;
+         }
+-        samples = std::move(new_samples);
++        samples = std::span<s16>(tmp_samples);
+ 
+     } else if (volume != 1.0f) {
+         for (u32 i = 0; i < samples.size(); i++) {
+diff --git a/src/audio_core/sink/sink_stream.h b/src/audio_core/sink/sink_stream.h
+index 41cbadc9cc7..98d72ace18d 100644
+--- a/src/audio_core/sink/sink_stream.h
++++ b/src/audio_core/sink/sink_stream.h
+@@ -16,6 +16,7 @@
+ #include "common/polyfill_thread.h"
+ #include "common/reader_writer_queue.h"
+ #include "common/ring_buffer.h"
++#include "common/scratch_buffer.h"
+ #include "common/thread.h"
+ 
+ namespace Core {
+@@ -170,7 +171,7 @@ class SinkStream {
+      * @param buffer  - Audio buffer information to be queued.
+      * @param samples - The s16 samples to be queue for playback.
+      */
+-    virtual void AppendBuffer(SinkBuffer& buffer, std::vector<s16>& samples);
++    virtual void AppendBuffer(SinkBuffer& buffer, std::span<s16> samples);
+ 
+     /**
+      * Release a buffer. Audio In only, will fill a buffer with recorded samples.
+@@ -255,6 +256,8 @@ class SinkStream {
+     /// Signalled when ring buffer entries are consumed
+     std::condition_variable_any release_cv;
+     std::mutex release_mutex;
++    /// Temporary buffer for appending samples when upmixing
++    Common::ScratchBuffer<s16> tmp_samples{};
+ };
+ 
+ using SinkStreamPtr = std::unique_ptr<SinkStream>;
+diff --git a/src/common/ring_buffer.h b/src/common/ring_buffer.h
+index 4c328ab4467..416680d4455 100644
+--- a/src/common/ring_buffer.h
++++ b/src/common/ring_buffer.h
+@@ -9,6 +9,7 @@
+ #include <cstddef>
+ #include <cstring>
+ #include <new>
++#include <span>
+ #include <type_traits>
+ #include <vector>
+ 
+@@ -53,7 +54,7 @@ class RingBuffer {
+         return push_count;
+     }
+ 
+-    std::size_t Push(const std::vector<T>& input) {
++    std::size_t Push(const std::span<T> input) {
+         return Push(input.data(), input.size());
+     }
+ 
+diff --git a/src/common/scratch_buffer.h b/src/common/scratch_buffer.h
+index a69a5a7af9b..6fe90795310 100644
+--- a/src/common/scratch_buffer.h
++++ b/src/common/scratch_buffer.h
+@@ -3,6 +3,9 @@
+ 
+ #pragma once
+ 
++#include <iterator>
++
++#include "common/concepts.h"
+ #include "common/make_unique_for_overwrite.h"
+ 
+ namespace Common {
+@@ -16,6 +19,12 @@ namespace Common {
+ template <typename T>
+ class ScratchBuffer {
+ public:
++    using iterator = T*;
++    using const_iterator = const T*;
++    using value_type = T;
++    using element_type = T;
++    using iterator_category = std::contiguous_iterator_tag;
++
+     ScratchBuffer() = default;
+ 
+     explicit ScratchBuffer(size_t initial_capacity)
+diff --git a/src/core/hle/kernel/k_synchronization_object.cpp b/src/core/hle/kernel/k_synchronization_object.cpp
+index b7da3eee77e..3e5b735b1e6 100644
+--- a/src/core/hle/kernel/k_synchronization_object.cpp
++++ b/src/core/hle/kernel/k_synchronization_object.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "common/assert.h"
+ #include "common/common_types.h"
++#include "common/scratch_buffer.h"
+ #include "core/hle/kernel/k_scheduler.h"
+ #include "core/hle/kernel/k_scoped_scheduler_lock_and_sleep.h"
+ #include "core/hle/kernel/k_synchronization_object.h"
+@@ -75,7 +76,7 @@ Result KSynchronizationObject::Wait(KernelCore& kernel, s32* out_index,
+                                     KSynchronizationObject** objects, const s32 num_objects,
+                                     s64 timeout) {
+     // Allocate space on stack for thread nodes.
+-    std::vector<ThreadListNode> thread_nodes(num_objects);
++    std::array<ThreadListNode, Svc::ArgumentHandleCountMax> thread_nodes;
+ 
+     // Prepare for wait.
+     KThread* thread = GetCurrentThreadPointer(kernel);
+diff --git a/src/core/hle/kernel/k_thread.cpp b/src/core/hle/kernel/k_thread.cpp
+index 908811e2c7d..adb6ec58147 100644
+--- a/src/core/hle/kernel/k_thread.cpp
++++ b/src/core/hle/kernel/k_thread.cpp
+@@ -909,7 +909,7 @@ Result KThread::SetActivity(Svc::ThreadActivity activity) {
+     R_SUCCEED();
+ }
+ 
+-Result KThread::GetThreadContext3(std::vector<u8>& out) {
++Result KThread::GetThreadContext3(Common::ScratchBuffer<u8>& out) {
+     // Lock ourselves.
+     KScopedLightLock lk{m_activity_pause_lock};
+ 
+@@ -927,15 +927,13 @@ Result KThread::GetThreadContext3(std::vector<u8>& out) {
+                 // Mask away mode bits, interrupt bits, IL bit, and other reserved bits.
+                 auto context = GetContext64();
+                 context.pstate &= 0xFF0FFE20;
+-
+-                out.resize(sizeof(context));
++                out.resize_destructive(sizeof(context));
+                 std::memcpy(out.data(), std::addressof(context), sizeof(context));
+             } else {
+                 // Mask away mode bits, interrupt bits, IL bit, and other reserved bits.
+                 auto context = GetContext32();
+                 context.cpsr &= 0xFF0FFE20;
+-
+-                out.resize(sizeof(context));
++                out.resize_destructive(sizeof(context));
+                 std::memcpy(out.data(), std::addressof(context), sizeof(context));
+             }
+         }
+diff --git a/src/core/hle/kernel/k_thread.h b/src/core/hle/kernel/k_thread.h
+index 37fe5db77ef..dd662b3f8fe 100644
+--- a/src/core/hle/kernel/k_thread.h
++++ b/src/core/hle/kernel/k_thread.h
+@@ -15,6 +15,7 @@
+ #include "common/intrusive_list.h"
+ 
+ #include "common/intrusive_red_black_tree.h"
++#include "common/scratch_buffer.h"
+ #include "common/spin_lock.h"
+ #include "core/arm/arm_interface.h"
+ #include "core/hle/kernel/k_affinity_mask.h"
+@@ -567,7 +568,7 @@ class KThread final : public KAutoObjectWithSlabHeapAndContainer<KThread, KWorke
+ 
+     void RemoveWaiter(KThread* thread);
+ 
+-    Result GetThreadContext3(std::vector<u8>& out);
++    Result GetThreadContext3(Common::ScratchBuffer<u8>& out);
+ 
+     KThread* RemoveUserWaiterByKey(bool* out_has_waiters, KProcessAddress key) {
+         return this->RemoveWaiterByKey(out_has_waiters, key, false);
+diff --git a/src/core/hle/kernel/svc/svc_ipc.cpp b/src/core/hle/kernel/svc/svc_ipc.cpp
+index ea03068aa18..60247df2eb6 100644
+--- a/src/core/hle/kernel/svc/svc_ipc.cpp
++++ b/src/core/hle/kernel/svc/svc_ipc.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "common/scope_exit.h"
++#include "common/scratch_buffer.h"
+ #include "core/core.h"
+ #include "core/hle/kernel/k_client_session.h"
+ #include "core/hle/kernel/k_process.h"
+@@ -45,11 +46,11 @@ Result ReplyAndReceive(Core::System& system, s32* out_index, uint64_t handles_ad
+                  handles_addr, static_cast<u64>(sizeof(Handle) * num_handles)),
+              ResultInvalidPointer);
+ 
+-    std::vector<Handle> handles(num_handles);
++    std::array<Handle, Svc::ArgumentHandleCountMax> handles;
+     GetCurrentMemory(kernel).ReadBlock(handles_addr, handles.data(), sizeof(Handle) * num_handles);
+ 
+     // Convert handle list to object table.
+-    std::vector<KSynchronizationObject*> objs(num_handles);
++    std::array<KSynchronizationObject*, Svc::ArgumentHandleCountMax> objs;
+     R_UNLESS(handle_table.GetMultipleObjects<KSynchronizationObject>(objs.data(), handles.data(),
+                                                                      num_handles),
+              ResultInvalidHandle);
+@@ -80,7 +81,7 @@ Result ReplyAndReceive(Core::System& system, s32* out_index, uint64_t handles_ad
+         // Wait for an object.
+         s32 index;
+         Result result = KSynchronizationObject::Wait(kernel, std::addressof(index), objs.data(),
+-                                                     static_cast<s32>(objs.size()), timeout_ns);
++                                                     num_handles, timeout_ns);
+         if (result == ResultTimedOut) {
+             R_RETURN(result);
+         }
+diff --git a/src/core/hle/kernel/svc/svc_synchronization.cpp b/src/core/hle/kernel/svc/svc_synchronization.cpp
+index 04d65f0bd66..53df5bcd8d8 100644
+--- a/src/core/hle/kernel/svc/svc_synchronization.cpp
++++ b/src/core/hle/kernel/svc/svc_synchronization.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "common/scope_exit.h"
++#include "common/scratch_buffer.h"
+ #include "core/core.h"
+ #include "core/hle/kernel/k_process.h"
+ #include "core/hle/kernel/k_readable_event.h"
+@@ -54,7 +55,7 @@ static Result WaitSynchronization(Core::System& system, int32_t* out_index, cons
+     // Get the synchronization context.
+     auto& kernel = system.Kernel();
+     auto& handle_table = GetCurrentProcess(kernel).GetHandleTable();
+-    std::vector<KSynchronizationObject*> objs(num_handles);
++    std::array<KSynchronizationObject*, Svc::ArgumentHandleCountMax> objs;
+ 
+     // Copy user handles.
+     if (num_handles > 0) {
+@@ -72,8 +73,8 @@ static Result WaitSynchronization(Core::System& system, int32_t* out_index, cons
+     });
+ 
+     // Wait on the objects.
+-    Result res = KSynchronizationObject::Wait(kernel, out_index, objs.data(),
+-                                              static_cast<s32>(objs.size()), timeout_ns);
++    Result res =
++        KSynchronizationObject::Wait(kernel, out_index, objs.data(), num_handles, timeout_ns);
+ 
+     R_SUCCEED_IF(res == ResultSessionClosed);
+     R_RETURN(res);
+@@ -87,8 +88,7 @@ Result WaitSynchronization(Core::System& system, int32_t* out_index, u64 user_ha
+ 
+     // Ensure number of handles is valid.
+     R_UNLESS(0 <= num_handles && num_handles <= Svc::ArgumentHandleCountMax, ResultOutOfRange);
+-
+-    std::vector<Handle> handles(num_handles);
++    std::array<Handle, Svc::ArgumentHandleCountMax> handles;
+     if (num_handles > 0) {
+         GetCurrentMemory(system.Kernel())
+             .ReadBlock(user_handles, handles.data(), num_handles * sizeof(Handle));
+diff --git a/src/core/hle/kernel/svc/svc_thread.cpp b/src/core/hle/kernel/svc/svc_thread.cpp
+index 37b54079cf2..36b94e6bfec 100644
+--- a/src/core/hle/kernel/svc/svc_thread.cpp
++++ b/src/core/hle/kernel/svc/svc_thread.cpp
+@@ -174,7 +174,7 @@ Result GetThreadContext3(Core::System& system, u64 out_context, Handle thread_ha
+         }
+ 
+         // Get the thread context.
+-        std::vector<u8> context;
++        static thread_local Common::ScratchBuffer<u8> context;
+         R_TRY(thread->GetThreadContext3(context));
+ 
+         // Copy the thread context to user space.
+diff --git a/src/core/hle/service/audio/audin_u.cpp b/src/core/hle/service/audio/audin_u.cpp
+index f0640c64f46..c8d574993bd 100644
+--- a/src/core/hle/service/audio/audin_u.cpp
++++ b/src/core/hle/service/audio/audin_u.cpp
+@@ -5,6 +5,7 @@
+ #include "audio_core/renderer/audio_device.h"
+ #include "common/common_funcs.h"
+ #include "common/logging/log.h"
++#include "common/settings.h"
+ #include "common/string_util.h"
+ #include "core/core.h"
+ #include "core/hle/kernel/k_event.h"
+@@ -123,19 +124,13 @@ class IAudioIn final : public ServiceFramework<IAudioIn> {
+ 
+     void GetReleasedAudioInBuffer(HLERequestContext& ctx) {
+         const auto write_buffer_size = ctx.GetWriteBufferNumElements<u64>();
+-        std::vector<u64> released_buffers(write_buffer_size);
++        tmp_buffer.resize_destructive(write_buffer_size);
++        tmp_buffer[0] = 0;
+ 
+-        const auto count = impl->GetReleasedBuffers(released_buffers);
++        const auto count = impl->GetReleasedBuffers(tmp_buffer);
+ 
+-        [[maybe_unused]] std::string tags{};
+-        for (u32 i = 0; i < count; i++) {
+-            tags += fmt::format("{:08X}, ", released_buffers[i]);
+-        }
+-        [[maybe_unused]] auto sessionid{impl->GetSystem().GetSessionId()};
+-        LOG_TRACE(Service_Audio, "called. Session {} released {} buffers: {}", sessionid, count,
+-                  tags);
++        ctx.WriteBuffer(tmp_buffer);
+ 
+-        ctx.WriteBuffer(released_buffers);
+         IPC::ResponseBuilder rb{ctx, 3};
+         rb.Push(ResultSuccess);
+         rb.Push(count);
+@@ -200,6 +195,7 @@ class IAudioIn final : public ServiceFramework<IAudioIn> {
+     KernelHelpers::ServiceContext service_context;
+     Kernel::KEvent* event;
+     std::shared_ptr<AudioCore::AudioIn::In> impl;
++    Common::ScratchBuffer<u64> tmp_buffer;
+ };
+ 
+ AudInU::AudInU(Core::System& system_)
+diff --git a/src/core/hle/service/audio/audout_u.cpp b/src/core/hle/service/audio/audout_u.cpp
+index 3e62fa4fcac..032c8c11f5b 100644
+--- a/src/core/hle/service/audio/audout_u.cpp
++++ b/src/core/hle/service/audio/audout_u.cpp
+@@ -123,19 +123,13 @@ class IAudioOut final : public ServiceFramework<IAudioOut> {
+ 
+     void GetReleasedAudioOutBuffers(HLERequestContext& ctx) {
+         const auto write_buffer_size = ctx.GetWriteBufferNumElements<u64>();
+-        std::vector<u64> released_buffers(write_buffer_size);
++        tmp_buffer.resize_destructive(write_buffer_size);
++        tmp_buffer[0] = 0;
+ 
+-        const auto count = impl->GetReleasedBuffers(released_buffers);
++        const auto count = impl->GetReleasedBuffers(tmp_buffer);
+ 
+-        [[maybe_unused]] std::string tags{};
+-        for (u32 i = 0; i < count; i++) {
+-            tags += fmt::format("{:08X}, ", released_buffers[i]);
+-        }
+-        [[maybe_unused]] const auto sessionid{impl->GetSystem().GetSessionId()};
+-        LOG_TRACE(Service_Audio, "called. Session {} released {} buffers: {}", sessionid, count,
+-                  tags);
++        ctx.WriteBuffer(tmp_buffer);
+ 
+-        ctx.WriteBuffer(released_buffers);
+         IPC::ResponseBuilder rb{ctx, 3};
+         rb.Push(ResultSuccess);
+         rb.Push(count);
+@@ -211,6 +205,7 @@ class IAudioOut final : public ServiceFramework<IAudioOut> {
+     KernelHelpers::ServiceContext service_context;
+     Kernel::KEvent* event;
+     std::shared_ptr<AudioCore::AudioOut::Out> impl;
++    Common::ScratchBuffer<u64> tmp_buffer;
+ };
+ 
+ AudOutU::AudOutU(Core::System& system_)
+diff --git a/src/core/hle/service/audio/audren_u.cpp b/src/core/hle/service/audio/audren_u.cpp
+index 7086d475085..12845c23a3d 100644
+--- a/src/core/hle/service/audio/audren_u.cpp
++++ b/src/core/hle/service/audio/audren_u.cpp
+@@ -116,28 +116,26 @@ class IAudioRenderer final : public ServiceFramework<IAudioRenderer> {
+         // These buffers are written manually to avoid an issue with WriteBuffer throwing errors for
+         // checking size 0. Performance size is 0 for most games.
+ 
+-        std::vector<u8> output{};
+-        std::vector<u8> performance{};
+         auto is_buffer_b{ctx.BufferDescriptorB()[0].Size() != 0};
+         if (is_buffer_b) {
+             const auto buffersB{ctx.BufferDescriptorB()};
+-            output.resize(buffersB[0].Size(), 0);
+-            performance.resize(buffersB[1].Size(), 0);
++            tmp_output.resize_destructive(buffersB[0].Size());
++            tmp_performance.resize_destructive(buffersB[1].Size());
+         } else {
+             const auto buffersC{ctx.BufferDescriptorC()};
+-            output.resize(buffersC[0].Size(), 0);
+-            performance.resize(buffersC[1].Size(), 0);
++            tmp_output.resize_destructive(buffersC[0].Size());
++            tmp_performance.resize_destructive(buffersC[1].Size());
+         }
+ 
+-        auto result = impl->RequestUpdate(input, performance, output);
++        auto result = impl->RequestUpdate(input, tmp_performance, tmp_output);
+ 
+         if (result.IsSuccess()) {
+             if (is_buffer_b) {
+-                ctx.WriteBufferB(output.data(), output.size(), 0);
+-                ctx.WriteBufferB(performance.data(), performance.size(), 1);
++                ctx.WriteBufferB(tmp_output.data(), tmp_output.size(), 0);
++                ctx.WriteBufferB(tmp_performance.data(), tmp_performance.size(), 1);
+             } else {
+-                ctx.WriteBufferC(output.data(), output.size(), 0);
+-                ctx.WriteBufferC(performance.data(), performance.size(), 1);
++                ctx.WriteBufferC(tmp_output.data(), tmp_output.size(), 0);
++                ctx.WriteBufferC(tmp_performance.data(), tmp_performance.size(), 1);
+             }
+         } else {
+             LOG_ERROR(Service_Audio, "RequestUpdate failed error 0x{:02X}!", result.description);
+@@ -235,6 +233,8 @@ class IAudioRenderer final : public ServiceFramework<IAudioRenderer> {
+     Kernel::KEvent* rendered_event;
+     Manager& manager;
+     std::unique_ptr<Renderer> impl;
++    Common::ScratchBuffer<u8> tmp_output;
++    Common::ScratchBuffer<u8> tmp_performance;
+ };
+ 
+ class IAudioDevice final : public ServiceFramework<IAudioDevice> {
+diff --git a/src/core/hle/service/audio/audren_u.h b/src/core/hle/service/audio/audren_u.h
+index 24ce37e8718..d8e9c871952 100644
+--- a/src/core/hle/service/audio/audren_u.h
++++ b/src/core/hle/service/audio/audren_u.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include "audio_core/audio_render_manager.h"
++#include "common/scratch_buffer.h"
+ #include "core/hle/service/kernel_helpers.h"
+ #include "core/hle/service/service.h"
+ 
+diff --git a/src/core/hle/service/audio/hwopus.cpp b/src/core/hle/service/audio/hwopus.cpp
+index 451ac224a4c..c835f6cb765 100644
+--- a/src/core/hle/service/audio/hwopus.cpp
++++ b/src/core/hle/service/audio/hwopus.cpp
+@@ -68,13 +68,13 @@ class OpusDecoderState {
+                                  ExtraBehavior extra_behavior) {
+         u32 consumed = 0;
+         u32 sample_count = 0;
+-        std::vector<opus_int16> samples(ctx.GetWriteBufferNumElements<opus_int16>());
++        tmp_samples.resize_destructive(ctx.GetWriteBufferNumElements<opus_int16>());
+ 
+         if (extra_behavior == ExtraBehavior::ResetContext) {
+             ResetDecoderContext();
+         }
+ 
+-        if (!DecodeOpusData(consumed, sample_count, ctx.ReadBuffer(), samples, performance)) {
++        if (!DecodeOpusData(consumed, sample_count, ctx.ReadBuffer(), tmp_samples, performance)) {
+             LOG_ERROR(Audio, "Failed to decode opus data");
+             IPC::ResponseBuilder rb{ctx, 2};
+             // TODO(ogniK): Use correct error code
+@@ -90,11 +90,11 @@ class OpusDecoderState {
+         if (performance) {
+             rb.Push<u64>(*performance);
+         }
+-        ctx.WriteBuffer(samples);
++        ctx.WriteBuffer(tmp_samples);
+     }
+ 
+     bool DecodeOpusData(u32& consumed, u32& sample_count, std::span<const u8> input,
+-                        std::vector<opus_int16>& output, u64* out_performance_time) const {
++                        std::span<opus_int16> output, u64* out_performance_time) const {
+         const auto start_time = std::chrono::steady_clock::now();
+         const std::size_t raw_output_sz = output.size() * sizeof(opus_int16);
+         if (sizeof(OpusPacketHeader) > input.size()) {
+@@ -154,6 +154,7 @@ class OpusDecoderState {
+     OpusDecoderPtr decoder;
+     u32 sample_rate;
+     u32 channel_count;
++    Common::ScratchBuffer<opus_int16> tmp_samples;
+ };
+ 
+ class IHardwareOpusDecoderManager final : public ServiceFramework<IHardwareOpusDecoderManager> {
+diff --git a/src/core/hle/service/nvdrv/devices/nvdevice.h b/src/core/hle/service/nvdrv/devices/nvdevice.h
+index ab1f30f9e65..a04538d5d06 100644
+--- a/src/core/hle/service/nvdrv/devices/nvdevice.h
++++ b/src/core/hle/service/nvdrv/devices/nvdevice.h
+@@ -34,7 +34,7 @@ class nvdevice {
+      * @returns The result code of the ioctl.
+      */
+     virtual NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::vector<u8>& output) = 0;
++                            std::span<u8> output) = 0;
+ 
+     /**
+      * Handles an ioctl2 request.
+@@ -45,7 +45,7 @@ class nvdevice {
+      * @returns The result code of the ioctl.
+      */
+     virtual NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::span<const u8> inline_input, std::vector<u8>& output) = 0;
++                            std::span<const u8> inline_input, std::span<u8> output) = 0;
+ 
+     /**
+      * Handles an ioctl3 request.
+@@ -56,7 +56,7 @@ class nvdevice {
+      * @returns The result code of the ioctl.
+      */
+     virtual NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::vector<u8>& output, std::vector<u8>& inline_output) = 0;
++                            std::span<u8> output, std::span<u8> inline_output) = 0;
+ 
+     /**
+      * Called once a device is opened
+diff --git a/src/core/hle/service/nvdrv/devices/nvdisp_disp0.cpp b/src/core/hle/service/nvdrv/devices/nvdisp_disp0.cpp
+index 0fe242e9d05..05a43d8dc46 100644
+--- a/src/core/hle/service/nvdrv/devices/nvdisp_disp0.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvdisp_disp0.cpp
+@@ -18,19 +18,19 @@ nvdisp_disp0::nvdisp_disp0(Core::System& system_, NvCore::Container& core)
+ nvdisp_disp0::~nvdisp_disp0() = default;
+ 
+ NvResult nvdisp_disp0::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::vector<u8>& output) {
++                              std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+ NvResult nvdisp_disp0::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::span<const u8> inline_input, std::vector<u8>& output) {
++                              std::span<const u8> inline_input, std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+ NvResult nvdisp_disp0::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::vector<u8>& output, std::vector<u8>& inline_output) {
++                              std::span<u8> output, std::span<u8> inline_output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+diff --git a/src/core/hle/service/nvdrv/devices/nvdisp_disp0.h b/src/core/hle/service/nvdrv/devices/nvdisp_disp0.h
+index bcd0e3ed529..daee05fe817 100644
+--- a/src/core/hle/service/nvdrv/devices/nvdisp_disp0.h
++++ b/src/core/hle/service/nvdrv/devices/nvdisp_disp0.h
+@@ -26,11 +26,11 @@ class nvdisp_disp0 final : public nvdevice {
+     ~nvdisp_disp0() override;
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
+index 681bd086739..07e570a9f0f 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
+@@ -28,7 +28,7 @@ nvhost_as_gpu::nvhost_as_gpu(Core::System& system_, Module& module_, NvCore::Con
+ nvhost_as_gpu::~nvhost_as_gpu() = default;
+ 
+ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                               std::vector<u8>& output) {
++                               std::span<u8> output) {
+     switch (command.group) {
+     case 'A':
+         switch (command.cmd) {
+@@ -61,13 +61,13 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
+ }
+ 
+ NvResult nvhost_as_gpu::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                               std::span<const u8> inline_input, std::vector<u8>& output) {
++                               std::span<const u8> inline_input, std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+ NvResult nvhost_as_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                               std::vector<u8>& output, std::vector<u8>& inline_output) {
++                               std::span<u8> output, std::span<u8> inline_output) {
+     switch (command.group) {
+     case 'A':
+         switch (command.cmd) {
+@@ -87,7 +87,7 @@ NvResult nvhost_as_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> i
+ void nvhost_as_gpu::OnOpen(DeviceFD fd) {}
+ void nvhost_as_gpu::OnClose(DeviceFD fd) {}
+ 
+-NvResult nvhost_as_gpu::AllocAsEx(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_as_gpu::AllocAsEx(std::span<const u8> input, std::span<u8> output) {
+     IoctlAllocAsEx params{};
+     std::memcpy(&params, input.data(), input.size());
+ 
+@@ -141,7 +141,7 @@ NvResult nvhost_as_gpu::AllocAsEx(std::span<const u8> input, std::vector<u8>& ou
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_as_gpu::AllocateSpace(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_as_gpu::AllocateSpace(std::span<const u8> input, std::span<u8> output) {
+     IoctlAllocSpace params{};
+     std::memcpy(&params, input.data(), input.size());
+ 
+@@ -220,7 +220,7 @@ void nvhost_as_gpu::FreeMappingLocked(u64 offset) {
+     mapping_map.erase(offset);
+ }
+ 
+-NvResult nvhost_as_gpu::FreeSpace(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_as_gpu::FreeSpace(std::span<const u8> input, std::span<u8> output) {
+     IoctlFreeSpace params{};
+     std::memcpy(&params, input.data(), input.size());
+ 
+@@ -266,15 +266,14 @@ NvResult nvhost_as_gpu::FreeSpace(std::span<const u8> input, std::vector<u8>& ou
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_as_gpu::Remap(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_as_gpu::Remap(std::span<const u8> input, std::span<u8> output) {
+     const auto num_entries = input.size() / sizeof(IoctlRemapEntry);
+ 
+     LOG_DEBUG(Service_NVDRV, "called, num_entries=0x{:X}", num_entries);
+ 
+-    std::vector<IoctlRemapEntry> entries(num_entries);
+-    std::memcpy(entries.data(), input.data(), input.size());
+-
+     std::scoped_lock lock(mutex);
++    entries.resize_destructive(num_entries);
++    std::memcpy(entries.data(), input.data(), input.size());
+ 
+     if (!vm.initialised) {
+         return NvResult::BadValue;
+@@ -320,7 +319,7 @@ NvResult nvhost_as_gpu::Remap(std::span<const u8> input, std::vector<u8>& output
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_as_gpu::MapBufferEx(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_as_gpu::MapBufferEx(std::span<const u8> input, std::span<u8> output) {
+     IoctlMapBufferEx params{};
+     std::memcpy(&params, input.data(), input.size());
+ 
+@@ -424,7 +423,7 @@ NvResult nvhost_as_gpu::MapBufferEx(std::span<const u8> input, std::vector<u8>&
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_as_gpu::UnmapBuffer(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_as_gpu::UnmapBuffer(std::span<const u8> input, std::span<u8> output) {
+     IoctlUnmapBuffer params{};
+     std::memcpy(&params, input.data(), input.size());
+ 
+@@ -463,7 +462,7 @@ NvResult nvhost_as_gpu::UnmapBuffer(std::span<const u8> input, std::vector<u8>&
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_as_gpu::BindChannel(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_as_gpu::BindChannel(std::span<const u8> input, std::span<u8> output) {
+     IoctlBindChannel params{};
+     std::memcpy(&params, input.data(), input.size());
+     LOG_DEBUG(Service_NVDRV, "called, fd={:X}", params.fd);
+@@ -492,7 +491,7 @@ void nvhost_as_gpu::GetVARegionsImpl(IoctlGetVaRegions& params) {
+     };
+ }
+ 
+-NvResult nvhost_as_gpu::GetVARegions(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_as_gpu::GetVARegions(std::span<const u8> input, std::span<u8> output) {
+     IoctlGetVaRegions params{};
+     std::memcpy(&params, input.data(), input.size());
+ 
+@@ -511,8 +510,8 @@ NvResult nvhost_as_gpu::GetVARegions(std::span<const u8> input, std::vector<u8>&
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_as_gpu::GetVARegions(std::span<const u8> input, std::vector<u8>& output,
+-                                     std::vector<u8>& inline_output) {
++NvResult nvhost_as_gpu::GetVARegions(std::span<const u8> input, std::span<u8> output,
++                                     std::span<u8> inline_output) {
+     IoctlGetVaRegions params{};
+     std::memcpy(&params, input.data(), input.size());
+ 
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.h b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.h
+index 1aba8d57993..2af3e1260af 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.h
+@@ -15,6 +15,7 @@
+ #include "common/address_space.h"
+ #include "common/common_funcs.h"
+ #include "common/common_types.h"
++#include "common/scratch_buffer.h"
+ #include "common/swap.h"
+ #include "core/hle/service/nvdrv/core/nvmap.h"
+ #include "core/hle/service/nvdrv/devices/nvdevice.h"
+@@ -48,11 +49,11 @@ class nvhost_as_gpu final : public nvdevice {
+     ~nvhost_as_gpu() override;
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+@@ -138,18 +139,18 @@ class nvhost_as_gpu final : public nvdevice {
+     static_assert(sizeof(IoctlGetVaRegions) == 16 + sizeof(VaRegion) * 2,
+                   "IoctlGetVaRegions is incorrect size");
+ 
+-    NvResult AllocAsEx(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult AllocateSpace(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult Remap(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult MapBufferEx(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult UnmapBuffer(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult FreeSpace(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult BindChannel(std::span<const u8> input, std::vector<u8>& output);
++    NvResult AllocAsEx(std::span<const u8> input, std::span<u8> output);
++    NvResult AllocateSpace(std::span<const u8> input, std::span<u8> output);
++    NvResult Remap(std::span<const u8> input, std::span<u8> output);
++    NvResult MapBufferEx(std::span<const u8> input, std::span<u8> output);
++    NvResult UnmapBuffer(std::span<const u8> input, std::span<u8> output);
++    NvResult FreeSpace(std::span<const u8> input, std::span<u8> output);
++    NvResult BindChannel(std::span<const u8> input, std::span<u8> output);
+ 
+     void GetVARegionsImpl(IoctlGetVaRegions& params);
+-    NvResult GetVARegions(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult GetVARegions(std::span<const u8> input, std::vector<u8>& output,
+-                          std::vector<u8>& inline_output);
++    NvResult GetVARegions(std::span<const u8> input, std::span<u8> output);
++    NvResult GetVARegions(std::span<const u8> input, std::span<u8> output,
++                          std::span<u8> inline_output);
+ 
+     void FreeMappingLocked(u64 offset);
+ 
+@@ -212,6 +213,7 @@ class nvhost_as_gpu final : public nvdevice {
+         bool initialised{};
+     } vm;
+     std::shared_ptr<Tegra::MemoryManager> gmmu;
++    Common::ScratchBuffer<IoctlRemapEntry> entries;
+ 
+     // s32 channel{};
+     // u32 big_page_size{VM::DEFAULT_BIG_PAGE_SIZE};
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp b/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp
+index e1202556006..4d55554b4e8 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp
+@@ -35,7 +35,7 @@ nvhost_ctrl::~nvhost_ctrl() {
+ }
+ 
+ NvResult nvhost_ctrl::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                             std::vector<u8>& output) {
++                             std::span<u8> output) {
+     switch (command.group) {
+     case 0x0:
+         switch (command.cmd) {
+@@ -64,13 +64,13 @@ NvResult nvhost_ctrl::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> inp
+ }
+ 
+ NvResult nvhost_ctrl::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                             std::span<const u8> inline_input, std::vector<u8>& output) {
++                             std::span<const u8> inline_input, std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+ NvResult nvhost_ctrl::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                             std::vector<u8>& output, std::vector<u8>& inline_outpu) {
++                             std::span<u8> output, std::span<u8> inline_outpu) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+@@ -79,7 +79,7 @@ void nvhost_ctrl::OnOpen(DeviceFD fd) {}
+ 
+ void nvhost_ctrl::OnClose(DeviceFD fd) {}
+ 
+-NvResult nvhost_ctrl::NvOsGetConfigU32(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl::NvOsGetConfigU32(std::span<const u8> input, std::span<u8> output) {
+     IocGetConfigParams params{};
+     std::memcpy(&params, input.data(), sizeof(params));
+     LOG_TRACE(Service_NVDRV, "called, setting={}!{}", params.domain_str.data(),
+@@ -87,7 +87,7 @@ NvResult nvhost_ctrl::NvOsGetConfigU32(std::span<const u8> input, std::vector<u8
+     return NvResult::ConfigVarNotFound; // Returns error on production mode
+ }
+ 
+-NvResult nvhost_ctrl::IocCtrlEventWait(std::span<const u8> input, std::vector<u8>& output,
++NvResult nvhost_ctrl::IocCtrlEventWait(std::span<const u8> input, std::span<u8> output,
+                                        bool is_allocation) {
+     IocCtrlEventWaitParams params{};
+     std::memcpy(&params, input.data(), sizeof(params));
+@@ -231,7 +231,7 @@ NvResult nvhost_ctrl::FreeEvent(u32 slot) {
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl::IocCtrlEventRegister(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl::IocCtrlEventRegister(std::span<const u8> input, std::span<u8> output) {
+     IocCtrlEventRegisterParams params{};
+     std::memcpy(&params, input.data(), sizeof(params));
+     const u32 event_id = params.user_event_id;
+@@ -252,7 +252,7 @@ NvResult nvhost_ctrl::IocCtrlEventRegister(std::span<const u8> input, std::vecto
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl::IocCtrlEventUnregister(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl::IocCtrlEventUnregister(std::span<const u8> input, std::span<u8> output) {
+     IocCtrlEventUnregisterParams params{};
+     std::memcpy(&params, input.data(), sizeof(params));
+     const u32 event_id = params.user_event_id & 0x00FF;
+@@ -262,8 +262,7 @@ NvResult nvhost_ctrl::IocCtrlEventUnregister(std::span<const u8> input, std::vec
+     return FreeEvent(event_id);
+ }
+ 
+-NvResult nvhost_ctrl::IocCtrlEventUnregisterBatch(std::span<const u8> input,
+-                                                  std::vector<u8>& output) {
++NvResult nvhost_ctrl::IocCtrlEventUnregisterBatch(std::span<const u8> input, std::span<u8> output) {
+     IocCtrlEventUnregisterBatchParams params{};
+     std::memcpy(&params, input.data(), sizeof(params));
+     u64 event_mask = params.user_events;
+@@ -281,7 +280,7 @@ NvResult nvhost_ctrl::IocCtrlEventUnregisterBatch(std::span<const u8> input,
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl::IocCtrlClearEventWait(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl::IocCtrlClearEventWait(std::span<const u8> input, std::span<u8> output) {
+     IocCtrlEventClearParams params{};
+     std::memcpy(&params, input.data(), sizeof(params));
+ 
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_ctrl.h b/src/core/hle/service/nvdrv/devices/nvhost_ctrl.h
+index dd2e7888af9..2efed4862d4 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_ctrl.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_ctrl.h
+@@ -26,11 +26,11 @@ class nvhost_ctrl final : public nvdevice {
+     ~nvhost_ctrl() override;
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+@@ -186,13 +186,12 @@ class nvhost_ctrl final : public nvdevice {
+     static_assert(sizeof(IocCtrlEventUnregisterBatchParams) == 8,
+                   "IocCtrlEventKill is incorrect size");
+ 
+-    NvResult NvOsGetConfigU32(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocCtrlEventWait(std::span<const u8> input, std::vector<u8>& output,
+-                              bool is_allocation);
+-    NvResult IocCtrlEventRegister(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocCtrlEventUnregister(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocCtrlEventUnregisterBatch(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocCtrlClearEventWait(std::span<const u8> input, std::vector<u8>& output);
++    NvResult NvOsGetConfigU32(std::span<const u8> input, std::span<u8> output);
++    NvResult IocCtrlEventWait(std::span<const u8> input, std::span<u8> output, bool is_allocation);
++    NvResult IocCtrlEventRegister(std::span<const u8> input, std::span<u8> output);
++    NvResult IocCtrlEventUnregister(std::span<const u8> input, std::span<u8> output);
++    NvResult IocCtrlEventUnregisterBatch(std::span<const u8> input, std::span<u8> output);
++    NvResult IocCtrlClearEventWait(std::span<const u8> input, std::span<u8> output);
+ 
+     NvResult FreeEvent(u32 slot);
+ 
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.cpp
+index be3c083dbfd..6081d92e977 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.cpp
+@@ -22,7 +22,7 @@ nvhost_ctrl_gpu::~nvhost_ctrl_gpu() {
+ }
+ 
+ NvResult nvhost_ctrl_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                                 std::vector<u8>& output) {
++                                 std::span<u8> output) {
+     switch (command.group) {
+     case 'G':
+         switch (command.cmd) {
+@@ -54,13 +54,13 @@ NvResult nvhost_ctrl_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8>
+ }
+ 
+ NvResult nvhost_ctrl_gpu::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                                 std::span<const u8> inline_input, std::vector<u8>& output) {
++                                 std::span<const u8> inline_input, std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+ NvResult nvhost_ctrl_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                                 std::vector<u8>& output, std::vector<u8>& inline_output) {
++                                 std::span<u8> output, std::span<u8> inline_output) {
+     switch (command.group) {
+     case 'G':
+         switch (command.cmd) {
+@@ -82,7 +82,7 @@ NvResult nvhost_ctrl_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8>
+ void nvhost_ctrl_gpu::OnOpen(DeviceFD fd) {}
+ void nvhost_ctrl_gpu::OnClose(DeviceFD fd) {}
+ 
+-NvResult nvhost_ctrl_gpu::GetCharacteristics(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::GetCharacteristics(std::span<const u8> input, std::span<u8> output) {
+     LOG_DEBUG(Service_NVDRV, "called");
+     IoctlCharacteristics params{};
+     std::memcpy(&params, input.data(), input.size());
+@@ -127,8 +127,8 @@ NvResult nvhost_ctrl_gpu::GetCharacteristics(std::span<const u8> input, std::vec
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::GetCharacteristics(std::span<const u8> input, std::vector<u8>& output,
+-                                             std::vector<u8>& inline_output) {
++NvResult nvhost_ctrl_gpu::GetCharacteristics(std::span<const u8> input, std::span<u8> output,
++                                             std::span<u8> inline_output) {
+     LOG_DEBUG(Service_NVDRV, "called");
+     IoctlCharacteristics params{};
+     std::memcpy(&params, input.data(), input.size());
+@@ -175,7 +175,7 @@ NvResult nvhost_ctrl_gpu::GetCharacteristics(std::span<const u8> input, std::vec
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::GetTPCMasks(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::GetTPCMasks(std::span<const u8> input, std::span<u8> output) {
+     IoctlGpuGetTpcMasksArgs params{};
+     std::memcpy(&params, input.data(), input.size());
+     LOG_DEBUG(Service_NVDRV, "called, mask_buffer_size=0x{:X}", params.mask_buffer_size);
+@@ -186,8 +186,8 @@ NvResult nvhost_ctrl_gpu::GetTPCMasks(std::span<const u8> input, std::vector<u8>
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::GetTPCMasks(std::span<const u8> input, std::vector<u8>& output,
+-                                      std::vector<u8>& inline_output) {
++NvResult nvhost_ctrl_gpu::GetTPCMasks(std::span<const u8> input, std::span<u8> output,
++                                      std::span<u8> inline_output) {
+     IoctlGpuGetTpcMasksArgs params{};
+     std::memcpy(&params, input.data(), input.size());
+     LOG_DEBUG(Service_NVDRV, "called, mask_buffer_size=0x{:X}", params.mask_buffer_size);
+@@ -199,7 +199,7 @@ NvResult nvhost_ctrl_gpu::GetTPCMasks(std::span<const u8> input, std::vector<u8>
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::GetActiveSlotMask(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::GetActiveSlotMask(std::span<const u8> input, std::span<u8> output) {
+     LOG_DEBUG(Service_NVDRV, "called");
+ 
+     IoctlActiveSlotMask params{};
+@@ -212,7 +212,7 @@ NvResult nvhost_ctrl_gpu::GetActiveSlotMask(std::span<const u8> input, std::vect
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::ZCullGetCtxSize(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::ZCullGetCtxSize(std::span<const u8> input, std::span<u8> output) {
+     LOG_DEBUG(Service_NVDRV, "called");
+ 
+     IoctlZcullGetCtxSize params{};
+@@ -224,7 +224,7 @@ NvResult nvhost_ctrl_gpu::ZCullGetCtxSize(std::span<const u8> input, std::vector
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::ZCullGetInfo(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::ZCullGetInfo(std::span<const u8> input, std::span<u8> output) {
+     LOG_DEBUG(Service_NVDRV, "called");
+ 
+     IoctlNvgpuGpuZcullGetInfoArgs params{};
+@@ -247,7 +247,7 @@ NvResult nvhost_ctrl_gpu::ZCullGetInfo(std::span<const u8> input, std::vector<u8
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::ZBCSetTable(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::ZBCSetTable(std::span<const u8> input, std::span<u8> output) {
+     LOG_WARNING(Service_NVDRV, "(STUBBED) called");
+ 
+     IoctlZbcSetTable params{};
+@@ -263,7 +263,7 @@ NvResult nvhost_ctrl_gpu::ZBCSetTable(std::span<const u8> input, std::vector<u8>
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::ZBCQueryTable(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::ZBCQueryTable(std::span<const u8> input, std::span<u8> output) {
+     LOG_WARNING(Service_NVDRV, "(STUBBED) called");
+ 
+     IoctlZbcQueryTable params{};
+@@ -273,7 +273,7 @@ NvResult nvhost_ctrl_gpu::ZBCQueryTable(std::span<const u8> input, std::vector<u
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::FlushL2(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::FlushL2(std::span<const u8> input, std::span<u8> output) {
+     LOG_WARNING(Service_NVDRV, "(STUBBED) called");
+ 
+     IoctlFlushL2 params{};
+@@ -283,7 +283,7 @@ NvResult nvhost_ctrl_gpu::FlushL2(std::span<const u8> input, std::vector<u8>& ou
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_ctrl_gpu::GetGpuTime(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_ctrl_gpu::GetGpuTime(std::span<const u8> input, std::span<u8> output) {
+     LOG_DEBUG(Service_NVDRV, "called");
+ 
+     IoctlGetGpuTime params{};
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.h b/src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.h
+index b9333d9d39b..97995551ccd 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_ctrl_gpu.h
+@@ -22,11 +22,11 @@ class nvhost_ctrl_gpu final : public nvdevice {
+     ~nvhost_ctrl_gpu() override;
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+@@ -151,21 +151,21 @@ class nvhost_ctrl_gpu final : public nvdevice {
+     };
+     static_assert(sizeof(IoctlGetGpuTime) == 0x10, "IoctlGetGpuTime is incorrect size");
+ 
+-    NvResult GetCharacteristics(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult GetCharacteristics(std::span<const u8> input, std::vector<u8>& output,
+-                                std::vector<u8>& inline_output);
+-
+-    NvResult GetTPCMasks(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult GetTPCMasks(std::span<const u8> input, std::vector<u8>& output,
+-                         std::vector<u8>& inline_output);
+-
+-    NvResult GetActiveSlotMask(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult ZCullGetCtxSize(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult ZCullGetInfo(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult ZBCSetTable(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult ZBCQueryTable(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult FlushL2(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult GetGpuTime(std::span<const u8> input, std::vector<u8>& output);
++    NvResult GetCharacteristics(std::span<const u8> input, std::span<u8> output);
++    NvResult GetCharacteristics(std::span<const u8> input, std::span<u8> output,
++                                std::span<u8> inline_output);
++
++    NvResult GetTPCMasks(std::span<const u8> input, std::span<u8> output);
++    NvResult GetTPCMasks(std::span<const u8> input, std::span<u8> output,
++                         std::span<u8> inline_output);
++
++    NvResult GetActiveSlotMask(std::span<const u8> input, std::span<u8> output);
++    NvResult ZCullGetCtxSize(std::span<const u8> input, std::span<u8> output);
++    NvResult ZCullGetInfo(std::span<const u8> input, std::span<u8> output);
++    NvResult ZBCSetTable(std::span<const u8> input, std::span<u8> output);
++    NvResult ZBCQueryTable(std::span<const u8> input, std::span<u8> output);
++    NvResult FlushL2(std::span<const u8> input, std::span<u8> output);
++    NvResult GetGpuTime(std::span<const u8> input, std::span<u8> output);
+ 
+     EventInterface& events_interface;
+ 
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
+index 453a965dcb2..46a25fcaba2 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
+@@ -47,7 +47,7 @@ nvhost_gpu::~nvhost_gpu() {
+ }
+ 
+ NvResult nvhost_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::vector<u8>& output) {
++                            std::span<u8> output) {
+     switch (command.group) {
+     case 0x0:
+         switch (command.cmd) {
+@@ -99,7 +99,7 @@ NvResult nvhost_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> inpu
+ };
+ 
+ NvResult nvhost_gpu::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::span<const u8> inline_input, std::vector<u8>& output) {
++                            std::span<const u8> inline_input, std::span<u8> output) {
+     switch (command.group) {
+     case 'H':
+         switch (command.cmd) {
+@@ -113,7 +113,7 @@ NvResult nvhost_gpu::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> inpu
+ }
+ 
+ NvResult nvhost_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::vector<u8>& output, std::vector<u8>& inline_output) {
++                            std::span<u8> output, std::span<u8> inline_output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+@@ -121,7 +121,7 @@ NvResult nvhost_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> inpu
+ void nvhost_gpu::OnOpen(DeviceFD fd) {}
+ void nvhost_gpu::OnClose(DeviceFD fd) {}
+ 
+-NvResult nvhost_gpu::SetNVMAPfd(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::SetNVMAPfd(std::span<const u8> input, std::span<u8> output) {
+     IoctlSetNvmapFD params{};
+     std::memcpy(&params, input.data(), input.size());
+     LOG_DEBUG(Service_NVDRV, "called, fd={}", params.nvmap_fd);
+@@ -130,7 +130,7 @@ NvResult nvhost_gpu::SetNVMAPfd(std::span<const u8> input, std::vector<u8>& outp
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::SetClientData(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::SetClientData(std::span<const u8> input, std::span<u8> output) {
+     LOG_DEBUG(Service_NVDRV, "called");
+ 
+     IoctlClientData params{};
+@@ -139,7 +139,7 @@ NvResult nvhost_gpu::SetClientData(std::span<const u8> input, std::vector<u8>& o
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::GetClientData(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::GetClientData(std::span<const u8> input, std::span<u8> output) {
+     LOG_DEBUG(Service_NVDRV, "called");
+ 
+     IoctlClientData params{};
+@@ -149,7 +149,7 @@ NvResult nvhost_gpu::GetClientData(std::span<const u8> input, std::vector<u8>& o
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::ZCullBind(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::ZCullBind(std::span<const u8> input, std::span<u8> output) {
+     std::memcpy(&zcull_params, input.data(), input.size());
+     LOG_DEBUG(Service_NVDRV, "called, gpu_va={:X}, mode={:X}", zcull_params.gpu_va,
+               zcull_params.mode);
+@@ -158,7 +158,7 @@ NvResult nvhost_gpu::ZCullBind(std::span<const u8> input, std::vector<u8>& outpu
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::SetErrorNotifier(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::SetErrorNotifier(std::span<const u8> input, std::span<u8> output) {
+     IoctlSetErrorNotifier params{};
+     std::memcpy(&params, input.data(), input.size());
+     LOG_WARNING(Service_NVDRV, "(STUBBED) called, offset={:X}, size={:X}, mem={:X}", params.offset,
+@@ -168,14 +168,14 @@ NvResult nvhost_gpu::SetErrorNotifier(std::span<const u8> input, std::vector<u8>
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::SetChannelPriority(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::SetChannelPriority(std::span<const u8> input, std::span<u8> output) {
+     std::memcpy(&channel_priority, input.data(), input.size());
+     LOG_DEBUG(Service_NVDRV, "(STUBBED) called, priority={:X}", channel_priority);
+ 
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::AllocGPFIFOEx2(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::AllocGPFIFOEx2(std::span<const u8> input, std::span<u8> output) {
+     IoctlAllocGpfifoEx2 params{};
+     std::memcpy(&params, input.data(), input.size());
+     LOG_WARNING(Service_NVDRV,
+@@ -197,7 +197,7 @@ NvResult nvhost_gpu::AllocGPFIFOEx2(std::span<const u8> input, std::vector<u8>&
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::AllocateObjectContext(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::AllocateObjectContext(std::span<const u8> input, std::span<u8> output) {
+     IoctlAllocObjCtx params{};
+     std::memcpy(&params, input.data(), input.size());
+     LOG_WARNING(Service_NVDRV, "(STUBBED) called, class_num={:X}, flags={:X}", params.class_num,
+@@ -208,7 +208,8 @@ NvResult nvhost_gpu::AllocateObjectContext(std::span<const u8> input, std::vecto
+     return NvResult::Success;
+ }
+ 
+-static std::vector<Tegra::CommandHeader> BuildWaitCommandList(NvFence fence) {
++static boost::container::small_vector<Tegra::CommandHeader, 512> BuildWaitCommandList(
++    NvFence fence) {
+     return {
+         Tegra::BuildCommandHeader(Tegra::BufferMethods::SyncpointPayload, 1,
+                                   Tegra::SubmissionMode::Increasing),
+@@ -219,35 +220,35 @@ static std::vector<Tegra::CommandHeader> BuildWaitCommandList(NvFence fence) {
+     };
+ }
+ 
+-static std::vector<Tegra::CommandHeader> BuildIncrementCommandList(NvFence fence) {
+-    std::vector<Tegra::CommandHeader> result{
++static boost::container::small_vector<Tegra::CommandHeader, 512> BuildIncrementCommandList(
++    NvFence fence) {
++    boost::container::small_vector<Tegra::CommandHeader, 512> result{
+         Tegra::BuildCommandHeader(Tegra::BufferMethods::SyncpointPayload, 1,
+                                   Tegra::SubmissionMode::Increasing),
+         {}};
+ 
+     for (u32 count = 0; count < 2; ++count) {
+-        result.emplace_back(Tegra::BuildCommandHeader(Tegra::BufferMethods::SyncpointOperation, 1,
+-                                                      Tegra::SubmissionMode::Increasing));
+-        result.emplace_back(
++        result.push_back(Tegra::BuildCommandHeader(Tegra::BufferMethods::SyncpointOperation, 1,
++                                                   Tegra::SubmissionMode::Increasing));
++        result.push_back(
+             BuildFenceAction(Tegra::Engines::Puller::FenceOperation::Increment, fence.id));
+     }
+ 
+     return result;
+ }
+ 
+-static std::vector<Tegra::CommandHeader> BuildIncrementWithWfiCommandList(NvFence fence) {
+-    std::vector<Tegra::CommandHeader> result{
++static boost::container::small_vector<Tegra::CommandHeader, 512> BuildIncrementWithWfiCommandList(
++    NvFence fence) {
++    boost::container::small_vector<Tegra::CommandHeader, 512> result{
+         Tegra::BuildCommandHeader(Tegra::BufferMethods::WaitForIdle, 1,
+                                   Tegra::SubmissionMode::Increasing),
+         {}};
+-    const std::vector<Tegra::CommandHeader> increment{BuildIncrementCommandList(fence)};
+-
+-    result.insert(result.end(), increment.begin(), increment.end());
+-
++    auto increment_list{BuildIncrementCommandList(fence)};
++    result.insert(result.end(), increment_list.begin(), increment_list.end());
+     return result;
+ }
+ 
+-NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, std::vector<u8>& output,
++NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, std::span<u8> output,
+                                       Tegra::CommandList&& entries) {
+     LOG_TRACE(Service_NVDRV, "called, gpfifo={:X}, num_entries={:X}, flags={:X}", params.address,
+               params.num_entries, params.flags.raw);
+@@ -293,7 +294,7 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, std::vector<u8>
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::SubmitGPFIFOBase(std::span<const u8> input, std::vector<u8>& output,
++NvResult nvhost_gpu::SubmitGPFIFOBase(std::span<const u8> input, std::span<u8> output,
+                                       bool kickoff) {
+     if (input.size() < sizeof(IoctlSubmitGpfifo)) {
+         UNIMPLEMENTED();
+@@ -315,7 +316,7 @@ NvResult nvhost_gpu::SubmitGPFIFOBase(std::span<const u8> input, std::vector<u8>
+ }
+ 
+ NvResult nvhost_gpu::SubmitGPFIFOBase(std::span<const u8> input, std::span<const u8> input_inline,
+-                                      std::vector<u8>& output) {
++                                      std::span<u8> output) {
+     if (input.size() < sizeof(IoctlSubmitGpfifo)) {
+         UNIMPLEMENTED();
+         return NvResult::InvalidSize;
+@@ -327,7 +328,7 @@ NvResult nvhost_gpu::SubmitGPFIFOBase(std::span<const u8> input, std::span<const
+     return SubmitGPFIFOImpl(params, output, std::move(entries));
+ }
+ 
+-NvResult nvhost_gpu::GetWaitbase(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::GetWaitbase(std::span<const u8> input, std::span<u8> output) {
+     IoctlGetWaitbase params{};
+     std::memcpy(&params, input.data(), sizeof(IoctlGetWaitbase));
+     LOG_INFO(Service_NVDRV, "called, unknown=0x{:X}", params.unknown);
+@@ -337,7 +338,7 @@ NvResult nvhost_gpu::GetWaitbase(std::span<const u8> input, std::vector<u8>& out
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::ChannelSetTimeout(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::ChannelSetTimeout(std::span<const u8> input, std::span<u8> output) {
+     IoctlChannelSetTimeout params{};
+     std::memcpy(&params, input.data(), sizeof(IoctlChannelSetTimeout));
+     LOG_INFO(Service_NVDRV, "called, timeout=0x{:X}", params.timeout);
+@@ -345,7 +346,7 @@ NvResult nvhost_gpu::ChannelSetTimeout(std::span<const u8> input, std::vector<u8
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::ChannelSetTimeslice(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_gpu::ChannelSetTimeslice(std::span<const u8> input, std::span<u8> output) {
+     IoctlSetTimeslice params{};
+     std::memcpy(&params, input.data(), sizeof(IoctlSetTimeslice));
+     LOG_INFO(Service_NVDRV, "called, timeslice=0x{:X}", params.timeslice);
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_gpu.h b/src/core/hle/service/nvdrv/devices/nvhost_gpu.h
+index 3ca58202d3a..529c20526a3 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_gpu.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_gpu.h
+@@ -41,11 +41,11 @@ class nvhost_gpu final : public nvdevice {
+     ~nvhost_gpu() override;
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+@@ -186,23 +186,23 @@ class nvhost_gpu final : public nvdevice {
+     u32_le channel_priority{};
+     u32_le channel_timeslice{};
+ 
+-    NvResult SetNVMAPfd(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult SetClientData(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult GetClientData(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult ZCullBind(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult SetErrorNotifier(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult SetChannelPriority(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult AllocGPFIFOEx2(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult AllocateObjectContext(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, std::vector<u8>& output,
++    NvResult SetNVMAPfd(std::span<const u8> input, std::span<u8> output);
++    NvResult SetClientData(std::span<const u8> input, std::span<u8> output);
++    NvResult GetClientData(std::span<const u8> input, std::span<u8> output);
++    NvResult ZCullBind(std::span<const u8> input, std::span<u8> output);
++    NvResult SetErrorNotifier(std::span<const u8> input, std::span<u8> output);
++    NvResult SetChannelPriority(std::span<const u8> input, std::span<u8> output);
++    NvResult AllocGPFIFOEx2(std::span<const u8> input, std::span<u8> output);
++    NvResult AllocateObjectContext(std::span<const u8> input, std::span<u8> output);
++    NvResult SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, std::span<u8> output,
+                               Tegra::CommandList&& entries);
+-    NvResult SubmitGPFIFOBase(std::span<const u8> input, std::vector<u8>& output,
++    NvResult SubmitGPFIFOBase(std::span<const u8> input, std::span<u8> output,
+                               bool kickoff = false);
+     NvResult SubmitGPFIFOBase(std::span<const u8> input, std::span<const u8> input_inline,
+-                              std::vector<u8>& output);
+-    NvResult GetWaitbase(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult ChannelSetTimeout(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult ChannelSetTimeslice(std::span<const u8> input, std::vector<u8>& output);
++                              std::span<u8> output);
++    NvResult GetWaitbase(std::span<const u8> input, std::span<u8> output);
++    NvResult ChannelSetTimeout(std::span<const u8> input, std::span<u8> output);
++    NvResult ChannelSetTimeslice(std::span<const u8> input, std::span<u8> output);
+ 
+     EventInterface& events_interface;
+     NvCore::Container& core;
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_nvdec.cpp b/src/core/hle/service/nvdrv/devices/nvhost_nvdec.cpp
+index dc45169ad9d..a174442a6ce 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_nvdec.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_nvdec.cpp
+@@ -16,7 +16,7 @@ nvhost_nvdec::nvhost_nvdec(Core::System& system_, NvCore::Container& core_)
+ nvhost_nvdec::~nvhost_nvdec() = default;
+ 
+ NvResult nvhost_nvdec::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::vector<u8>& output) {
++                              std::span<u8> output) {
+     switch (command.group) {
+     case 0x0:
+         switch (command.cmd) {
+@@ -56,13 +56,13 @@ NvResult nvhost_nvdec::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> in
+ }
+ 
+ NvResult nvhost_nvdec::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::span<const u8> inline_input, std::vector<u8>& output) {
++                              std::span<const u8> inline_input, std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+ NvResult nvhost_nvdec::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::vector<u8>& output, std::vector<u8>& inline_output) {
++                              std::span<u8> output, std::span<u8> inline_output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_nvdec.h b/src/core/hle/service/nvdrv/devices/nvhost_nvdec.h
+index 0d615bbcbf8..ad2233c4936 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_nvdec.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_nvdec.h
+@@ -14,11 +14,11 @@ class nvhost_nvdec final : public nvhost_nvdec_common {
+     ~nvhost_nvdec() override;
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.cpp b/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
+index 1ab51f10b0d..61649aa4a0f 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.cpp
+@@ -36,7 +36,7 @@ std::size_t SliceVectors(std::span<const u8> input, std::vector<T>& dst, std::si
+ // Writes the data in src to an offset into the dst vector. The offset is specified in bytes
+ // Returns the number of bytes written into dst.
+ template <typename T>
+-std::size_t WriteVectors(std::vector<u8>& dst, const std::vector<T>& src, std::size_t offset) {
++std::size_t WriteVectors(std::span<u8> dst, const std::vector<T>& src, std::size_t offset) {
+     if (src.empty()) {
+         return 0;
+     }
+@@ -72,8 +72,7 @@ NvResult nvhost_nvdec_common::SetNVMAPfd(std::span<const u8> input) {
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_nvdec_common::Submit(DeviceFD fd, std::span<const u8> input,
+-                                     std::vector<u8>& output) {
++NvResult nvhost_nvdec_common::Submit(DeviceFD fd, std::span<const u8> input, std::span<u8> output) {
+     IoctlSubmit params{};
+     std::memcpy(&params, input.data(), sizeof(IoctlSubmit));
+     LOG_DEBUG(Service_NVDRV, "called NVDEC Submit, cmd_buffer_count={}", params.cmd_buffer_count);
+@@ -121,7 +120,7 @@ NvResult nvhost_nvdec_common::Submit(DeviceFD fd, std::span<const u8> input,
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_nvdec_common::GetSyncpoint(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_nvdec_common::GetSyncpoint(std::span<const u8> input, std::span<u8> output) {
+     IoctlGetSyncpoint params{};
+     std::memcpy(&params, input.data(), sizeof(IoctlGetSyncpoint));
+     LOG_DEBUG(Service_NVDRV, "called GetSyncpoint, id={}", params.param);
+@@ -133,7 +132,7 @@ NvResult nvhost_nvdec_common::GetSyncpoint(std::span<const u8> input, std::vecto
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_nvdec_common::GetWaitbase(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_nvdec_common::GetWaitbase(std::span<const u8> input, std::span<u8> output) {
+     IoctlGetWaitbase params{};
+     LOG_CRITICAL(Service_NVDRV, "called WAITBASE");
+     std::memcpy(&params, input.data(), sizeof(IoctlGetWaitbase));
+@@ -142,7 +141,7 @@ NvResult nvhost_nvdec_common::GetWaitbase(std::span<const u8> input, std::vector
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_nvdec_common::MapBuffer(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_nvdec_common::MapBuffer(std::span<const u8> input, std::span<u8> output) {
+     IoctlMapBuffer params{};
+     std::memcpy(&params, input.data(), sizeof(IoctlMapBuffer));
+     std::vector<MapBufferEntry> cmd_buffer_handles(params.num_entries);
+@@ -159,7 +158,7 @@ NvResult nvhost_nvdec_common::MapBuffer(std::span<const u8> input, std::vector<u
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_nvdec_common::UnmapBuffer(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_nvdec_common::UnmapBuffer(std::span<const u8> input, std::span<u8> output) {
+     IoctlMapBuffer params{};
+     std::memcpy(&params, input.data(), sizeof(IoctlMapBuffer));
+     std::vector<MapBufferEntry> cmd_buffer_handles(params.num_entries);
+@@ -173,7 +172,7 @@ NvResult nvhost_nvdec_common::UnmapBuffer(std::span<const u8> input, std::vector
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_nvdec_common::SetSubmitTimeout(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_nvdec_common::SetSubmitTimeout(std::span<const u8> input, std::span<u8> output) {
+     std::memcpy(&submit_timeout, input.data(), input.size());
+     LOG_WARNING(Service_NVDRV, "(STUBBED) called");
+     return NvResult::Success;
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.h b/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.h
+index 5af26a26fa5..9bb573bfeee 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_nvdec_common.h
+@@ -108,12 +108,12 @@ class nvhost_nvdec_common : public nvdevice {
+ 
+     /// Ioctl command implementations
+     NvResult SetNVMAPfd(std::span<const u8> input);
+-    NvResult Submit(DeviceFD fd, std::span<const u8> input, std::vector<u8>& output);
+-    NvResult GetSyncpoint(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult GetWaitbase(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult MapBuffer(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult UnmapBuffer(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult SetSubmitTimeout(std::span<const u8> input, std::vector<u8>& output);
++    NvResult Submit(DeviceFD fd, std::span<const u8> input, std::span<u8> output);
++    NvResult GetSyncpoint(std::span<const u8> input, std::span<u8> output);
++    NvResult GetWaitbase(std::span<const u8> input, std::span<u8> output);
++    NvResult MapBuffer(std::span<const u8> input, std::span<u8> output);
++    NvResult UnmapBuffer(std::span<const u8> input, std::span<u8> output);
++    NvResult SetSubmitTimeout(std::span<const u8> input, std::span<u8> output);
+ 
+     Kernel::KEvent* QueryEvent(u32 event_id) override;
+ 
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_nvjpg.cpp b/src/core/hle/service/nvdrv/devices/nvhost_nvjpg.cpp
+index 39f30e7c868..a05c8cdaefd 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_nvjpg.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_nvjpg.cpp
+@@ -13,7 +13,7 @@ nvhost_nvjpg::nvhost_nvjpg(Core::System& system_) : nvdevice{system_} {}
+ nvhost_nvjpg::~nvhost_nvjpg() = default;
+ 
+ NvResult nvhost_nvjpg::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::vector<u8>& output) {
++                              std::span<u8> output) {
+     switch (command.group) {
+     case 'H':
+         switch (command.cmd) {
+@@ -32,13 +32,13 @@ NvResult nvhost_nvjpg::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> in
+ }
+ 
+ NvResult nvhost_nvjpg::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::span<const u8> inline_input, std::vector<u8>& output) {
++                              std::span<const u8> inline_input, std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+ NvResult nvhost_nvjpg::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                              std::vector<u8>& output, std::vector<u8>& inline_output) {
++                              std::span<u8> output, std::span<u8> inline_output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+@@ -46,7 +46,7 @@ NvResult nvhost_nvjpg::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> in
+ void nvhost_nvjpg::OnOpen(DeviceFD fd) {}
+ void nvhost_nvjpg::OnClose(DeviceFD fd) {}
+ 
+-NvResult nvhost_nvjpg::SetNVMAPfd(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvhost_nvjpg::SetNVMAPfd(std::span<const u8> input, std::span<u8> output) {
+     IoctlSetNvmapFD params{};
+     std::memcpy(&params, input.data(), input.size());
+     LOG_DEBUG(Service_NVDRV, "called, fd={}", params.nvmap_fd);
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_nvjpg.h b/src/core/hle/service/nvdrv/devices/nvhost_nvjpg.h
+index 41b57e872d2..5623e0d4733 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_nvjpg.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_nvjpg.h
+@@ -16,11 +16,11 @@ class nvhost_nvjpg final : public nvdevice {
+     ~nvhost_nvjpg() override;
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+@@ -33,7 +33,7 @@ class nvhost_nvjpg final : public nvdevice {
+ 
+     s32_le nvmap_fd{};
+ 
+-    NvResult SetNVMAPfd(std::span<const u8> input, std::vector<u8>& output);
++    NvResult SetNVMAPfd(std::span<const u8> input, std::span<u8> output);
+ };
+ 
+ } // namespace Service::Nvidia::Devices
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_vic.cpp b/src/core/hle/service/nvdrv/devices/nvhost_vic.cpp
+index b0ea402a72f..c0b8684c381 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_vic.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_vic.cpp
+@@ -16,7 +16,7 @@ nvhost_vic::nvhost_vic(Core::System& system_, NvCore::Container& core_)
+ nvhost_vic::~nvhost_vic() = default;
+ 
+ NvResult nvhost_vic::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::vector<u8>& output) {
++                            std::span<u8> output) {
+     switch (command.group) {
+     case 0x0:
+         switch (command.cmd) {
+@@ -56,13 +56,13 @@ NvResult nvhost_vic::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> inpu
+ }
+ 
+ NvResult nvhost_vic::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::span<const u8> inline_input, std::vector<u8>& output) {
++                            std::span<const u8> inline_input, std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+ NvResult nvhost_vic::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                            std::vector<u8>& output, std::vector<u8>& inline_output) {
++                            std::span<u8> output, std::span<u8> inline_output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_vic.h b/src/core/hle/service/nvdrv/devices/nvhost_vic.h
+index b5e350a83dd..cadbcb0a5cf 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_vic.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_vic.h
+@@ -13,11 +13,11 @@ class nvhost_vic final : public nvhost_nvdec_common {
+     ~nvhost_vic();
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+diff --git a/src/core/hle/service/nvdrv/devices/nvmap.cpp b/src/core/hle/service/nvdrv/devices/nvmap.cpp
+index 07417f04550..e7f7e273b59 100644
+--- a/src/core/hle/service/nvdrv/devices/nvmap.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvmap.cpp
+@@ -26,7 +26,7 @@ nvmap::nvmap(Core::System& system_, NvCore::Container& container_)
+ nvmap::~nvmap() = default;
+ 
+ NvResult nvmap::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                       std::vector<u8>& output) {
++                       std::span<u8> output) {
+     switch (command.group) {
+     case 0x1:
+         switch (command.cmd) {
+@@ -55,13 +55,13 @@ NvResult nvmap::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+ }
+ 
+ NvResult nvmap::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                       std::span<const u8> inline_input, std::vector<u8>& output) {
++                       std::span<const u8> inline_input, std::span<u8> output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+ 
+-NvResult nvmap::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                       std::vector<u8>& output, std::vector<u8>& inline_output) {
++NvResult nvmap::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                       std::span<u8> inline_output) {
+     UNIMPLEMENTED_MSG("Unimplemented ioctl={:08X}", command.raw);
+     return NvResult::NotImplemented;
+ }
+@@ -69,7 +69,7 @@ NvResult nvmap::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+ void nvmap::OnOpen(DeviceFD fd) {}
+ void nvmap::OnClose(DeviceFD fd) {}
+ 
+-NvResult nvmap::IocCreate(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvmap::IocCreate(std::span<const u8> input, std::span<u8> output) {
+     IocCreateParams params;
+     std::memcpy(&params, input.data(), sizeof(params));
+     LOG_DEBUG(Service_NVDRV, "called, size=0x{:08X}", params.size);
+@@ -89,7 +89,7 @@ NvResult nvmap::IocCreate(std::span<const u8> input, std::vector<u8>& output) {
+     return NvResult::Success;
+ }
+ 
+-NvResult nvmap::IocAlloc(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvmap::IocAlloc(std::span<const u8> input, std::span<u8> output) {
+     IocAllocParams params;
+     std::memcpy(&params, input.data(), sizeof(params));
+     LOG_DEBUG(Service_NVDRV, "called, addr={:X}", params.address);
+@@ -137,7 +137,7 @@ NvResult nvmap::IocAlloc(std::span<const u8> input, std::vector<u8>& output) {
+     return result;
+ }
+ 
+-NvResult nvmap::IocGetId(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvmap::IocGetId(std::span<const u8> input, std::span<u8> output) {
+     IocGetIdParams params;
+     std::memcpy(&params, input.data(), sizeof(params));
+ 
+@@ -161,7 +161,7 @@ NvResult nvmap::IocGetId(std::span<const u8> input, std::vector<u8>& output) {
+     return NvResult::Success;
+ }
+ 
+-NvResult nvmap::IocFromId(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvmap::IocFromId(std::span<const u8> input, std::span<u8> output) {
+     IocFromIdParams params;
+     std::memcpy(&params, input.data(), sizeof(params));
+ 
+@@ -192,7 +192,7 @@ NvResult nvmap::IocFromId(std::span<const u8> input, std::vector<u8>& output) {
+     return NvResult::Success;
+ }
+ 
+-NvResult nvmap::IocParam(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvmap::IocParam(std::span<const u8> input, std::span<u8> output) {
+     enum class ParamTypes { Size = 1, Alignment = 2, Base = 3, Heap = 4, Kind = 5, Compr = 6 };
+ 
+     IocParamParams params;
+@@ -241,7 +241,7 @@ NvResult nvmap::IocParam(std::span<const u8> input, std::vector<u8>& output) {
+     return NvResult::Success;
+ }
+ 
+-NvResult nvmap::IocFree(std::span<const u8> input, std::vector<u8>& output) {
++NvResult nvmap::IocFree(std::span<const u8> input, std::span<u8> output) {
+     IocFreeParams params;
+     std::memcpy(&params, input.data(), sizeof(params));
+ 
+diff --git a/src/core/hle/service/nvdrv/devices/nvmap.h b/src/core/hle/service/nvdrv/devices/nvmap.h
+index 82bd3b118f2..40c65b430b6 100644
+--- a/src/core/hle/service/nvdrv/devices/nvmap.h
++++ b/src/core/hle/service/nvdrv/devices/nvmap.h
+@@ -27,11 +27,11 @@ class nvmap final : public nvdevice {
+     nvmap& operator=(const nvmap&) = delete;
+ 
+     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::vector<u8>& output) override;
++                    std::span<u8> output) override;
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output) override;
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output) override;
++                    std::span<const u8> inline_input, std::span<u8> output) override;
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output) override;
+ 
+     void OnOpen(DeviceFD fd) override;
+     void OnClose(DeviceFD fd) override;
+@@ -106,12 +106,12 @@ class nvmap final : public nvdevice {
+     };
+     static_assert(sizeof(IocGetIdParams) == 8, "IocGetIdParams has wrong size");
+ 
+-    NvResult IocCreate(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocAlloc(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocGetId(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocFromId(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocParam(std::span<const u8> input, std::vector<u8>& output);
+-    NvResult IocFree(std::span<const u8> input, std::vector<u8>& output);
++    NvResult IocCreate(std::span<const u8> input, std::span<u8> output);
++    NvResult IocAlloc(std::span<const u8> input, std::span<u8> output);
++    NvResult IocGetId(std::span<const u8> input, std::span<u8> output);
++    NvResult IocFromId(std::span<const u8> input, std::span<u8> output);
++    NvResult IocParam(std::span<const u8> input, std::span<u8> output);
++    NvResult IocFree(std::span<const u8> input, std::span<u8> output);
+ 
+     NvCore::Container& container;
+     NvCore::NvMap& file;
+diff --git a/src/core/hle/service/nvdrv/nvdrv.cpp b/src/core/hle/service/nvdrv/nvdrv.cpp
+index 3d774eec49e..9e46ee8dd20 100644
+--- a/src/core/hle/service/nvdrv/nvdrv.cpp
++++ b/src/core/hle/service/nvdrv/nvdrv.cpp
+@@ -130,7 +130,7 @@ DeviceFD Module::Open(const std::string& device_name) {
+ }
+ 
+ NvResult Module::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                        std::vector<u8>& output) {
++                        std::span<u8> output) {
+     if (fd < 0) {
+         LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+         return NvResult::InvalidState;
+@@ -147,7 +147,7 @@ NvResult Module::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
+ }
+ 
+ NvResult Module::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                        std::span<const u8> inline_input, std::vector<u8>& output) {
++                        std::span<const u8> inline_input, std::span<u8> output) {
+     if (fd < 0) {
+         LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+         return NvResult::InvalidState;
+@@ -163,8 +163,8 @@ NvResult Module::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+     return itr->second->Ioctl2(fd, command, input, inline_input, output);
+ }
+ 
+-NvResult Module::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                        std::vector<u8>& output, std::vector<u8>& inline_output) {
++NvResult Module::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                        std::span<u8> inline_output) {
+     if (fd < 0) {
+         LOG_ERROR(Service_NVDRV, "Invalid DeviceFD={}!", fd);
+         return NvResult::InvalidState;
+diff --git a/src/core/hle/service/nvdrv/nvdrv.h b/src/core/hle/service/nvdrv/nvdrv.h
+index 668be742b12..d8622b3ca4a 100644
+--- a/src/core/hle/service/nvdrv/nvdrv.h
++++ b/src/core/hle/service/nvdrv/nvdrv.h
+@@ -80,13 +80,13 @@ class Module final {
+     DeviceFD Open(const std::string& device_name);
+ 
+     /// Sends an ioctl command to the specified file descriptor.
+-    NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output);
++    NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output);
+ 
+     NvResult Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> input,
+-                    std::span<const u8> inline_input, std::vector<u8>& output);
++                    std::span<const u8> inline_input, std::span<u8> output);
+ 
+-    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::vector<u8>& output,
+-                    std::vector<u8>& inline_output);
++    NvResult Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output,
++                    std::span<u8> inline_output);
+ 
+     /// Closes a device file descriptor and returns operation success.
+     NvResult Close(DeviceFD fd);
+diff --git a/src/core/hle/service/nvdrv/nvdrv_interface.cpp b/src/core/hle/service/nvdrv/nvdrv_interface.cpp
+index d010a1e03bd..348207e2508 100644
+--- a/src/core/hle/service/nvdrv/nvdrv_interface.cpp
++++ b/src/core/hle/service/nvdrv/nvdrv_interface.cpp
+@@ -63,12 +63,12 @@ void NVDRV::Ioctl1(HLERequestContext& ctx) {
+     }
+ 
+     // Check device
+-    std::vector<u8> output_buffer(ctx.GetWriteBufferSize(0));
++    tmp_output.resize_destructive(ctx.GetWriteBufferSize(0));
+     const auto input_buffer = ctx.ReadBuffer(0);
+ 
+-    const auto nv_result = nvdrv->Ioctl1(fd, command, input_buffer, output_buffer);
++    const auto nv_result = nvdrv->Ioctl1(fd, command, input_buffer, tmp_output);
+     if (command.is_out != 0) {
+-        ctx.WriteBuffer(output_buffer);
++        ctx.WriteBuffer(tmp_output);
+     }
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+@@ -90,12 +90,12 @@ void NVDRV::Ioctl2(HLERequestContext& ctx) {
+ 
+     const auto input_buffer = ctx.ReadBuffer(0);
+     const auto input_inlined_buffer = ctx.ReadBuffer(1);
+-    std::vector<u8> output_buffer(ctx.GetWriteBufferSize(0));
++    tmp_output.resize_destructive(ctx.GetWriteBufferSize(0));
+ 
+     const auto nv_result =
+-        nvdrv->Ioctl2(fd, command, input_buffer, input_inlined_buffer, output_buffer);
++        nvdrv->Ioctl2(fd, command, input_buffer, input_inlined_buffer, tmp_output);
+     if (command.is_out != 0) {
+-        ctx.WriteBuffer(output_buffer);
++        ctx.WriteBuffer(tmp_output);
+     }
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+@@ -116,14 +116,12 @@ void NVDRV::Ioctl3(HLERequestContext& ctx) {
+     }
+ 
+     const auto input_buffer = ctx.ReadBuffer(0);
+-    std::vector<u8> output_buffer(ctx.GetWriteBufferSize(0));
+-    std::vector<u8> output_buffer_inline(ctx.GetWriteBufferSize(1));
+-
+-    const auto nv_result =
+-        nvdrv->Ioctl3(fd, command, input_buffer, output_buffer, output_buffer_inline);
++    tmp_output.resize_destructive(ctx.GetWriteBufferSize(0));
++    tmp_output_inline.resize_destructive(ctx.GetWriteBufferSize(1));
++    const auto nv_result = nvdrv->Ioctl3(fd, command, input_buffer, tmp_output, tmp_output_inline);
+     if (command.is_out != 0) {
+-        ctx.WriteBuffer(output_buffer, 0);
+-        ctx.WriteBuffer(output_buffer_inline, 1);
++        ctx.WriteBuffer(tmp_output, 0);
++        ctx.WriteBuffer(tmp_output_inline, 1);
+     }
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+diff --git a/src/core/hle/service/nvdrv/nvdrv_interface.h b/src/core/hle/service/nvdrv/nvdrv_interface.h
+index 881ea1a6bf4..4b593ff90d3 100644
+--- a/src/core/hle/service/nvdrv/nvdrv_interface.h
++++ b/src/core/hle/service/nvdrv/nvdrv_interface.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <memory>
++#include "common/scratch_buffer.h"
+ #include "core/hle/service/nvdrv/nvdrv.h"
+ #include "core/hle/service/service.h"
+ 
+@@ -33,6 +34,8 @@ class NVDRV final : public ServiceFramework<NVDRV> {
+ 
+     u64 pid{};
+     bool is_initialized{};
++    Common::ScratchBuffer<u8> tmp_output;
++    Common::ScratchBuffer<u8> tmp_output_inline;
+ };
+ 
+ } // namespace Service::Nvidia
+diff --git a/src/core/hle/service/nvnflinger/parcel.h b/src/core/hle/service/nvnflinger/parcel.h
+index fb56d75d76b..23ba315a053 100644
+--- a/src/core/hle/service/nvnflinger/parcel.h
++++ b/src/core/hle/service/nvnflinger/parcel.h
+@@ -6,6 +6,7 @@
+ #include <memory>
+ #include <span>
+ #include <vector>
++#include <boost/container/small_vector.hpp>
+ 
+ #include "common/alignment.h"
+ #include "common/assert.h"
+@@ -167,7 +168,7 @@ class OutputParcel final {
+ private:
+     template <typename T>
+         requires(std::is_trivially_copyable_v<T>)
+-    void WriteImpl(const T& val, std::vector<u8>& buffer) {
++    void WriteImpl(const T& val, boost::container::small_vector<u8, 0x200>& buffer) {
+         const size_t aligned_size = Common::AlignUp(sizeof(T), 4);
+         const size_t old_size = buffer.size();
+         buffer.resize(old_size + aligned_size);
+@@ -176,8 +177,8 @@ class OutputParcel final {
+     }
+ 
+ private:
+-    std::vector<u8> m_data_buffer;
+-    std::vector<u8> m_object_buffer;
++    boost::container::small_vector<u8, 0x200> m_data_buffer;
++    boost::container::small_vector<u8, 0x200> m_object_buffer;
+ };
+ 
+ } // namespace Service::android
+diff --git a/src/shader_recompiler/backend/glsl/glsl_emit_context.cpp b/src/shader_recompiler/backend/glsl/glsl_emit_context.cpp
+index c3c2281bbc1..9ff4028c262 100644
+--- a/src/shader_recompiler/backend/glsl/glsl_emit_context.cpp
++++ b/src/shader_recompiler/backend/glsl/glsl_emit_context.cpp
+@@ -479,7 +479,7 @@ void EmitContext::DefineGenericOutput(size_t index, u32 invocations) {
+         const u32 remainder{4 - element};
+         const TransformFeedbackVarying* xfb_varying{};
+         const size_t xfb_varying_index{base_index + element};
+-        if (xfb_varying_index < runtime_info.xfb_varyings.size()) {
++        if (xfb_varying_index < runtime_info.xfb_count) {
+             xfb_varying = &runtime_info.xfb_varyings[xfb_varying_index];
+             xfb_varying = xfb_varying->components > 0 ? xfb_varying : nullptr;
+         }
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv.cpp b/src/shader_recompiler/backend/spirv/emit_spirv.cpp
+index 0f86a800493..34592a01ff9 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv.cpp
+@@ -387,7 +387,7 @@ void SetupSignedNanCapabilities(const Profile& profile, const IR::Program& progr
+ }
+ 
+ void SetupTransformFeedbackCapabilities(EmitContext& ctx, Id main_func) {
+-    if (ctx.runtime_info.xfb_varyings.empty()) {
++    if (ctx.runtime_info.xfb_count == 0) {
+         return;
+     }
+     ctx.AddCapability(spv::Capability::TransformFeedback);
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index fd15f47eaf3..bec5db1735b 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -160,7 +160,7 @@ void DefineGenericOutput(EmitContext& ctx, size_t index, std::optional<u32> invo
+         const u32 remainder{4 - element};
+         const TransformFeedbackVarying* xfb_varying{};
+         const size_t xfb_varying_index{base_attr_index + element};
+-        if (xfb_varying_index < ctx.runtime_info.xfb_varyings.size()) {
++        if (xfb_varying_index < ctx.runtime_info.xfb_count) {
+             xfb_varying = &ctx.runtime_info.xfb_varyings[xfb_varying_index];
+             xfb_varying = xfb_varying->components > 0 ? xfb_varying : nullptr;
+         }
+diff --git a/src/shader_recompiler/runtime_info.h b/src/shader_recompiler/runtime_info.h
+index 3b63c249f58..619c0b1387c 100644
+--- a/src/shader_recompiler/runtime_info.h
++++ b/src/shader_recompiler/runtime_info.h
+@@ -84,7 +84,8 @@ struct RuntimeInfo {
+     bool glasm_use_storage_buffers{};
+ 
+     /// Transform feedback state for each varying
+-    std::vector<TransformFeedbackVarying> xfb_varyings;
++    std::array<TransformFeedbackVarying, 256> xfb_varyings{};
++    u32 xfb_count{0};
+ };
+ 
+ } // namespace Shader
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 45977d578ad..58a45ab67c2 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -207,7 +207,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+     if (has_new_downloads) {
+         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
+     }
+-    tmp_buffer.resize(amount);
++    tmp_buffer.resize_destructive(amount);
+     cpu_memory.ReadBlockUnsafe(*cpu_src_address, tmp_buffer.data(), amount);
+     cpu_memory.WriteBlockUnsafe(*cpu_dest_address, tmp_buffer.data(), amount);
+     return true;
+@@ -1279,7 +1279,7 @@ template <class P>
+ typename BufferCache<P>::OverlapResult BufferCache<P>::ResolveOverlaps(VAddr cpu_addr,
+                                                                        u32 wanted_size) {
+     static constexpr int STREAM_LEAP_THRESHOLD = 16;
+-    std::vector<BufferId> overlap_ids;
++    boost::container::small_vector<BufferId, 16> overlap_ids;
+     VAddr begin = cpu_addr;
+     VAddr end = cpu_addr + wanted_size;
+     int stream_score = 0;
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 63a120f7a24..fe6068cfee3 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -229,7 +229,7 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
+     using OverlapCounter = boost::icl::split_interval_map<VAddr, int>;
+ 
+     struct OverlapResult {
+-        std::vector<BufferId> ids;
++        boost::container::small_vector<BufferId, 16> ids;
+         VAddr begin;
+         VAddr end;
+         bool has_stream_leap = false;
+@@ -582,7 +582,7 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
+     BufferId inline_buffer_id;
+ 
+     std::array<BufferId, ((1ULL << 39) >> CACHING_PAGEBITS)> page_table;
+-    std::vector<u8> tmp_buffer;
++    Common::ScratchBuffer<u8> tmp_buffer;
+ };
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/cdma_pusher.h b/src/video_core/cdma_pusher.h
+index 83112dfce46..7d660af47a5 100644
+--- a/src/video_core/cdma_pusher.h
++++ b/src/video_core/cdma_pusher.h
+@@ -63,7 +63,6 @@ struct ChCommand {
+ };
+ 
+ using ChCommandHeaderList = std::vector<ChCommandHeader>;
+-using ChCommandList = std::vector<ChCommand>;
+ 
+ struct ThiRegisters {
+     u32_le increment_syncpt{};
+diff --git a/src/video_core/dma_pusher.h b/src/video_core/dma_pusher.h
+index 1cdb690ed52..8a2784cdca6 100644
+--- a/src/video_core/dma_pusher.h
++++ b/src/video_core/dma_pusher.h
+@@ -6,6 +6,7 @@
+ #include <array>
+ #include <span>
+ #include <vector>
++#include <boost/container/small_vector.hpp>
+ #include <queue>
+ 
+ #include "common/bit_field.h"
+@@ -102,11 +103,12 @@ inline CommandHeader BuildCommandHeader(BufferMethods method, u32 arg_count, Sub
+ struct CommandList final {
+     CommandList() = default;
+     explicit CommandList(std::size_t size) : command_lists(size) {}
+-    explicit CommandList(std::vector<CommandHeader>&& prefetch_command_list_)
++    explicit CommandList(
++        boost::container::small_vector<CommandHeader, 512>&& prefetch_command_list_)
+         : prefetch_command_list{std::move(prefetch_command_list_)} {}
+ 
+-    std::vector<CommandListHeader> command_lists;
+-    std::vector<CommandHeader> prefetch_command_list;
++    boost::container::small_vector<CommandListHeader, 512> command_lists;
++    boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
+ };
+ 
+ /**
+diff --git a/src/video_core/engines/maxwell_dma.cpp b/src/video_core/engines/maxwell_dma.cpp
+index ebe5536dec1..bc1eb41e78f 100644
+--- a/src/video_core/engines/maxwell_dma.cpp
++++ b/src/video_core/engines/maxwell_dma.cpp
+@@ -108,9 +108,11 @@ void MaxwellDMA::Launch() {
+         if (regs.launch_dma.remap_enable != 0 && is_const_a_dst) {
+             ASSERT(regs.remap_const.component_size_minus_one == 3);
+             accelerate.BufferClear(regs.offset_out, regs.line_length_in, regs.remap_consta_value);
+-            std::vector<u32> tmp_buffer(regs.line_length_in, regs.remap_consta_value);
++            read_buffer.resize_destructive(regs.line_length_in * sizeof(u32));
++            std::span<u32> span(reinterpret_cast<u32*>(read_buffer.data()), regs.line_length_in);
++            std::ranges::fill(span, regs.remap_consta_value);
+             memory_manager.WriteBlockUnsafe(regs.offset_out,
+-                                            reinterpret_cast<u8*>(tmp_buffer.data()),
++                                            reinterpret_cast<u8*>(read_buffer.data()),
+                                             regs.line_length_in * sizeof(u32));
+         } else {
+             memory_manager.FlushCaching();
+@@ -126,32 +128,32 @@ void MaxwellDMA::Launch() {
+                 UNIMPLEMENTED_IF(regs.line_length_in % 16 != 0);
+                 UNIMPLEMENTED_IF(regs.offset_in % 16 != 0);
+                 UNIMPLEMENTED_IF(regs.offset_out % 16 != 0);
+-                std::vector<u8> tmp_buffer(16);
++                read_buffer.resize_destructive(16);
+                 for (u32 offset = 0; offset < regs.line_length_in; offset += 16) {
+                     memory_manager.ReadBlockUnsafe(
+                         convert_linear_2_blocklinear_addr(regs.offset_in + offset),
+-                        tmp_buffer.data(), tmp_buffer.size());
+-                    memory_manager.WriteBlockCached(regs.offset_out + offset, tmp_buffer.data(),
+-                                                    tmp_buffer.size());
++                        read_buffer.data(), read_buffer.size());
++                    memory_manager.WriteBlockCached(regs.offset_out + offset, read_buffer.data(),
++                                                    read_buffer.size());
+                 }
+             } else if (is_src_pitch && !is_dst_pitch) {
+                 UNIMPLEMENTED_IF(regs.line_length_in % 16 != 0);
+                 UNIMPLEMENTED_IF(regs.offset_in % 16 != 0);
+                 UNIMPLEMENTED_IF(regs.offset_out % 16 != 0);
+-                std::vector<u8> tmp_buffer(16);
++                read_buffer.resize_destructive(16);
+                 for (u32 offset = 0; offset < regs.line_length_in; offset += 16) {
+-                    memory_manager.ReadBlockUnsafe(regs.offset_in + offset, tmp_buffer.data(),
+-                                                   tmp_buffer.size());
++                    memory_manager.ReadBlockUnsafe(regs.offset_in + offset, read_buffer.data(),
++                                                   read_buffer.size());
+                     memory_manager.WriteBlockCached(
+                         convert_linear_2_blocklinear_addr(regs.offset_out + offset),
+-                        tmp_buffer.data(), tmp_buffer.size());
++                        read_buffer.data(), read_buffer.size());
+                 }
+             } else {
+                 if (!accelerate.BufferCopy(regs.offset_in, regs.offset_out, regs.line_length_in)) {
+-                    std::vector<u8> tmp_buffer(regs.line_length_in);
+-                    memory_manager.ReadBlockUnsafe(regs.offset_in, tmp_buffer.data(),
++                    read_buffer.resize_destructive(regs.line_length_in);
++                    memory_manager.ReadBlockUnsafe(regs.offset_in, read_buffer.data(),
+                                                    regs.line_length_in);
+-                    memory_manager.WriteBlockCached(regs.offset_out, tmp_buffer.data(),
++                    memory_manager.WriteBlockCached(regs.offset_out, read_buffer.data(),
+                                                     regs.line_length_in);
+                 }
+             }
+@@ -171,7 +173,8 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
+     src_operand.address = regs.offset_in;
+ 
+     DMA::BufferOperand dst_operand;
+-    dst_operand.pitch = regs.pitch_out;
++    u32 abs_pitch_out = std::abs(static_cast<s32>(regs.pitch_out));
++    dst_operand.pitch = abs_pitch_out;
+     dst_operand.width = regs.line_length_in;
+     dst_operand.height = regs.line_count;
+     dst_operand.address = regs.offset_out;
+@@ -218,7 +221,7 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
+     const size_t src_size =
+         CalculateSize(true, bytes_per_pixel, width, height, depth, block_height, block_depth);
+ 
+-    const size_t dst_size = static_cast<size_t>(regs.pitch_out) * regs.line_count;
++    const size_t dst_size = static_cast<size_t>(abs_pitch_out) * regs.line_count;
+     read_buffer.resize_destructive(src_size);
+     write_buffer.resize_destructive(dst_size);
+ 
+@@ -227,7 +230,7 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
+ 
+     UnswizzleSubrect(write_buffer, read_buffer, bytes_per_pixel, width, height, depth, x_offset,
+                      src_params.origin.y, x_elements, regs.line_count, block_height, block_depth,
+-                     regs.pitch_out);
++                     abs_pitch_out);
+ 
+     memory_manager.WriteBlockCached(regs.offset_out, write_buffer.data(), dst_size);
+ }
+diff --git a/src/video_core/host1x/codecs/h264.cpp b/src/video_core/host1x/codecs/h264.cpp
+index 6ce179167ca..ce827eb6c23 100644
+--- a/src/video_core/host1x/codecs/h264.cpp
++++ b/src/video_core/host1x/codecs/h264.cpp
+@@ -4,6 +4,7 @@
+ #include <array>
+ #include <bit>
+ 
++#include "common/scratch_buffer.h"
+ #include "common/settings.h"
+ #include "video_core/host1x/codecs/h264.h"
+ #include "video_core/host1x/host1x.h"
+@@ -188,7 +189,8 @@ void H264BitWriter::WriteBit(bool state) {
+ }
+ 
+ void H264BitWriter::WriteScalingList(std::span<const u8> list, s32 start, s32 count) {
+-    std::vector<u8> scan(count);
++    static Common::ScratchBuffer<u8> scan{};
++    scan.resize_destructive(count);
+     if (count == 16) {
+         std::memcpy(scan.data(), zig_zag_scan.data(), scan.size());
+     } else {
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+index b2f7e160a47..45141e48833 100644
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -587,7 +587,7 @@ void MemoryManager::InvalidateRegion(GPUVAddr gpu_addr, size_t size,
+ 
+ void MemoryManager::CopyBlock(GPUVAddr gpu_dest_addr, GPUVAddr gpu_src_addr, std::size_t size,
+                               VideoCommon::CacheType which) {
+-    std::vector<u8> tmp_buffer(size);
++    tmp_buffer.resize_destructive(size);
+     ReadBlock(gpu_src_addr, tmp_buffer.data(), size, which);
+ 
+     // The output block must be flushed in case it has data modified from the GPU.
+@@ -670,9 +670,9 @@ bool MemoryManager::IsFullyMappedRange(GPUVAddr gpu_addr, std::size_t size) cons
+     return result;
+ }
+ 
+-std::vector<std::pair<GPUVAddr, std::size_t>> MemoryManager::GetSubmappedRange(
+-    GPUVAddr gpu_addr, std::size_t size) const {
+-    std::vector<std::pair<GPUVAddr, std::size_t>> result{};
++boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32>
++MemoryManager::GetSubmappedRange(GPUVAddr gpu_addr, std::size_t size) const {
++    boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32> result{};
+     GetSubmappedRangeImpl<true>(gpu_addr, size, result);
+     return result;
+ }
+@@ -680,8 +680,9 @@ std::vector<std::pair<GPUVAddr, std::size_t>> MemoryManager::GetSubmappedRange(
+ template <bool is_gpu_address>
+ void MemoryManager::GetSubmappedRangeImpl(
+     GPUVAddr gpu_addr, std::size_t size,
+-    std::vector<std::pair<std::conditional_t<is_gpu_address, GPUVAddr, VAddr>, std::size_t>>&
+-        result) const {
++    boost::container::small_vector<
++        std::pair<std::conditional_t<is_gpu_address, GPUVAddr, VAddr>, std::size_t>, 32>& result)
++    const {
+     std::optional<std::pair<std::conditional_t<is_gpu_address, GPUVAddr, VAddr>, std::size_t>>
+         last_segment{};
+     std::optional<VAddr> old_page_addr{};
+diff --git a/src/video_core/memory_manager.h b/src/video_core/memory_manager.h
+index 794535122e3..4202c26ff1f 100644
+--- a/src/video_core/memory_manager.h
++++ b/src/video_core/memory_manager.h
+@@ -8,10 +8,12 @@
+ #include <mutex>
+ #include <optional>
+ #include <vector>
++#include <boost/container/small_vector.hpp>
+ 
+ #include "common/common_types.h"
+ #include "common/multi_level_page_table.h"
+ #include "common/range_map.h"
++#include "common/scratch_buffer.h"
+ #include "common/virtual_buffer.h"
+ #include "video_core/cache_types.h"
+ #include "video_core/pte_kind.h"
+@@ -107,8 +109,8 @@ class MemoryManager final {
+      * if the region is continuous, a single pair will be returned. If it's unmapped, an empty
+      * vector will be returned;
+      */
+-    std::vector<std::pair<GPUVAddr, std::size_t>> GetSubmappedRange(GPUVAddr gpu_addr,
+-                                                                    std::size_t size) const;
++    boost::container::small_vector<std::pair<GPUVAddr, std::size_t>, 32> GetSubmappedRange(
++        GPUVAddr gpu_addr, std::size_t size) const;
+ 
+     GPUVAddr Map(GPUVAddr gpu_addr, VAddr cpu_addr, std::size_t size,
+                  PTEKind kind = PTEKind::INVALID, bool is_big_pages = true);
+@@ -165,7 +167,8 @@ class MemoryManager final {
+     template <bool is_gpu_address>
+     void GetSubmappedRangeImpl(
+         GPUVAddr gpu_addr, std::size_t size,
+-        std::vector<std::pair<std::conditional_t<is_gpu_address, GPUVAddr, VAddr>, std::size_t>>&
++        boost::container::small_vector<
++            std::pair<std::conditional_t<is_gpu_address, GPUVAddr, VAddr>, std::size_t>, 32>&
+             result) const;
+ 
+     Core::System& system;
+@@ -215,8 +218,8 @@ class MemoryManager final {
+     Common::VirtualBuffer<u32> big_page_table_cpu;
+ 
+     std::vector<u64> big_page_continuous;
+-    std::vector<std::pair<VAddr, std::size_t>> page_stash{};
+-    std::vector<std::pair<VAddr, std::size_t>> page_stash2{};
++    boost::container::small_vector<std::pair<VAddr, std::size_t>, 32> page_stash{};
++    boost::container::small_vector<std::pair<VAddr, std::size_t>, 32> page_stash2{};
+ 
+     mutable std::mutex guard;
+ 
+@@ -226,6 +229,8 @@ class MemoryManager final {
+     std::unique_ptr<VideoCommon::InvalidationAccumulator> accumulator;
+ 
+     static std::atomic<size_t> unique_identifier_generator;
++
++    Common::ScratchBuffer<u8> tmp_buffer;
+ };
+ 
+ } // namespace Tegra
+diff --git a/src/video_core/renderer_opengl/gl_shader_cache.cpp b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+index 3f077311e31..0329ed82037 100644
+--- a/src/video_core/renderer_opengl/gl_shader_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+@@ -85,7 +85,9 @@ Shader::RuntimeInfo MakeRuntimeInfo(const GraphicsPipelineKey& key,
+     case Shader::Stage::VertexB:
+     case Shader::Stage::Geometry:
+         if (!use_assembly_shaders && key.xfb_enabled != 0) {
+-            info.xfb_varyings = VideoCommon::MakeTransformFeedbackVaryings(key.xfb_state);
++            auto [varyings, count] = VideoCommon::MakeTransformFeedbackVaryings(key.xfb_state);
++            info.xfb_varyings = varyings;
++            info.xfb_count = count;
+         }
+         break;
+     case Shader::Stage::TessellationEval:
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+index e30fcb1ed91..f47301ad5ab 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+@@ -361,7 +361,7 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
+         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+     };
+     // Measuring a popular game, this number never exceeds the specified size once data is warmed up
+-    boost::container::small_vector<VkBufferCopy, 3> vk_copies(copies.size());
++    boost::container::small_vector<VkBufferCopy, 8> vk_copies(copies.size());
+     std::ranges::transform(copies, vk_copies.begin(), MakeBufferCopy);
+     scheduler.RequestOutsideRenderPassOperationContext();
+     scheduler.Record([src_buffer, dst_buffer, vk_copies, barrier](vk::CommandBuffer cmdbuf) {
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index a2cfb2105d6..9f316113cce 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -167,7 +167,10 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
+                 info.fixed_state_point_size = point_size;
+             }
+             if (key.state.xfb_enabled) {
+-                info.xfb_varyings = VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
++                auto [varyings, count] =
++                    VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
++                info.xfb_varyings = varyings;
++                info.xfb_count = count;
+             }
+             info.convert_depth_mode = gl_ndc;
+         }
+@@ -214,7 +217,10 @@ Shader::RuntimeInfo MakeRuntimeInfo(std::span<const Shader::IR::Program> program
+             info.fixed_state_point_size = point_size;
+         }
+         if (key.state.xfb_enabled != 0) {
+-            info.xfb_varyings = VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
++            auto [varyings, count] =
++                VideoCommon::MakeTransformFeedbackVaryings(key.state.xfb_state);
++            info.xfb_varyings = varyings;
++            info.xfb_count = count;
+         }
+         info.convert_depth_mode = gl_ndc;
+         break;
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index f025f618b45..f3cef09dd86 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -330,9 +330,9 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
+     };
+ }
+ 
+-[[maybe_unused]] [[nodiscard]] std::vector<VkBufferCopy> TransformBufferCopies(
+-    std::span<const VideoCommon::BufferCopy> copies, size_t buffer_offset) {
+-    std::vector<VkBufferCopy> result(copies.size());
++[[maybe_unused]] [[nodiscard]] boost::container::small_vector<VkBufferCopy, 16>
++TransformBufferCopies(std::span<const VideoCommon::BufferCopy> copies, size_t buffer_offset) {
++    boost::container::small_vector<VkBufferCopy, 16> result(copies.size());
+     std::ranges::transform(
+         copies, result.begin(), [buffer_offset](const VideoCommon::BufferCopy& copy) {
+             return VkBufferCopy{
+@@ -344,7 +344,7 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
+     return result;
+ }
+ 
+-[[nodiscard]] std::vector<VkBufferImageCopy> TransformBufferImageCopies(
++[[nodiscard]] boost::container::small_vector<VkBufferImageCopy, 16> TransformBufferImageCopies(
+     std::span<const BufferImageCopy> copies, size_t buffer_offset, VkImageAspectFlags aspect_mask) {
+     struct Maker {
+         VkBufferImageCopy operator()(const BufferImageCopy& copy) const {
+@@ -377,14 +377,14 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
+         VkImageAspectFlags aspect_mask;
+     };
+     if (aspect_mask == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+-        std::vector<VkBufferImageCopy> result(copies.size() * 2);
++        boost::container::small_vector<VkBufferImageCopy, 16> result(copies.size() * 2);
+         std::ranges::transform(copies, result.begin(),
+                                Maker{buffer_offset, VK_IMAGE_ASPECT_DEPTH_BIT});
+         std::ranges::transform(copies, result.begin() + copies.size(),
+                                Maker{buffer_offset, VK_IMAGE_ASPECT_STENCIL_BIT});
+         return result;
+     } else {
+-        std::vector<VkBufferImageCopy> result(copies.size());
++        boost::container::small_vector<VkBufferImageCopy, 16> result(copies.size());
+         std::ranges::transform(copies, result.begin(), Maker{buffer_offset, aspect_mask});
+         return result;
+     }
+@@ -867,8 +867,8 @@ void TextureCacheRuntime::BarrierFeedbackLoop() {
+ 
+ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
+                                            std::span<const VideoCommon::ImageCopy> copies) {
+-    std::vector<VkBufferImageCopy> vk_in_copies(copies.size());
+-    std::vector<VkBufferImageCopy> vk_out_copies(copies.size());
++    boost::container::small_vector<VkBufferImageCopy, 16> vk_in_copies(copies.size());
++    boost::container::small_vector<VkBufferImageCopy, 16> vk_out_copies(copies.size());
+     const VkImageAspectFlags src_aspect_mask = src.AspectMask();
+     const VkImageAspectFlags dst_aspect_mask = dst.AspectMask();
+ 
+@@ -1157,7 +1157,7 @@ void TextureCacheRuntime::ConvertImage(Framebuffer* dst, ImageView& dst_view, Im
+ 
+ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
+                                     std::span<const VideoCommon::ImageCopy> copies) {
+-    std::vector<VkImageCopy> vk_copies(copies.size());
++    boost::container::small_vector<VkImageCopy, 16> vk_copies(copies.size());
+     const VkImageAspectFlags aspect_mask = dst.AspectMask();
+     ASSERT(aspect_mask == src.AspectMask());
+ 
+@@ -1332,7 +1332,7 @@ void Image::UploadMemory(VkBuffer buffer, VkDeviceSize offset,
+         ScaleDown(true);
+     }
+     scheduler->RequestOutsideRenderPassOperationContext();
+-    std::vector vk_copies = TransformBufferImageCopies(copies, offset, aspect_mask);
++    auto vk_copies = TransformBufferImageCopies(copies, offset, aspect_mask);
+     const VkBuffer src_buffer = buffer;
+     const VkImage vk_image = *original_image;
+     const VkImageAspectFlags vk_aspect_mask = aspect_mask;
+@@ -1367,8 +1367,9 @@ void Image::DownloadMemory(std::span<VkBuffer> buffers_span, std::span<VkDeviceS
+     if (is_rescaled) {
+         ScaleDown();
+     }
+-    boost::container::small_vector<VkBuffer, 1> buffers_vector{};
+-    boost::container::small_vector<std::vector<VkBufferImageCopy>, 1> vk_copies;
++    boost::container::small_vector<VkBuffer, 8> buffers_vector{};
++    boost::container::small_vector<boost::container::small_vector<VkBufferImageCopy, 16>, 8>
++        vk_copies;
+     for (size_t index = 0; index < buffers_span.size(); index++) {
+         buffers_vector.emplace_back(buffers_span[index]);
+         vk_copies.emplace_back(
+@@ -1858,7 +1859,7 @@ Framebuffer::~Framebuffer() = default;
+ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
+                                     std::span<ImageView*, NUM_RT> color_buffers,
+                                     ImageView* depth_buffer, bool is_rescaled) {
+-    std::vector<VkImageView> attachments;
++    boost::container::small_vector<VkImageView, NUM_RT + 1> attachments;
+     RenderPassKey renderpass_key{};
+     s32 num_layers = 1;
+ 
+diff --git a/src/video_core/shader_cache.cpp b/src/video_core/shader_cache.cpp
+index c5213875b7c..4db948b6d41 100644
+--- a/src/video_core/shader_cache.cpp
++++ b/src/video_core/shader_cache.cpp
+@@ -151,11 +151,9 @@ void ShaderCache::RemovePendingShaders() {
+     marked_for_removal.erase(std::unique(marked_for_removal.begin(), marked_for_removal.end()),
+                              marked_for_removal.end());
+ 
+-    std::vector<ShaderInfo*> removed_shaders;
+-    removed_shaders.reserve(marked_for_removal.size());
++    boost::container::small_vector<ShaderInfo*, 16> removed_shaders;
+ 
+     std::scoped_lock lock{lookup_mutex};
+-
+     for (Entry* const entry : marked_for_removal) {
+         removed_shaders.push_back(entry->data);
+ 
+diff --git a/src/video_core/texture_cache/image_base.h b/src/video_core/texture_cache/image_base.h
+index 1b8a17ee837..55d49d0178b 100644
+--- a/src/video_core/texture_cache/image_base.h
++++ b/src/video_core/texture_cache/image_base.h
+@@ -6,6 +6,7 @@
+ #include <array>
+ #include <optional>
+ #include <vector>
++#include <boost/container/small_vector.hpp>
+ 
+ #include "common/common_funcs.h"
+ #include "common/common_types.h"
+@@ -108,8 +109,8 @@ struct ImageBase {
+     std::vector<ImageViewInfo> image_view_infos;
+     std::vector<ImageViewId> image_view_ids;
+ 
+-    std::vector<u32> slice_offsets;
+-    std::vector<SubresourceBase> slice_subresources;
++    boost::container::small_vector<u32, 16> slice_offsets;
++    boost::container::small_vector<SubresourceBase, 16> slice_subresources;
+ 
+     std::vector<AliasedImage> aliased_images;
+     std::vector<ImageId> overlapping_images;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index d58bb69ff57..d3f03a99573 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -526,7 +526,7 @@ void TextureCache<P>::WriteMemory(VAddr cpu_addr, size_t size) {
+ 
+ template <class P>
+ void TextureCache<P>::DownloadMemory(VAddr cpu_addr, size_t size) {
+-    std::vector<ImageId> images;
++    boost::container::small_vector<ImageId, 16> images;
+     ForEachImageInRegion(cpu_addr, size, [&images](ImageId image_id, ImageBase& image) {
+         if (!image.IsSafeDownload()) {
+             return;
+@@ -579,7 +579,7 @@ std::optional<VideoCore::RasterizerDownloadArea> TextureCache<P>::GetFlushArea(V
+ 
+ template <class P>
+ void TextureCache<P>::UnmapMemory(VAddr cpu_addr, size_t size) {
+-    std::vector<ImageId> deleted_images;
++    boost::container::small_vector<ImageId, 16> deleted_images;
+     ForEachImageInRegion(cpu_addr, size, [&](ImageId id, Image&) { deleted_images.push_back(id); });
+     for (const ImageId id : deleted_images) {
+         Image& image = slot_images[id];
+@@ -593,7 +593,7 @@ void TextureCache<P>::UnmapMemory(VAddr cpu_addr, size_t size) {
+ 
+ template <class P>
+ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size) {
+-    std::vector<ImageId> deleted_images;
++    boost::container::small_vector<ImageId, 16> deleted_images;
+     ForEachImageInRegionGPU(as_id, gpu_addr, size,
+                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
+     for (const ImageId id : deleted_images) {
+@@ -1101,7 +1101,7 @@ ImageId TextureCache<P>::FindImage(const ImageInfo& info, GPUVAddr gpu_addr,
+     const bool native_bgr = runtime.HasNativeBgr();
+     const bool flexible_formats = True(options & RelaxedOptions::Format);
+     ImageId image_id{};
+-    boost::container::small_vector<ImageId, 1> image_ids;
++    boost::container::small_vector<ImageId, 8> image_ids;
+     const auto lambda = [&](ImageId existing_image_id, ImageBase& existing_image) {
+         if (True(existing_image.flags & ImageFlagBits::Remapped)) {
+             return false;
+@@ -1622,7 +1622,7 @@ ImageId TextureCache<P>::FindDMAImage(const ImageInfo& info, GPUVAddr gpu_addr)
+         }
+     }
+     ImageId image_id{};
+-    boost::container::small_vector<ImageId, 1> image_ids;
++    boost::container::small_vector<ImageId, 8> image_ids;
+     const auto lambda = [&](ImageId existing_image_id, ImageBase& existing_image) {
+         if (True(existing_image.flags & ImageFlagBits::Remapped)) {
+             return false;
+@@ -1942,7 +1942,7 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
+         image.map_view_id = map_id;
+         return;
+     }
+-    std::vector<ImageViewId> sparse_maps{};
++    boost::container::small_vector<ImageViewId, 16> sparse_maps;
+     ForEachSparseSegment(
+         image, [this, image_id, &sparse_maps](GPUVAddr gpu_addr, VAddr cpu_addr, size_t size) {
+             auto map_id = slot_map_views.insert(gpu_addr, cpu_addr, size, image_id);
+@@ -2217,7 +2217,7 @@ void TextureCache<P>::MarkModification(ImageBase& image) noexcept {
+ 
+ template <class P>
+ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
+-    boost::container::small_vector<const AliasedImage*, 1> aliased_images;
++    boost::container::small_vector<const AliasedImage*, 8> aliased_images;
+     Image& image = slot_images[image_id];
+     bool any_rescaled = True(image.flags & ImageFlagBits::Rescaled);
+     bool any_modified = True(image.flags & ImageFlagBits::GpuModified);
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index 44232b96118..e9ec91265c8 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -56,7 +56,7 @@ struct ImageViewInOut {
+ struct AsyncDecodeContext {
+     ImageId image_id;
+     Common::ScratchBuffer<u8> decoded_data;
+-    std::vector<BufferImageCopy> copies;
++    boost::container::small_vector<BufferImageCopy, 16> copies;
+     std::mutex mutex;
+     std::atomic_bool complete;
+ };
+@@ -429,7 +429,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+ 
+     std::unordered_map<u64, std::vector<ImageMapId>, Common::IdentityHash<u64>> page_table;
+     std::unordered_map<u64, std::vector<ImageId>, Common::IdentityHash<u64>> sparse_page_table;
+-    std::unordered_map<ImageId, std::vector<ImageViewId>> sparse_views;
++    std::unordered_map<ImageId, boost::container::small_vector<ImageViewId, 16>> sparse_views;
+ 
+     VAddr virtual_invalid_space{};
+ 
+diff --git a/src/video_core/texture_cache/util.cpp b/src/video_core/texture_cache/util.cpp
+index 95a5b47d8cc..f781cb7a078 100644
+--- a/src/video_core/texture_cache/util.cpp
++++ b/src/video_core/texture_cache/util.cpp
+@@ -329,13 +329,13 @@ template <u32 GOB_EXTENT>
+ 
+ [[nodiscard]] std::optional<SubresourceExtent> ResolveOverlapRightAddress3D(
+     const ImageInfo& new_info, GPUVAddr gpu_addr, const ImageBase& overlap, bool strict_size) {
+-    const std::vector<u32> slice_offsets = CalculateSliceOffsets(new_info);
++    const auto slice_offsets = CalculateSliceOffsets(new_info);
+     const u32 diff = static_cast<u32>(overlap.gpu_addr - gpu_addr);
+     const auto it = std::ranges::find(slice_offsets, diff);
+     if (it == slice_offsets.end()) {
+         return std::nullopt;
+     }
+-    const std::vector subresources = CalculateSliceSubresources(new_info);
++    const auto subresources = CalculateSliceSubresources(new_info);
+     const SubresourceBase base = subresources[std::distance(slice_offsets.begin(), it)];
+     const ImageInfo& info = overlap.info;
+     if (!IsBlockLinearSizeCompatible(new_info, info, base.level, 0, strict_size)) {
+@@ -655,9 +655,9 @@ LevelArray CalculateMipLevelSizes(const ImageInfo& info) noexcept {
+     return sizes;
+ }
+ 
+-std::vector<u32> CalculateSliceOffsets(const ImageInfo& info) {
++boost::container::small_vector<u32, 16> CalculateSliceOffsets(const ImageInfo& info) {
+     ASSERT(info.type == ImageType::e3D);
+-    std::vector<u32> offsets;
++    boost::container::small_vector<u32, 16> offsets;
+     offsets.reserve(NumSlices(info));
+ 
+     const LevelInfo level_info = MakeLevelInfo(info);
+@@ -679,9 +679,10 @@ std::vector<u32> CalculateSliceOffsets(const ImageInfo& info) {
+     return offsets;
+ }
+ 
+-std::vector<SubresourceBase> CalculateSliceSubresources(const ImageInfo& info) {
++boost::container::small_vector<SubresourceBase, 16> CalculateSliceSubresources(
++    const ImageInfo& info) {
+     ASSERT(info.type == ImageType::e3D);
+-    std::vector<SubresourceBase> subresources;
++    boost::container::small_vector<SubresourceBase, 16> subresources;
+     subresources.reserve(NumSlices(info));
+     for (s32 level = 0; level < info.resources.levels; ++level) {
+         const s32 depth = AdjustMipSize(info.size.depth, level);
+@@ -723,8 +724,10 @@ ImageViewType RenderTargetImageViewType(const ImageInfo& info) noexcept {
+     }
+ }
+ 
+-std::vector<ImageCopy> MakeShrinkImageCopies(const ImageInfo& dst, const ImageInfo& src,
+-                                             SubresourceBase base, u32 up_scale, u32 down_shift) {
++boost::container::small_vector<ImageCopy, 16> MakeShrinkImageCopies(const ImageInfo& dst,
++                                                                    const ImageInfo& src,
++                                                                    SubresourceBase base,
++                                                                    u32 up_scale, u32 down_shift) {
+     ASSERT(dst.resources.levels >= src.resources.levels);
+ 
+     const bool is_dst_3d = dst.type == ImageType::e3D;
+@@ -733,7 +736,7 @@ std::vector<ImageCopy> MakeShrinkImageCopies(const ImageInfo& dst, const ImageIn
+         ASSERT(src.resources.levels == 1);
+     }
+     const bool both_2d{src.type == ImageType::e2D && dst.type == ImageType::e2D};
+-    std::vector<ImageCopy> copies;
++    boost::container::small_vector<ImageCopy, 16> copies;
+     copies.reserve(src.resources.levels);
+     for (s32 level = 0; level < src.resources.levels; ++level) {
+         ImageCopy& copy = copies.emplace_back();
+@@ -770,9 +773,10 @@ std::vector<ImageCopy> MakeShrinkImageCopies(const ImageInfo& dst, const ImageIn
+     return copies;
+ }
+ 
+-std::vector<ImageCopy> MakeReinterpretImageCopies(const ImageInfo& src, u32 up_scale,
+-                                                  u32 down_shift) {
+-    std::vector<ImageCopy> copies;
++boost::container::small_vector<ImageCopy, 16> MakeReinterpretImageCopies(const ImageInfo& src,
++                                                                         u32 up_scale,
++                                                                         u32 down_shift) {
++    boost::container::small_vector<ImageCopy, 16> copies;
+     copies.reserve(src.resources.levels);
+     const bool is_3d = src.type == ImageType::e3D;
+     for (s32 level = 0; level < src.resources.levels; ++level) {
+@@ -824,9 +828,11 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
+     return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value();
+ }
+ 
+-std::vector<BufferImageCopy> UnswizzleImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr,
+-                                            const ImageInfo& info, std::span<const u8> input,
+-                                            std::span<u8> output) {
++boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::MemoryManager& gpu_memory,
++                                                                   GPUVAddr gpu_addr,
++                                                                   const ImageInfo& info,
++                                                                   std::span<const u8> input,
++                                                                   std::span<u8> output) {
+     const size_t guest_size_bytes = input.size_bytes();
+     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+     const Extent3D size = info.size;
+@@ -861,7 +867,7 @@ std::vector<BufferImageCopy> UnswizzleImage(Tegra::MemoryManager& gpu_memory, GP
+                                             info.tile_width_spacing);
+     size_t guest_offset = 0;
+     u32 host_offset = 0;
+-    std::vector<BufferImageCopy> copies(num_levels);
++    boost::container::small_vector<BufferImageCopy, 16> copies(num_levels);
+ 
+     for (s32 level = 0; level < num_levels; ++level) {
+         const Extent3D level_size = AdjustMipSize(size, level);
+@@ -978,7 +984,7 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
+     }
+ }
+ 
+-std::vector<BufferImageCopy> FullDownloadCopies(const ImageInfo& info) {
++boost::container::small_vector<BufferImageCopy, 16> FullDownloadCopies(const ImageInfo& info) {
+     const Extent3D size = info.size;
+     const u32 bytes_per_block = BytesPerBlock(info.format);
+     if (info.type == ImageType::Linear) {
+@@ -1006,7 +1012,7 @@ std::vector<BufferImageCopy> FullDownloadCopies(const ImageInfo& info) {
+ 
+     u32 host_offset = 0;
+ 
+-    std::vector<BufferImageCopy> copies(num_levels);
++    boost::container::small_vector<BufferImageCopy, 16> copies(num_levels);
+     for (s32 level = 0; level < num_levels; ++level) {
+         const Extent3D level_size = AdjustMipSize(size, level);
+         const u32 num_blocks_per_layer = NumBlocks(level_size, tile_size);
+@@ -1042,10 +1048,10 @@ Extent3D MipBlockSize(const ImageInfo& info, u32 level) {
+     return AdjustMipBlockSize(num_tiles, level_info.block, level);
+ }
+ 
+-std::vector<SwizzleParameters> FullUploadSwizzles(const ImageInfo& info) {
++boost::container::small_vector<SwizzleParameters, 16> FullUploadSwizzles(const ImageInfo& info) {
+     const Extent2D tile_size = DefaultBlockSize(info.format);
+     if (info.type == ImageType::Linear) {
+-        return std::vector{SwizzleParameters{
++        return {SwizzleParameters{
+             .num_tiles = AdjustTileSize(info.size, tile_size),
+             .block = {},
+             .buffer_offset = 0,
+@@ -1057,7 +1063,7 @@ std::vector<SwizzleParameters> FullUploadSwizzles(const ImageInfo& info) {
+     const s32 num_levels = info.resources.levels;
+ 
+     u32 guest_offset = 0;
+-    std::vector<SwizzleParameters> params(num_levels);
++    boost::container::small_vector<SwizzleParameters, 16> params(num_levels);
+     for (s32 level = 0; level < num_levels; ++level) {
+         const Extent3D level_size = AdjustMipSize(size, level);
+         const Extent3D num_tiles = AdjustTileSize(level_size, tile_size);
+diff --git a/src/video_core/texture_cache/util.h b/src/video_core/texture_cache/util.h
+index 84aa6880d8c..ab45a43c47a 100644
+--- a/src/video_core/texture_cache/util.h
++++ b/src/video_core/texture_cache/util.h
+@@ -5,6 +5,7 @@
+ 
+ #include <optional>
+ #include <span>
++#include <boost/container/small_vector.hpp>
+ 
+ #include "common/common_types.h"
+ #include "common/scratch_buffer.h"
+@@ -40,9 +41,10 @@ struct OverlapResult {
+ 
+ [[nodiscard]] LevelArray CalculateMipLevelSizes(const ImageInfo& info) noexcept;
+ 
+-[[nodiscard]] std::vector<u32> CalculateSliceOffsets(const ImageInfo& info);
++[[nodiscard]] boost::container::small_vector<u32, 16> CalculateSliceOffsets(const ImageInfo& info);
+ 
+-[[nodiscard]] std::vector<SubresourceBase> CalculateSliceSubresources(const ImageInfo& info);
++[[nodiscard]] boost::container::small_vector<SubresourceBase, 16> CalculateSliceSubresources(
++    const ImageInfo& info);
+ 
+ [[nodiscard]] u32 CalculateLevelStrideAlignment(const ImageInfo& info, u32 level);
+ 
+@@ -51,21 +53,18 @@ struct OverlapResult {
+ 
+ [[nodiscard]] ImageViewType RenderTargetImageViewType(const ImageInfo& info) noexcept;
+ 
+-[[nodiscard]] std::vector<ImageCopy> MakeShrinkImageCopies(const ImageInfo& dst,
+-                                                           const ImageInfo& src,
+-                                                           SubresourceBase base, u32 up_scale = 1,
+-                                                           u32 down_shift = 0);
++[[nodiscard]] boost::container::small_vector<ImageCopy, 16> MakeShrinkImageCopies(
++    const ImageInfo& dst, const ImageInfo& src, SubresourceBase base, u32 up_scale = 1,
++    u32 down_shift = 0);
+ 
+-[[nodiscard]] std::vector<ImageCopy> MakeReinterpretImageCopies(const ImageInfo& src,
+-                                                                u32 up_scale = 1,
+-                                                                u32 down_shift = 0);
++[[nodiscard]] boost::container::small_vector<ImageCopy, 16> MakeReinterpretImageCopies(
++    const ImageInfo& src, u32 up_scale = 1, u32 down_shift = 0);
+ 
+ [[nodiscard]] bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config);
+ 
+-[[nodiscard]] std::vector<BufferImageCopy> UnswizzleImage(Tegra::MemoryManager& gpu_memory,
+-                                                          GPUVAddr gpu_addr, const ImageInfo& info,
+-                                                          std::span<const u8> input,
+-                                                          std::span<u8> output);
++[[nodiscard]] boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(
++    Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
++    std::span<const u8> input, std::span<u8> output);
+ 
+ [[nodiscard]] BufferCopy UploadBufferCopy(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr,
+                                           const ImageBase& image, std::span<u8> output);
+@@ -73,13 +72,15 @@ struct OverlapResult {
+ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8> output,
+                   std::span<BufferImageCopy> copies);
+ 
+-[[nodiscard]] std::vector<BufferImageCopy> FullDownloadCopies(const ImageInfo& info);
++[[nodiscard]] boost::container::small_vector<BufferImageCopy, 16> FullDownloadCopies(
++    const ImageInfo& info);
+ 
+ [[nodiscard]] Extent3D MipSize(Extent3D size, u32 level);
+ 
+ [[nodiscard]] Extent3D MipBlockSize(const ImageInfo& info, u32 level);
+ 
+-[[nodiscard]] std::vector<SwizzleParameters> FullUploadSwizzles(const ImageInfo& info);
++[[nodiscard]] boost::container::small_vector<SwizzleParameters, 16> FullUploadSwizzles(
++    const ImageInfo& info);
+ 
+ void SwizzleImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
+                   std::span<const BufferImageCopy> copies, std::span<const u8> memory,
+diff --git a/src/video_core/transform_feedback.cpp b/src/video_core/transform_feedback.cpp
+index 155599316b9..1f353d2df0d 100644
+--- a/src/video_core/transform_feedback.cpp
++++ b/src/video_core/transform_feedback.cpp
+@@ -13,7 +13,7 @@
+ 
+ namespace VideoCommon {
+ 
+-std::vector<Shader::TransformFeedbackVarying> MakeTransformFeedbackVaryings(
++std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformFeedbackVaryings(
+     const TransformFeedbackState& state) {
+     static constexpr std::array VECTORS{
+         28U,  // gl_Position
+@@ -62,7 +62,8 @@ std::vector<Shader::TransformFeedbackVarying> MakeTransformFeedbackVaryings(
+         216U, // gl_TexCoord[6]
+         220U, // gl_TexCoord[7]
+     };
+-    std::vector<Shader::TransformFeedbackVarying> xfb(256);
++    std::array<Shader::TransformFeedbackVarying, 256> xfb{};
++    u32 count{0};
+     for (size_t buffer = 0; buffer < state.layouts.size(); ++buffer) {
+         const auto& locations = state.varyings[buffer];
+         const auto& layout = state.layouts[buffer];
+@@ -103,11 +104,12 @@ std::vector<Shader::TransformFeedbackVarying> MakeTransformFeedbackVaryings(
+                 }
+             }
+             xfb[attribute] = varying;
++            count = std::max(count, attribute);
+             highest = std::max(highest, (base_offset + varying.components) * 4);
+         }
+         UNIMPLEMENTED_IF(highest != layout.stride);
+     }
+-    return xfb;
++    return {xfb, count + 1};
+ }
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/transform_feedback.h b/src/video_core/transform_feedback.h
+index d13eb16c39f..401b1352a2b 100644
+--- a/src/video_core/transform_feedback.h
++++ b/src/video_core/transform_feedback.h
+@@ -24,7 +24,7 @@ struct TransformFeedbackState {
+         varyings;
+ };
+ 
+-std::vector<Shader::TransformFeedbackVarying> MakeTransformFeedbackVaryings(
++std::pair<std::array<Shader::TransformFeedbackVarying, 256>, u32> MakeTransformFeedbackVaryings(
+     const TransformFeedbackState& state);
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/vulkan_common/vulkan_device.cpp b/src/video_core/vulkan_common/vulkan_device.cpp
+index fa9cde75b9f..b11abe311cb 100644
+--- a/src/video_core/vulkan_common/vulkan_device.cpp
++++ b/src/video_core/vulkan_common/vulkan_device.cpp
+@@ -316,6 +316,7 @@ NvidiaArchitecture GetNvidiaArchitecture(vk::PhysicalDevice physical,
+ std::vector<const char*> ExtensionListForVulkan(
+     const std::set<std::string, std::less<>>& extensions) {
+     std::vector<const char*> output;
++    output.reserve(extensions.size());
+     for (const auto& extension : extensions) {
+         output.push_back(extension.c_str());
+     }

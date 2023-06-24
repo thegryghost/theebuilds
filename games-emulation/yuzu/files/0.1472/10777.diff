@@ -1,0 +1,122 @@
+diff --git a/src/common/settings.h b/src/common/settings.h
+index 9682281b08b..3aedf385007 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -483,6 +483,7 @@ struct Values {
+         AstcRecompression::Uncompressed, AstcRecompression::Uncompressed, AstcRecompression::Bc3,
+         "astc_recompression"};
+     SwitchableSetting<bool> use_video_framerate{false, "use_video_framerate"};
++    SwitchableSetting<bool> barrier_feedback_loops{true, "barrier_feedback_loops"};
+ 
+     SwitchableSetting<u8> bg_red{0, "bg_red"};
+     SwitchableSetting<u8> bg_green{0, "bg_green"};
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index c7f7448e9db..43b7ac0a667 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -186,6 +186,10 @@ void TextureCache<P>::FillComputeImageViews(std::span<ImageViewInOut> views) {
+ 
+ template <class P>
+ void TextureCache<P>::CheckFeedbackLoop(std::span<const ImageViewInOut> views) {
++    if (!Settings::values.barrier_feedback_loops.GetValue()) {
++        return;
++    }
++
+     const bool requires_barrier = [&] {
+         for (const auto& view : views) {
+             if (!view.id) {
+diff --git a/src/yuzu/configuration/config.cpp b/src/yuzu/configuration/config.cpp
+index bac9dff90b5..edc206a25da 100644
+--- a/src/yuzu/configuration/config.cpp
++++ b/src/yuzu/configuration/config.cpp
+@@ -761,6 +761,7 @@ void Config::ReadRendererValues() {
+     ReadGlobalSetting(Settings::values.use_vulkan_driver_pipeline_cache);
+     ReadGlobalSetting(Settings::values.enable_compute_pipelines);
+     ReadGlobalSetting(Settings::values.use_video_framerate);
++    ReadGlobalSetting(Settings::values.barrier_feedback_loops);
+     ReadGlobalSetting(Settings::values.bg_red);
+     ReadGlobalSetting(Settings::values.bg_green);
+     ReadGlobalSetting(Settings::values.bg_blue);
+@@ -1417,6 +1418,7 @@ void Config::SaveRendererValues() {
+     WriteGlobalSetting(Settings::values.use_vulkan_driver_pipeline_cache);
+     WriteGlobalSetting(Settings::values.enable_compute_pipelines);
+     WriteGlobalSetting(Settings::values.use_video_framerate);
++    WriteGlobalSetting(Settings::values.barrier_feedback_loops);
+     WriteGlobalSetting(Settings::values.bg_red);
+     WriteGlobalSetting(Settings::values.bg_green);
+     WriteGlobalSetting(Settings::values.bg_blue);
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.cpp b/src/yuzu/configuration/configure_graphics_advanced.cpp
+index 0463ac8b9fc..c0a044767a9 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.cpp
++++ b/src/yuzu/configuration/configure_graphics_advanced.cpp
+@@ -43,6 +43,8 @@ void ConfigureGraphicsAdvanced::SetConfiguration() {
+     ui->enable_compute_pipelines_checkbox->setChecked(
+         Settings::values.enable_compute_pipelines.GetValue());
+     ui->use_video_framerate_checkbox->setChecked(Settings::values.use_video_framerate.GetValue());
++    ui->barrier_feedback_loops_checkbox->setChecked(
++        Settings::values.barrier_feedback_loops.GetValue());
+ 
+     if (Settings::IsConfiguringGlobal()) {
+         ui->gpu_accuracy->setCurrentIndex(
+@@ -94,6 +96,9 @@ void ConfigureGraphicsAdvanced::ApplyConfiguration() {
+                                              enable_compute_pipelines);
+     ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_video_framerate,
+                                              ui->use_video_framerate_checkbox, use_video_framerate);
++    ConfigurationShared::ApplyPerGameSetting(&Settings::values.barrier_feedback_loops,
++                                             ui->barrier_feedback_loops_checkbox,
++                                             barrier_feedback_loops);
+ }
+ 
+ void ConfigureGraphicsAdvanced::changeEvent(QEvent* event) {
+@@ -130,6 +135,8 @@ void ConfigureGraphicsAdvanced::SetupPerGameUI() {
+             Settings::values.enable_compute_pipelines.UsingGlobal());
+         ui->use_video_framerate_checkbox->setEnabled(
+             Settings::values.use_video_framerate.UsingGlobal());
++        ui->barrier_feedback_loops_checkbox->setEnabled(
++            Settings::values.barrier_feedback_loops.UsingGlobal());
+ 
+         return;
+     }
+@@ -157,6 +164,9 @@ void ConfigureGraphicsAdvanced::SetupPerGameUI() {
+     ConfigurationShared::SetColoredTristate(ui->use_video_framerate_checkbox,
+                                             Settings::values.use_video_framerate,
+                                             use_video_framerate);
++    ConfigurationShared::SetColoredTristate(ui->barrier_feedback_loops_checkbox,
++                                            Settings::values.barrier_feedback_loops,
++                                            barrier_feedback_loops);
+     ConfigurationShared::SetColoredComboBox(
+         ui->gpu_accuracy, ui->label_gpu_accuracy,
+         static_cast<int>(Settings::values.gpu_accuracy.GetValue(true)));
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.h b/src/yuzu/configuration/configure_graphics_advanced.h
+index a4dc8ceb09a..369a7c83e20 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.h
++++ b/src/yuzu/configuration/configure_graphics_advanced.h
+@@ -48,6 +48,7 @@ class ConfigureGraphicsAdvanced : public QWidget {
+     ConfigurationShared::CheckState use_vulkan_driver_pipeline_cache;
+     ConfigurationShared::CheckState enable_compute_pipelines;
+     ConfigurationShared::CheckState use_video_framerate;
++    ConfigurationShared::CheckState barrier_feedback_loops;
+ 
+     const Core::System& system;
+ };
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.ui b/src/yuzu/configuration/configure_graphics_advanced.ui
+index e7f0ef6be49..d527a6f38b4 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.ui
++++ b/src/yuzu/configuration/configure_graphics_advanced.ui
+@@ -201,6 +201,16 @@ Compute pipelines are always enabled on all other drivers.</string>
+           </property>
+          </widget>
+         </item>
++        <item>
++         <widget class="QCheckBox" name="barrier_feedback_loops_checkbox">
++          <property name="toolTip">
++           <string>Improves rendering of transparency effects in specific games.</string>
++          </property>
++          <property name="text">
++           <string>Barrier feedback loops</string>
++          </property>
++         </widget>
++        </item>
+         <item>
+          <widget class="QWidget" name="af_layout" native="true">
+           <layout class="QHBoxLayout" name="horizontalLayout_1">

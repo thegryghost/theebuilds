@@ -1,0 +1,30 @@
+--- a/externals/catch2/src/catch2/internal/catch_string_manip.hpp	2023-06-11 17:37:13.142326296 -0400
++++ b/externals/catch2/src/catch2/internal/catch_string_manip.hpp	2023-06-11 17:37:31.322721141 -0400
+@@ -13,6 +13,7 @@
+ #include <string>
+ #include <iosfwd>
+ #include <vector>
++#include <cinttypes>
+ 
+ namespace Catch {
+ 
+--- ./externals/catch2/src/catch2/internal/catch_xmlwriter.cpp.org	2023-06-11 17:39:13.831614343 -0400
++++ ./externals/catch2/src/catch2/internal/catch_xmlwriter.cpp	2023-06-11 17:39:21.625116970 -0400
+@@ -13,6 +13,7 @@
+ 
+ #include <iomanip>
+ #include <type_traits>
++#include <cinttypes>
+ 
+ namespace Catch {
+ 
+--- ./externals/catch2/src/catch2/catch_test_case_info.hpp.org	2023-06-11 17:38:37.364155543 -0400
++++ ./externals/catch2/src/catch2/catch_test_case_info.hpp	2023-06-11 17:38:47.227703124 -0400
+@@ -17,6 +17,7 @@
+ 
+ #include <string>
+ #include <vector>
++#include <cinttypes>
+ 
+ #ifdef __clang__
+ #pragma clang diagnostic push

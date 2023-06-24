@@ -1,0 +1,176 @@
+diff --git a/src/common/settings.cpp b/src/common/settings.cpp
+index 9ff3edabbad..da5cca5890c 100644
+--- a/src/common/settings.cpp
++++ b/src/common/settings.cpp
+@@ -236,6 +236,7 @@ void RestoreGlobalState(bool is_powered_on) {
+     values.bg_blue.SetGlobal(true);
+     values.enable_compute_pipelines.SetGlobal(true);
+     values.use_video_framerate.SetGlobal(true);
++    values.use_aggressive_anisotropic_filtering.SetGlobal(true);
+ 
+     // System
+     values.language_index.SetGlobal(true);
+diff --git a/src/common/settings.h b/src/common/settings.h
+index 9682281b08b..78ca73e42b2 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -483,6 +483,8 @@ struct Values {
+         AstcRecompression::Uncompressed, AstcRecompression::Uncompressed, AstcRecompression::Bc3,
+         "astc_recompression"};
+     SwitchableSetting<bool> use_video_framerate{false, "use_video_framerate"};
++    SwitchableSetting<bool> use_aggressive_anisotropic_filtering{
++        false, "use_aggressive_anisotropic_filtering"};
+ 
+     SwitchableSetting<u8> bg_red{0, "bg_red"};
+     SwitchableSetting<u8> bg_green{0, "bg_green"};
+diff --git a/src/video_core/textures/texture.cpp b/src/video_core/textures/texture.cpp
+index 4a80a59f941..560b3af8a04 100644
+--- a/src/video_core/textures/texture.cpp
++++ b/src/video_core/textures/texture.cpp
+@@ -62,7 +62,12 @@ std::array<float, 4> TSCEntry::BorderColor() const noexcept {
+ }
+ 
+ float TSCEntry::MaxAnisotropy() const noexcept {
+-    if (max_anisotropy == 0 && mipmap_filter != TextureMipmapFilter::Linear) {
++    const bool is_unsupported_mipmap_filter = Settings::values.use_aggressive_anisotropic_filtering
++                                                  ? mipmap_filter == TextureMipmapFilter::None
++                                                  : mipmap_filter != TextureMipmapFilter::Linear;
++    const bool has_regular_lods = min_lod_clamp == 0 && max_lod_clamp >= 256;
++    if (max_anisotropy == 0 &&
++        (depth_compare_enabled.Value() || !has_regular_lods || is_unsupported_mipmap_filter)) {
+         return 1.0f;
+     }
+     const auto anisotropic_settings = Settings::values.max_anisotropy.GetValue();
+diff --git a/src/yuzu/configuration/config.cpp b/src/yuzu/configuration/config.cpp
+index bac9dff90b5..27839daaa2c 100644
+--- a/src/yuzu/configuration/config.cpp
++++ b/src/yuzu/configuration/config.cpp
+@@ -761,6 +761,7 @@ void Config::ReadRendererValues() {
+     ReadGlobalSetting(Settings::values.use_vulkan_driver_pipeline_cache);
+     ReadGlobalSetting(Settings::values.enable_compute_pipelines);
+     ReadGlobalSetting(Settings::values.use_video_framerate);
++    ReadGlobalSetting(Settings::values.use_aggressive_anisotropic_filtering);
+     ReadGlobalSetting(Settings::values.bg_red);
+     ReadGlobalSetting(Settings::values.bg_green);
+     ReadGlobalSetting(Settings::values.bg_blue);
+@@ -1417,6 +1418,7 @@ void Config::SaveRendererValues() {
+     WriteGlobalSetting(Settings::values.use_vulkan_driver_pipeline_cache);
+     WriteGlobalSetting(Settings::values.enable_compute_pipelines);
+     WriteGlobalSetting(Settings::values.use_video_framerate);
++    WriteGlobalSetting(Settings::values.use_aggressive_anisotropic_filtering);
+     WriteGlobalSetting(Settings::values.bg_red);
+     WriteGlobalSetting(Settings::values.bg_green);
+     WriteGlobalSetting(Settings::values.bg_blue);
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.cpp b/src/yuzu/configuration/configure_graphics_advanced.cpp
+index 0463ac8b9fc..3dce739683f 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.cpp
++++ b/src/yuzu/configuration/configure_graphics_advanced.cpp
+@@ -31,6 +31,7 @@ void ConfigureGraphicsAdvanced::SetConfiguration() {
+     ui->use_asynchronous_shaders->setEnabled(runtime_lock);
+     ui->anisotropic_filtering_combobox->setEnabled(runtime_lock);
+     ui->enable_compute_pipelines_checkbox->setEnabled(runtime_lock);
++    ui->use_aggressive_anisotropic_filtering->setEnabled(runtime_lock);
+ 
+     ui->async_present->setChecked(Settings::values.async_presentation.GetValue());
+     ui->renderer_force_max_clock->setChecked(Settings::values.renderer_force_max_clock.GetValue());
+@@ -43,6 +44,8 @@ void ConfigureGraphicsAdvanced::SetConfiguration() {
+     ui->enable_compute_pipelines_checkbox->setChecked(
+         Settings::values.enable_compute_pipelines.GetValue());
+     ui->use_video_framerate_checkbox->setChecked(Settings::values.use_video_framerate.GetValue());
++    ui->use_aggressive_anisotropic_filtering->setChecked(
++        Settings::values.use_aggressive_anisotropic_filtering.GetValue());
+ 
+     if (Settings::IsConfiguringGlobal()) {
+         ui->gpu_accuracy->setCurrentIndex(
+@@ -94,6 +97,9 @@ void ConfigureGraphicsAdvanced::ApplyConfiguration() {
+                                              enable_compute_pipelines);
+     ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_video_framerate,
+                                              ui->use_video_framerate_checkbox, use_video_framerate);
++    ConfigurationShared::ApplyPerGameSetting(&Settings::values.use_aggressive_anisotropic_filtering,
++                                             ui->use_aggressive_anisotropic_filtering,
++                                             use_aggressive_anisotropic_filtering);
+ }
+ 
+ void ConfigureGraphicsAdvanced::changeEvent(QEvent* event) {
+@@ -130,6 +136,8 @@ void ConfigureGraphicsAdvanced::SetupPerGameUI() {
+             Settings::values.enable_compute_pipelines.UsingGlobal());
+         ui->use_video_framerate_checkbox->setEnabled(
+             Settings::values.use_video_framerate.UsingGlobal());
++        ui->use_aggressive_anisotropic_filtering->setEnabled(
++            Settings::values.use_aggressive_anisotropic_filtering.UsingGlobal());
+ 
+         return;
+     }
+@@ -157,6 +165,9 @@ void ConfigureGraphicsAdvanced::SetupPerGameUI() {
+     ConfigurationShared::SetColoredTristate(ui->use_video_framerate_checkbox,
+                                             Settings::values.use_video_framerate,
+                                             use_video_framerate);
++    ConfigurationShared::SetColoredTristate(ui->use_aggressive_anisotropic_filtering,
++                                            Settings::values.use_aggressive_anisotropic_filtering,
++                                            use_aggressive_anisotropic_filtering);
+     ConfigurationShared::SetColoredComboBox(
+         ui->gpu_accuracy, ui->label_gpu_accuracy,
+         static_cast<int>(Settings::values.gpu_accuracy.GetValue(true)));
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.h b/src/yuzu/configuration/configure_graphics_advanced.h
+index a4dc8ceb09a..4b52e5d6125 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.h
++++ b/src/yuzu/configuration/configure_graphics_advanced.h
+@@ -48,6 +48,7 @@ class ConfigureGraphicsAdvanced : public QWidget {
+     ConfigurationShared::CheckState use_vulkan_driver_pipeline_cache;
+     ConfigurationShared::CheckState enable_compute_pipelines;
+     ConfigurationShared::CheckState use_video_framerate;
++    ConfigurationShared::CheckState use_aggressive_anisotropic_filtering;
+ 
+     const Core::System& system;
+ };
+diff --git a/src/yuzu/configuration/configure_graphics_advanced.ui b/src/yuzu/configuration/configure_graphics_advanced.ui
+index e7f0ef6be49..06771c08073 100644
+--- a/src/yuzu/configuration/configure_graphics_advanced.ui
++++ b/src/yuzu/configuration/configure_graphics_advanced.ui
+@@ -260,6 +260,19 @@ Compute pipelines are always enabled on all other drivers.</string>
+           </layout>
+          </widget>
+         </item>
++        <item>
++         <widget class="QCheckBox" name="use_aggressive_anisotropic_filtering">
++          <property name="toolTip">
++           <string>Enable this option for a more aggressive approach to applying Anisotropic Filtering to textures.
++By toggling this, Anisotropic Filtering is added to textures with both nearest and linear mipmapping modes.
++This may result in improved visual quality for a wider range of textures, but can also introduce artifacts in
++some titles.</string>
++          </property>
++          <property name="text">
++           <string>Apply Anisotropic Filtering for all mipmap modes</string>
++          </property>
++         </widget>
++        </item>
+        </layout>
+       </widget>
+      </item>
+diff --git a/src/yuzu_cmd/config.cpp b/src/yuzu_cmd/config.cpp
+index c5bc472ca27..f5a5364da88 100644
+--- a/src/yuzu_cmd/config.cpp
++++ b/src/yuzu_cmd/config.cpp
+@@ -321,6 +321,7 @@ void Config::ReadValues() {
+     ReadSetting("Renderer", Settings::values.astc_recompression);
+     ReadSetting("Renderer", Settings::values.use_fast_gpu_time);
+     ReadSetting("Renderer", Settings::values.use_vulkan_driver_pipeline_cache);
++    ReadSetting("Renderer", Settings::values.use_aggressive_anisotropic_filtering);
+ 
+     ReadSetting("Renderer", Settings::values.bg_red);
+     ReadSetting("Renderer", Settings::values.bg_green);
+diff --git a/src/yuzu_cmd/default_ini.h b/src/yuzu_cmd/default_ini.h
+index 911d461e402..f12e2dfc9af 100644
+--- a/src/yuzu_cmd/default_ini.h
++++ b/src/yuzu_cmd/default_ini.h
+@@ -325,6 +325,10 @@ aspect_ratio =
+ # 0: Default, 1: 2x, 2: 4x, 3: 8x, 4: 16x
+ max_anisotropy =
+ 
++# Apply Anisotropic Filtering to all mipmap modes.
++# 0 (default): Off, 1: On
++use_aggressive_anisotropic_filtering =
++
+ # Whether to enable VSync or not.
+ # OpenGL: Values other than 0 enable VSync
+ # Vulkan: FIFO is selected if the requested mode is not supported by the driver.

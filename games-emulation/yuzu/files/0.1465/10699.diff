@@ -1,0 +1,184 @@
+diff --git a/src/shader_recompiler/CMakeLists.txt b/src/shader_recompiler/CMakeLists.txt
+index 525b2363c35..2baa64322d3 100644
+--- a/src/shader_recompiler/CMakeLists.txt
++++ b/src/shader_recompiler/CMakeLists.txt
+@@ -216,6 +216,7 @@ add_library(shader_recompiler STATIC
+     frontend/maxwell/translate_program.h
+     host_translate_info.h
+     ir_opt/collect_shader_info_pass.cpp
++    ir_opt/conditional_barrier_pass.cpp
+     ir_opt/constant_propagation_pass.cpp
+     ir_opt/dead_code_elimination_pass.cpp
+     ir_opt/dual_vertex_pass.cpp
+diff --git a/src/shader_recompiler/frontend/maxwell/translate_program.cpp b/src/shader_recompiler/frontend/maxwell/translate_program.cpp
+index 17a6d48883b..52938235509 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate_program.cpp
++++ b/src/shader_recompiler/frontend/maxwell/translate_program.cpp
+@@ -286,6 +286,9 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
+     if (!host_info.support_int64) {
+         Optimization::LowerInt64ToInt32(program);
+     }
++    if (!host_info.support_conditional_barrier) {
++        Optimization::ConditionalBarrierPass(program);
++    }
+     Optimization::SsaRewritePass(program);
+ 
+     Optimization::ConstantPropagationPass(env, program);
+diff --git a/src/shader_recompiler/host_translate_info.h b/src/shader_recompiler/host_translate_info.h
+index 2aaa6c5eaa1..d4e4f4d28c7 100644
+--- a/src/shader_recompiler/host_translate_info.h
++++ b/src/shader_recompiler/host_translate_info.h
+@@ -17,6 +17,8 @@ struct HostTranslateInfo {
+     bool support_viewport_index_layer{}; ///< True when the device supports gl_Layer in VS
+     bool support_geometry_shader_passthrough{}; ///< True when the device supports geometry
+                                                 ///< passthrough shaders
++    bool support_conditional_barrier{}; ///< True when the device supports barriers in conditional
++                                        ///< control flow
+ };
+ 
+ } // namespace Shader
+diff --git a/src/shader_recompiler/ir_opt/conditional_barrier_pass.cpp b/src/shader_recompiler/ir_opt/conditional_barrier_pass.cpp
+new file mode 100644
+index 00000000000..c3ed27f4f22
+--- /dev/null
++++ b/src/shader_recompiler/ir_opt/conditional_barrier_pass.cpp
+@@ -0,0 +1,44 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "shader_recompiler/frontend/ir/program.h"
++#include "shader_recompiler/ir_opt/passes.h"
++
++namespace Shader::Optimization {
++
++void ConditionalBarrierPass(IR::Program& program) {
++    s32 conditional_control_flow_count{0};
++    s32 conditional_return_count{0};
++    for (IR::AbstractSyntaxNode& node : program.syntax_list) {
++        switch (node.type) {
++        case IR::AbstractSyntaxNode::Type::If:
++        case IR::AbstractSyntaxNode::Type::Loop:
++            conditional_control_flow_count++;
++            break;
++        case IR::AbstractSyntaxNode::Type::EndIf:
++        case IR::AbstractSyntaxNode::Type::Repeat:
++            conditional_control_flow_count--;
++            break;
++        case IR::AbstractSyntaxNode::Type::Unreachable:
++        case IR::AbstractSyntaxNode::Type::Return:
++            if (conditional_control_flow_count > 0) {
++                conditional_return_count++;
++            }
++            break;
++        case IR::AbstractSyntaxNode::Type::Block:
++            for (IR::Inst& inst : node.data.block->Instructions()) {
++                if ((conditional_control_flow_count > 0 || conditional_return_count > 0) &&
++                    inst.GetOpcode() == IR::Opcode::Barrier) {
++                    LOG_WARNING(Shader, "Barrier within conditional control flow");
++                    inst.ReplaceOpcode(IR::Opcode::Identity);
++                }
++            }
++            break;
++        default:
++            break;
++        }
++    }
++    ASSERT(conditional_control_flow_count == 0);
++}
++
++} // namespace Shader::Optimization
+diff --git a/src/shader_recompiler/ir_opt/passes.h b/src/shader_recompiler/ir_opt/passes.h
+index 1f8f2ba95e8..a677bfc653e 100644
+--- a/src/shader_recompiler/ir_opt/passes.h
++++ b/src/shader_recompiler/ir_opt/passes.h
+@@ -13,6 +13,7 @@ struct HostTranslateInfo;
+ namespace Shader::Optimization {
+ 
+ void CollectShaderInfoPass(Environment& env, IR::Program& program);
++void ConditionalBarrierPass(IR::Program& program);
+ void ConstantPropagationPass(Environment& env, IR::Program& program);
+ void DeadCodeEliminationPass(IR::Program& program);
+ void GlobalMemoryToStorageBufferPass(IR::Program& program);
+diff --git a/src/video_core/renderer_opengl/gl_device.cpp b/src/video_core/renderer_opengl/gl_device.cpp
+index 400c2198143..03d234f2fd0 100644
+--- a/src/video_core/renderer_opengl/gl_device.cpp
++++ b/src/video_core/renderer_opengl/gl_device.cpp
+@@ -201,6 +201,7 @@ Device::Device(Core::Frontend::EmuWindow& emu_window) {
+     use_asynchronous_shaders = Settings::values.use_asynchronous_shaders.GetValue() &&
+                                !(is_amd || (is_intel && !is_linux)) && !strict_context_required;
+     use_driver_cache = is_nvidia;
++    supports_conditional_barriers = !is_intel;
+ 
+     LOG_INFO(Render_OpenGL, "Renderer_VariableAOFFI: {}", has_variable_aoffi);
+     LOG_INFO(Render_OpenGL, "Renderer_ComponentIndexingBug: {}", has_component_indexing_bug);
+diff --git a/src/video_core/renderer_opengl/gl_device.h b/src/video_core/renderer_opengl/gl_device.h
+index cc0b95f1a59..ad27264e5f7 100644
+--- a/src/video_core/renderer_opengl/gl_device.h
++++ b/src/video_core/renderer_opengl/gl_device.h
+@@ -188,6 +188,10 @@ class Device {
+         return strict_context_required;
+     }
+ 
++    bool SupportsConditionalBarriers() const {
++        return supports_conditional_barriers;
++    }
++
+ private:
+     static bool TestVariableAoffi();
+     static bool TestPreciseBug();
+@@ -233,6 +237,7 @@ class Device {
+     bool has_bool_ref_bug{};
+     bool can_report_memory{};
+     bool strict_context_required{};
++    bool supports_conditional_barriers{};
+ 
+     std::string vendor_name;
+ };
+diff --git a/src/video_core/renderer_opengl/gl_shader_cache.cpp b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+index 6ecda298428..183c1a7ea31 100644
+--- a/src/video_core/renderer_opengl/gl_shader_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+@@ -238,6 +238,7 @@ ShaderCache::ShaderCache(RasterizerOpenGL& rasterizer_, Core::Frontend::EmuWindo
+           .support_snorm_render_buffer = false,
+           .support_viewport_index_layer = device.HasVertexViewportLayer(),
+           .support_geometry_shader_passthrough = device.HasGeometryShaderPassthrough(),
++          .support_conditional_barrier = device.SupportsConditionalBarriers(),
+       } {
+     if (use_asynchronous_shaders) {
+         workers = CreateWorkers();
+diff --git a/src/video_core/vulkan_common/vulkan_device.cpp b/src/video_core/vulkan_common/vulkan_device.cpp
+index 0158b6b0d39..a46f9beed53 100644
+--- a/src/video_core/vulkan_common/vulkan_device.cpp
++++ b/src/video_core/vulkan_common/vulkan_device.cpp
+@@ -386,6 +386,8 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR
+         IsFormatSupported(VK_FORMAT_D24_UNORM_S8_UINT,
+                           VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, FormatType::Optimal);
+ 
++    supports_conditional_barriers = !(is_intel_anv || is_intel_windows);
++
+     CollectPhysicalMemoryInfo();
+     CollectToolingInfo();
+ 
+diff --git a/src/video_core/vulkan_common/vulkan_device.h b/src/video_core/vulkan_common/vulkan_device.h
+index d62a103a1bc..ccce9429ac0 100644
+--- a/src/video_core/vulkan_common/vulkan_device.h
++++ b/src/video_core/vulkan_common/vulkan_device.h
+@@ -580,6 +580,10 @@ class Device {
+         return properties.properties.limits.maxVertexInputBindings;
+     }
+ 
++    bool SupportsConditionalBarriers() const {
++        return supports_conditional_barriers;
++    }
++
+ private:
+     /// Checks if the physical device is suitable and configures the object state
+     /// with all necessary info about its properties.
+@@ -683,6 +687,7 @@ class Device {
+     bool must_emulate_bgr565{};             ///< Emulates BGR565 by swizzling RGB565 format.
+     bool dynamic_state3_blending{};         ///< Has all blending features of dynamic_state3.
+     bool dynamic_state3_enables{};          ///< Has all enables features of dynamic_state3.
++    bool supports_conditional_barriers{};   ///< Allows barriers in conditional control flow.
+     u64 device_access_memory{};             ///< Total size of device local memory in bytes.
+     u32 sets_per_pool{};                    ///< Sets per Description Pool
+ 

@@ -96,6 +96,7 @@ PATCHES=(
 	"${FILESDIR}/cmake.patch"
 	"${FILESDIR}/citra-inih.patch"
 	"${FILESDIR}/citra-gcc13.patch"
+	"${FILESDIR}/tmp.patch"
 )
 
 src_prepare() {

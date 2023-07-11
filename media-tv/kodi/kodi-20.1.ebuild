@@ -146,7 +146,7 @@ COMMON_TARGET_DEPEND="${PYTHON_DEPS}
 		system-ffmpeg? ( media-video/ffmpeg[vdpau] )
 	)
 	wayland? (
-		>=dev-cpp/waylandpp-0.2.3:=
+		>=dev-cpp/waylandpp-1.0.0-r1:=
 		media-libs/mesa[wayland]
 		>=dev-libs/wayland-protocols-1.7
 		>=x11-libs/libxkbcommon-0.4.1
@@ -188,7 +188,7 @@ BDEPEND="${COMMON_DEPEND}
 	virtual/jre
 "
 
-PATCHES=( "${FILESDIR}/${P}-gcc13.patch" )
+PATCHES=( "${FILESDIR}/${P}-gcc13.patch" "${FILESDIR}/flatbuf.patch")
 
 
 CONFIG_CHECK="~IP_MULTICAST"

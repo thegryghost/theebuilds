@@ -1,0 +1,13 @@
+--- ./src/web_service/verify_login.cpp.org	2023-07-08 23:15:58.399066307 -0400
++++ ./src/web_service/verify_login.cpp	2023-07-08 23:17:59.391865849 -0400
+@@ -21,8 +21,8 @@
+     if (iter == json.end()) {
+         return username.empty();
+     }
+-
+-    return username == *iter;
++    std::string _tmp = *iter;
++    return username == _tmp;
+ }
+ 
+ } // namespace WebService

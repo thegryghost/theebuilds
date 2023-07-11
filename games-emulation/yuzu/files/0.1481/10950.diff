@@ -1,0 +1,266 @@
+diff --git a/src/common/settings.h b/src/common/settings.h
+index ae5ed93d8d2..59e96e74fdc 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -527,12 +527,10 @@ struct Values {
+     Setting<bool> mouse_panning{false, "mouse_panning"};
+     Setting<u8, true> mouse_panning_x_sensitivity{50, 1, 100, "mouse_panning_x_sensitivity"};
+     Setting<u8, true> mouse_panning_y_sensitivity{50, 1, 100, "mouse_panning_y_sensitivity"};
+-    Setting<u8, true> mouse_panning_deadzone_x_counterweight{
+-        0, 0, 100, "mouse_panning_deadzone_x_counterweight"};
+-    Setting<u8, true> mouse_panning_deadzone_y_counterweight{
+-        0, 0, 100, "mouse_panning_deadzone_y_counterweight"};
+-    Setting<u8, true> mouse_panning_decay_strength{22, 0, 100, "mouse_panning_decay_strength"};
+-    Setting<u8, true> mouse_panning_min_decay{5, 0, 100, "mouse_panning_min_decay"};
++    Setting<u8, true> mouse_panning_deadzone_counterweight{20, 0, 100,
++                                                           "mouse_panning_deadzone_counterweight"};
++    Setting<u8, true> mouse_panning_decay_strength{18, 0, 100, "mouse_panning_decay_strength"};
++    Setting<u8, true> mouse_panning_min_decay{6, 0, 100, "mouse_panning_min_decay"};
+ 
+     Setting<bool> mouse_enabled{false, "mouse_enabled"};
+     Setting<bool> emulate_analog_keyboard{false, "emulate_analog_keyboard"};
+diff --git a/src/input_common/drivers/mouse.cpp b/src/input_common/drivers/mouse.cpp
+index f07cf8a0ecd..e92ea878f91 100644
+--- a/src/input_common/drivers/mouse.cpp
++++ b/src/input_common/drivers/mouse.cpp
+@@ -12,9 +12,13 @@
+ 
+ namespace InputCommon {
+ constexpr int update_time = 10;
+-constexpr float default_stick_sensitivity = 0.0044f;
+-constexpr float default_motion_sensitivity = 0.0003f;
++constexpr float default_panning_sensitivity = 0.0010f;
++constexpr float default_stick_sensitivity = 0.0006f;
++constexpr float default_deadzone_counterweight = 0.01f;
++constexpr float default_motion_panning_sensitivity = 2.5f;
++constexpr float default_motion_sensitivity = 0.416f;
+ constexpr float maximum_rotation_speed = 2.0f;
++constexpr float maximum_stick_range = 1.5f;
+ constexpr int mouse_axis_x = 0;
+ constexpr int mouse_axis_y = 1;
+ constexpr int wheel_axis_x = 2;
+@@ -89,26 +93,13 @@ void Mouse::UpdateStickInput() {
+ 
+     // Prevent input from exceeding the max range (1.0f) too much,
+     // but allow some room to make it easier to sustain
+-    if (length > 1.2f) {
++    if (length > maximum_stick_range) {
+         last_mouse_change /= length;
+-        last_mouse_change *= 1.2f;
++        last_mouse_change *= maximum_stick_range;
+     }
+ 
+-    auto mouse_change = last_mouse_change;
+-
+-    // Bind the mouse change to [0 <= deadzone_counterweight <= 1,1]
+-    if (length < 1.0f) {
+-        const float deadzone_h_counterweight =
+-            Settings::values.mouse_panning_deadzone_x_counterweight.GetValue();
+-        const float deadzone_v_counterweight =
+-            Settings::values.mouse_panning_deadzone_y_counterweight.GetValue();
+-        mouse_change /= length;
+-        mouse_change.x *= length + (1 - length) * deadzone_h_counterweight * 0.01f;
+-        mouse_change.y *= length + (1 - length) * deadzone_v_counterweight * 0.01f;
+-    }
+-
+-    SetAxis(identifier, mouse_axis_x, mouse_change.x);
+-    SetAxis(identifier, mouse_axis_y, -mouse_change.y);
++    SetAxis(identifier, mouse_axis_x, last_mouse_change.x);
++    SetAxis(identifier, mouse_axis_y, -last_mouse_change.y);
+ 
+     // Decay input over time
+     const float clamped_length = std::min(1.0f, length);
+@@ -120,14 +111,13 @@ void Mouse::UpdateStickInput() {
+ }
+ 
+ void Mouse::UpdateMotionInput() {
+-    // This may need its own sensitivity instead of using the average
+-    const float sensitivity = (Settings::values.mouse_panning_x_sensitivity.GetValue() +
+-                               Settings::values.mouse_panning_y_sensitivity.GetValue()) /
+-                              2.0f * default_motion_sensitivity;
++    const float sensitivity = Settings::values.mouse_panning ? default_motion_panning_sensitivity
++                                                             : default_motion_sensitivity;
+ 
+     const float rotation_velocity = std::sqrt(last_motion_change.x * last_motion_change.x +
+                                               last_motion_change.y * last_motion_change.y);
+ 
++    // Clamp rotation speed
+     if (rotation_velocity > maximum_rotation_speed / sensitivity) {
+         const float multiplier = maximum_rotation_speed / rotation_velocity / sensitivity;
+         last_motion_change.x = last_motion_change.x * multiplier;
+@@ -158,29 +148,38 @@ void Mouse::Move(int x, int y, int center_x, int center_y) {
+         const auto mouse_change =
+             (Common::MakeVec(x, y) - Common::MakeVec(center_x, center_y)).Cast<float>();
+         const float x_sensitivity =
+-            Settings::values.mouse_panning_x_sensitivity.GetValue() * default_stick_sensitivity;
++            Settings::values.mouse_panning_x_sensitivity.GetValue() * default_panning_sensitivity;
+         const float y_sensitivity =
+-            Settings::values.mouse_panning_y_sensitivity.GetValue() * default_stick_sensitivity;
++            Settings::values.mouse_panning_y_sensitivity.GetValue() * default_panning_sensitivity;
++        const float deadzone_counterweight =
++            Settings::values.mouse_panning_deadzone_counterweight.GetValue() *
++            default_deadzone_counterweight;
++
++        last_motion_change += {-mouse_change.y * x_sensitivity, -mouse_change.x * y_sensitivity, 0};
++        last_mouse_change.x += mouse_change.x * x_sensitivity;
++        last_mouse_change.y += mouse_change.y * y_sensitivity;
+ 
+-        last_motion_change += {-mouse_change.y, -mouse_change.x, 0};
+-        last_mouse_change.x += mouse_change.x * x_sensitivity * 0.09f;
+-        last_mouse_change.y += mouse_change.y * y_sensitivity * 0.09f;
++        // Bind the mouse change to [0 <= deadzone_counterweight <= 1.0]
++        if (last_mouse_change.Length() < deadzone_counterweight) {
++            last_mouse_change /= last_mouse_change.Length();
++            last_mouse_change *= deadzone_counterweight;
++        }
+ 
+         return;
+     }
+ 
+     if (button_pressed) {
+         const auto mouse_move = Common::MakeVec<int>(x, y) - mouse_origin;
+-        const float x_sensitivity = Settings::values.mouse_panning_x_sensitivity.GetValue();
+-        const float y_sensitivity = Settings::values.mouse_panning_y_sensitivity.GetValue();
+-        SetAxis(identifier, mouse_axis_x,
+-                static_cast<float>(mouse_move.x) * x_sensitivity * 0.0012f);
+-        SetAxis(identifier, mouse_axis_y,
+-                static_cast<float>(-mouse_move.y) * y_sensitivity * 0.0012f);
++        const float x_sensitivity =
++            Settings::values.mouse_panning_x_sensitivity.GetValue() * default_stick_sensitivity;
++        const float y_sensitivity =
++            Settings::values.mouse_panning_y_sensitivity.GetValue() * default_stick_sensitivity;
++        SetAxis(identifier, mouse_axis_x, static_cast<float>(mouse_move.x) * x_sensitivity);
++        SetAxis(identifier, mouse_axis_y, static_cast<float>(-mouse_move.y) * y_sensitivity);
+ 
+         last_motion_change = {
+-            static_cast<float>(-mouse_move.y) / 50.0f,
+-            static_cast<float>(-mouse_move.x) / 50.0f,
++            static_cast<float>(-mouse_move.y) * x_sensitivity,
++            static_cast<float>(-mouse_move.x) * y_sensitivity,
+             last_motion_change.z,
+         };
+     }
+@@ -234,7 +233,7 @@ void Mouse::ReleaseButton(MouseButton button) {
+ void Mouse::MouseWheelChange(int x, int y) {
+     wheel_position.x += x;
+     wheel_position.y += y;
+-    last_motion_change.z += static_cast<f32>(y) / 100.0f;
++    last_motion_change.z += static_cast<f32>(y);
+     SetAxis(identifier, wheel_axis_x, static_cast<f32>(wheel_position.x));
+     SetAxis(identifier, wheel_axis_y, static_cast<f32>(wheel_position.y));
+ }
+diff --git a/src/yuzu/configuration/config.cpp b/src/yuzu/configuration/config.cpp
+index 29467d380fe..195d3556c93 100644
+--- a/src/yuzu/configuration/config.cpp
++++ b/src/yuzu/configuration/config.cpp
+@@ -503,8 +503,7 @@ void Config::ReadMousePanningValues() {
+     ReadBasicSetting(Settings::values.mouse_panning);
+     ReadBasicSetting(Settings::values.mouse_panning_x_sensitivity);
+     ReadBasicSetting(Settings::values.mouse_panning_y_sensitivity);
+-    ReadBasicSetting(Settings::values.mouse_panning_deadzone_x_counterweight);
+-    ReadBasicSetting(Settings::values.mouse_panning_deadzone_y_counterweight);
++    ReadBasicSetting(Settings::values.mouse_panning_deadzone_counterweight);
+     ReadBasicSetting(Settings::values.mouse_panning_decay_strength);
+     ReadBasicSetting(Settings::values.mouse_panning_min_decay);
+ }
+@@ -1122,8 +1121,7 @@ void Config::SaveMousePanningValues() {
+     // Don't overwrite values.mouse_panning
+     WriteBasicSetting(Settings::values.mouse_panning_x_sensitivity);
+     WriteBasicSetting(Settings::values.mouse_panning_y_sensitivity);
+-    WriteBasicSetting(Settings::values.mouse_panning_deadzone_x_counterweight);
+-    WriteBasicSetting(Settings::values.mouse_panning_deadzone_y_counterweight);
++    WriteBasicSetting(Settings::values.mouse_panning_deadzone_counterweight);
+     WriteBasicSetting(Settings::values.mouse_panning_decay_strength);
+     WriteBasicSetting(Settings::values.mouse_panning_min_decay);
+ }
+diff --git a/src/yuzu/configuration/configure_mouse_panning.cpp b/src/yuzu/configuration/configure_mouse_panning.cpp
+index f183d2740d4..b3386347e21 100644
+--- a/src/yuzu/configuration/configure_mouse_panning.cpp
++++ b/src/yuzu/configuration/configure_mouse_panning.cpp
+@@ -27,10 +27,8 @@ void ConfigureMousePanning::SetConfiguration(float right_stick_deadzone, float r
+     ui->enable->setChecked(Settings::values.mouse_panning.GetValue());
+     ui->x_sensitivity->setValue(Settings::values.mouse_panning_x_sensitivity.GetValue());
+     ui->y_sensitivity->setValue(Settings::values.mouse_panning_y_sensitivity.GetValue());
+-    ui->deadzone_x_counterweight->setValue(
+-        Settings::values.mouse_panning_deadzone_x_counterweight.GetValue());
+-    ui->deadzone_y_counterweight->setValue(
+-        Settings::values.mouse_panning_deadzone_y_counterweight.GetValue());
++    ui->deadzone_counterweight->setValue(
++        Settings::values.mouse_panning_deadzone_counterweight.GetValue());
+     ui->decay_strength->setValue(Settings::values.mouse_panning_decay_strength.GetValue());
+     ui->min_decay->setValue(Settings::values.mouse_panning_min_decay.GetValue());
+ 
+@@ -48,10 +46,8 @@ void ConfigureMousePanning::SetConfiguration(float right_stick_deadzone, float r
+ void ConfigureMousePanning::SetDefaultConfiguration() {
+     ui->x_sensitivity->setValue(Settings::values.mouse_panning_x_sensitivity.GetDefault());
+     ui->y_sensitivity->setValue(Settings::values.mouse_panning_y_sensitivity.GetDefault());
+-    ui->deadzone_x_counterweight->setValue(
+-        Settings::values.mouse_panning_deadzone_x_counterweight.GetDefault());
+-    ui->deadzone_y_counterweight->setValue(
+-        Settings::values.mouse_panning_deadzone_y_counterweight.GetDefault());
++    ui->deadzone_counterweight->setValue(
++        Settings::values.mouse_panning_deadzone_counterweight.GetDefault());
+     ui->decay_strength->setValue(Settings::values.mouse_panning_decay_strength.GetDefault());
+     ui->min_decay->setValue(Settings::values.mouse_panning_min_decay.GetDefault());
+ }
+@@ -68,10 +64,8 @@ void ConfigureMousePanning::ApplyConfiguration() {
+     Settings::values.mouse_panning = ui->enable->isChecked();
+     Settings::values.mouse_panning_x_sensitivity = static_cast<float>(ui->x_sensitivity->value());
+     Settings::values.mouse_panning_y_sensitivity = static_cast<float>(ui->y_sensitivity->value());
+-    Settings::values.mouse_panning_deadzone_x_counterweight =
+-        static_cast<float>(ui->deadzone_x_counterweight->value());
+-    Settings::values.mouse_panning_deadzone_y_counterweight =
+-        static_cast<float>(ui->deadzone_y_counterweight->value());
++    Settings::values.mouse_panning_deadzone_counterweight =
++        static_cast<float>(ui->deadzone_counterweight->value());
+     Settings::values.mouse_panning_decay_strength = static_cast<float>(ui->decay_strength->value());
+     Settings::values.mouse_panning_min_decay = static_cast<float>(ui->min_decay->value());
+ 
+diff --git a/src/yuzu/configuration/configure_mouse_panning.ui b/src/yuzu/configuration/configure_mouse_panning.ui
+index 75795b7270f..33615be54e5 100644
+--- a/src/yuzu/configuration/configure_mouse_panning.ui
++++ b/src/yuzu/configuration/configure_mouse_panning.ui
+@@ -89,40 +89,14 @@
+        </property>
+        <layout class="QGridLayout">
+         <item row="0" column="0">
+-         <widget class="QLabel" name="deadzone_x_counterweight_label">
++         <widget class="QLabel" name="deadzone_counterweight_label">
+           <property name="text">
+-           <string>Horizontal</string>
++           <string>Deadzone</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+-         <widget class="QSpinBox" name="deadzone_x_counterweight">
+-          <property name="alignment">
+-           <set>Qt::AlignCenter</set>
+-          </property>
+-          <property name="suffix">
+-           <string>%</string>
+-          </property>
+-          <property name="minimum">
+-           <number>0</number>
+-          </property>
+-          <property name="maximum">
+-           <number>100</number>
+-          </property>
+-          <property name="value">
+-           <number>0</number>
+-          </property>
+-         </widget>
+-        </item>
+-        <item row="1" column="0">
+-         <widget class="QLabel" name="deadzone_y_counterweight_label">
+-          <property name="text">
+-           <string>Vertical</string>
+-          </property>
+-         </widget>
+-        </item>
+-        <item row="1" column="1">
+-         <widget class="QSpinBox" name="deadzone_y_counterweight">
++         <widget class="QSpinBox" name="deadzone_counterweight">
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>

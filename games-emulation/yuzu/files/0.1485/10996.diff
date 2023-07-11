@@ -1,0 +1,1312 @@
+diff --git a/src/audio_core/device/device_session.cpp b/src/audio_core/device/device_session.cpp
+index 86811fcb8f5..c41d9d1eae8 100644
+--- a/src/audio_core/device/device_session.cpp
++++ b/src/audio_core/device/device_session.cpp
+@@ -92,9 +92,9 @@ void DeviceSession::AppendBuffers(std::span<const AudioBuffer> buffers) {
+         if (type == Sink::StreamType::In) {
+             stream->AppendBuffer(new_buffer, tmp_samples);
+         } else {
+-            system.ApplicationMemory().ReadBlockUnsafe(buffer.samples, tmp_samples.data(),
+-                                                       buffer.size);
+-            stream->AppendBuffer(new_buffer, tmp_samples);
++            Core::Memory::CpuGuestMemory<s16, Core::Memory::GuestMemoryFlags::UnsafeRead> samples(
++                system.ApplicationMemory(), buffer.samples, buffer.size / sizeof(s16));
++            stream->AppendBuffer(new_buffer, samples);
+         }
+     }
+ }
+diff --git a/src/audio_core/renderer/command/data_source/decode.cpp b/src/audio_core/renderer/command/data_source/decode.cpp
+index f459332034c..257aa866eb6 100644
+--- a/src/audio_core/renderer/command/data_source/decode.cpp
++++ b/src/audio_core/renderer/command/data_source/decode.cpp
+@@ -28,7 +28,6 @@ constexpr std::array<u8, 3> PitchBySrcQuality = {4, 8, 4};
+ template <typename T>
+ static u32 DecodePcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+                      const DecodeArg& req) {
+-    std::array<T, TempBufferSize> tmp_samples{};
+     constexpr s32 min{std::numeric_limits<s16>::min()};
+     constexpr s32 max{std::numeric_limits<s16>::max()};
+ 
+@@ -49,19 +48,18 @@ static u32 DecodePcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+         const VAddr source{req.buffer +
+                            (((req.start_offset + req.offset) * channel_count) * sizeof(T))};
+         const u64 size{channel_count * samples_to_decode};
+-        const u64 size_bytes{size * sizeof(T)};
+-
+-        memory.ReadBlockUnsafe(source, tmp_samples.data(), size_bytes);
+ 
++        Core::Memory::CpuGuestMemory<T, Core::Memory::GuestMemoryFlags::UnsafeRead> samples(
++            memory, source, size);
+         if constexpr (std::is_floating_point_v<T>) {
+             for (u32 i = 0; i < samples_to_decode; i++) {
+-                auto sample{static_cast<s32>(tmp_samples[i * channel_count + req.target_channel] *
++                auto sample{static_cast<s32>(samples[i * channel_count + req.target_channel] *
+                                              std::numeric_limits<s16>::max())};
+                 out_buffer[i] = static_cast<s16>(std::clamp(sample, min, max));
+             }
+         } else {
+             for (u32 i = 0; i < samples_to_decode; i++) {
+-                out_buffer[i] = tmp_samples[i * channel_count + req.target_channel];
++                out_buffer[i] = samples[i * channel_count + req.target_channel];
+             }
+         }
+     } break;
+@@ -74,16 +72,17 @@ static u32 DecodePcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+         }
+ 
+         const VAddr source{req.buffer + ((req.start_offset + req.offset) * sizeof(T))};
+-        memory.ReadBlockUnsafe(source, tmp_samples.data(), samples_to_decode * sizeof(T));
++        Core::Memory::CpuGuestMemory<T, Core::Memory::GuestMemoryFlags::UnsafeRead> samples(
++            memory, source, samples_to_decode);
+ 
+         if constexpr (std::is_floating_point_v<T>) {
+             for (u32 i = 0; i < samples_to_decode; i++) {
+-                auto sample{static_cast<s32>(tmp_samples[i * channel_count + req.target_channel] *
++                auto sample{static_cast<s32>(samples[i * channel_count + req.target_channel] *
+                                              std::numeric_limits<s16>::max())};
+                 out_buffer[i] = static_cast<s16>(std::clamp(sample, min, max));
+             }
+         } else {
+-            std::memcpy(out_buffer.data(), tmp_samples.data(), samples_to_decode * sizeof(s16));
++            std::memcpy(out_buffer.data(), samples.data(), samples_to_decode * sizeof(s16));
+         }
+         break;
+     }
+@@ -101,7 +100,6 @@ static u32 DecodePcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+  */
+ static u32 DecodeAdpcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+                        const DecodeArg& req) {
+-    std::array<u8, TempBufferSize> wavebuffer{};
+     constexpr u32 SamplesPerFrame{14};
+     constexpr u32 NibblesPerFrame{16};
+ 
+@@ -139,7 +137,8 @@ static u32 DecodeAdpcm(Core::Memory::Memory& memory, std::span<s16> out_buffer,
+     }
+ 
+     const auto size{std::max((samples_to_process / 8U) * SamplesPerFrame, 8U)};
+-    memory.ReadBlockUnsafe(req.buffer + position_in_frame / 2, wavebuffer.data(), size);
++    Core::Memory::CpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::UnsafeRead> wavebuffer(
++        memory, req.buffer + position_in_frame / 2, size);
+ 
+     auto context{req.adpcm_context};
+     auto header{context->header};
+diff --git a/src/audio_core/renderer/command/effect/aux_.cpp b/src/audio_core/renderer/command/effect/aux_.cpp
+index c5650effaff..a3e12b3e763 100644
+--- a/src/audio_core/renderer/command/effect/aux_.cpp
++++ b/src/audio_core/renderer/command/effect/aux_.cpp
+@@ -21,23 +21,13 @@ static void ResetAuxBufferDsp(Core::Memory::Memory& memory, const CpuAddr aux_in
+     }
+ 
+     AuxInfo::AuxInfoDsp info{};
+-    auto info_ptr{&info};
+-    bool host_safe{(aux_info & Core::Memory::YUZU_PAGEMASK) <=
+-                   (Core::Memory::YUZU_PAGESIZE - sizeof(AuxInfo::AuxInfoDsp))};
++    memory.ReadBlockUnsafe(aux_info, &info, sizeof(AuxInfo::AuxInfoDsp));
+ 
+-    if (host_safe) [[likely]] {
+-        info_ptr = memory.GetPointer<AuxInfo::AuxInfoDsp>(aux_info);
+-    } else {
+-        memory.ReadBlockUnsafe(aux_info, info_ptr, sizeof(AuxInfo::AuxInfoDsp));
+-    }
++    info.read_offset = 0;
++    info.write_offset = 0;
++    info.total_sample_count = 0;
+ 
+-    info_ptr->read_offset = 0;
+-    info_ptr->write_offset = 0;
+-    info_ptr->total_sample_count = 0;
+-
+-    if (!host_safe) [[unlikely]] {
+-        memory.WriteBlockUnsafe(aux_info, info_ptr, sizeof(AuxInfo::AuxInfoDsp));
+-    }
++    memory.WriteBlockUnsafe(aux_info, &info, sizeof(AuxInfo::AuxInfoDsp));
+ }
+ 
+ /**
+@@ -86,17 +76,9 @@ static u32 WriteAuxBufferDsp(Core::Memory::Memory& memory, CpuAddr send_info_,
+     }
+ 
+     AuxInfo::AuxInfoDsp send_info{};
+-    auto send_ptr = &send_info;
+-    bool host_safe = (send_info_ & Core::Memory::YUZU_PAGEMASK) <=
+-                     (Core::Memory::YUZU_PAGESIZE - sizeof(AuxInfo::AuxInfoDsp));
+-
+-    if (host_safe) [[likely]] {
+-        send_ptr = memory.GetPointer<AuxInfo::AuxInfoDsp>(send_info_);
+-    } else {
+-        memory.ReadBlockUnsafe(send_info_, send_ptr, sizeof(AuxInfo::AuxInfoDsp));
+-    }
++    memory.ReadBlockUnsafe(send_info_, &send_info, sizeof(AuxInfo::AuxInfoDsp));
+ 
+-    u32 target_write_offset{send_ptr->write_offset + write_offset};
++    u32 target_write_offset{send_info.write_offset + write_offset};
+     if (target_write_offset > count_max) {
+         return 0;
+     }
+@@ -105,15 +87,9 @@ static u32 WriteAuxBufferDsp(Core::Memory::Memory& memory, CpuAddr send_info_,
+     u32 read_pos{0};
+     while (write_count > 0) {
+         u32 to_write{std::min(count_max - target_write_offset, write_count)};
+-        const auto write_addr = send_buffer + target_write_offset * sizeof(s32);
+-        bool write_safe{(write_addr & Core::Memory::YUZU_PAGEMASK) <=
+-                        (Core::Memory::YUZU_PAGESIZE - (write_addr + to_write * sizeof(s32)))};
+-        if (write_safe) [[likely]] {
+-            auto ptr = memory.GetPointer(write_addr);
+-            std::memcpy(ptr, &input[read_pos], to_write * sizeof(s32));
+-        } else {
+-            memory.WriteBlockUnsafe(send_buffer + target_write_offset * sizeof(s32),
+-                                    &input[read_pos], to_write * sizeof(s32));
++        if (to_write > 0) {
++            const auto write_addr = send_buffer + target_write_offset * sizeof(s32);
++            memory.WriteBlockUnsafe(write_addr, &input[read_pos], to_write * sizeof(s32));
+         }
+         target_write_offset = (target_write_offset + to_write) % count_max;
+         write_count -= to_write;
+@@ -121,13 +97,10 @@ static u32 WriteAuxBufferDsp(Core::Memory::Memory& memory, CpuAddr send_info_,
+     }
+ 
+     if (update_count) {
+-        send_ptr->write_offset = (send_ptr->write_offset + update_count) % count_max;
+-    }
+-
+-    if (!host_safe) [[unlikely]] {
+-        memory.WriteBlockUnsafe(send_info_, send_ptr, sizeof(AuxInfo::AuxInfoDsp));
++        send_info.write_offset = (send_info.write_offset + update_count) % count_max;
+     }
+ 
++    memory.WriteBlockUnsafe(send_info_, &send_info, sizeof(AuxInfo::AuxInfoDsp));
+     return write_count_;
+ }
+ 
+@@ -174,17 +147,9 @@ static u32 ReadAuxBufferDsp(Core::Memory::Memory& memory, CpuAddr return_info_,
+     }
+ 
+     AuxInfo::AuxInfoDsp return_info{};
+-    auto return_ptr = &return_info;
+-    bool host_safe = (return_info_ & Core::Memory::YUZU_PAGEMASK) <=
+-                     (Core::Memory::YUZU_PAGESIZE - sizeof(AuxInfo::AuxInfoDsp));
++    memory.ReadBlockUnsafe(return_info_, &return_info, sizeof(AuxInfo::AuxInfoDsp));
+ 
+-    if (host_safe) [[likely]] {
+-        return_ptr = memory.GetPointer<AuxInfo::AuxInfoDsp>(return_info_);
+-    } else {
+-        memory.ReadBlockUnsafe(return_info_, return_ptr, sizeof(AuxInfo::AuxInfoDsp));
+-    }
+-
+-    u32 target_read_offset{return_ptr->read_offset + read_offset};
++    u32 target_read_offset{return_info.read_offset + read_offset};
+     if (target_read_offset > count_max) {
+         return 0;
+     }
+@@ -193,15 +158,9 @@ static u32 ReadAuxBufferDsp(Core::Memory::Memory& memory, CpuAddr return_info_,
+     u32 write_pos{0};
+     while (read_count > 0) {
+         u32 to_read{std::min(count_max - target_read_offset, read_count)};
+-        const auto read_addr = return_buffer + target_read_offset * sizeof(s32);
+-        bool read_safe{(read_addr & Core::Memory::YUZU_PAGEMASK) <=
+-                       (Core::Memory::YUZU_PAGESIZE - (read_addr + to_read * sizeof(s32)))};
+-        if (read_safe) [[likely]] {
+-            auto ptr = memory.GetPointer(read_addr);
+-            std::memcpy(&output[write_pos], ptr, to_read * sizeof(s32));
+-        } else {
+-            memory.ReadBlockUnsafe(return_buffer + target_read_offset * sizeof(s32),
+-                                   &output[write_pos], to_read * sizeof(s32));
++        if (to_read > 0) {
++            const auto read_addr = return_buffer + target_read_offset * sizeof(s32);
++            memory.ReadBlockUnsafe(read_addr, &output[write_pos], to_read * sizeof(s32));
+         }
+         target_read_offset = (target_read_offset + to_read) % count_max;
+         read_count -= to_read;
+@@ -209,13 +168,10 @@ static u32 ReadAuxBufferDsp(Core::Memory::Memory& memory, CpuAddr return_info_,
+     }
+ 
+     if (update_count) {
+-        return_ptr->read_offset = (return_ptr->read_offset + update_count) % count_max;
+-    }
+-
+-    if (!host_safe) [[unlikely]] {
+-        memory.WriteBlockUnsafe(return_info_, return_ptr, sizeof(AuxInfo::AuxInfoDsp));
++        return_info.read_offset = (return_info.read_offset + update_count) % count_max;
+     }
+ 
++    memory.WriteBlockUnsafe(return_info_, &return_info, sizeof(AuxInfo::AuxInfoDsp));
+     return read_count_;
+ }
+ 
+diff --git a/src/common/page_table.cpp b/src/common/page_table.cpp
+index b744b68ce87..4b16902695a 100644
+--- a/src/common/page_table.cpp
++++ b/src/common/page_table.cpp
+@@ -66,6 +66,7 @@ void PageTable::Resize(std::size_t address_space_width_in_bits, std::size_t page
+                                              << (address_space_width_in_bits - page_size_in_bits)};
+     pointers.resize(num_page_table_entries);
+     backing_addr.resize(num_page_table_entries);
++    blocks.resize(num_page_table_entries);
+     current_address_space_width_in_bits = address_space_width_in_bits;
+     page_size = 1ULL << page_size_in_bits;
+ }
+diff --git a/src/common/page_table.h b/src/common/page_table.h
+index 1ad3a9f8b43..fec8378f318 100644
+--- a/src/common/page_table.h
++++ b/src/common/page_table.h
+@@ -122,6 +122,7 @@ struct PageTable {
+      * corresponding attribute element is of type `Memory`.
+      */
+     VirtualBuffer<PageInfo> pointers;
++    VirtualBuffer<u64> blocks;
+ 
+     VirtualBuffer<u64> backing_addr;
+ 
+diff --git a/src/core/core_timing.cpp b/src/core/core_timing.cpp
+index e6112a3c9a7..b98a0cb335f 100644
+--- a/src/core/core_timing.cpp
++++ b/src/core/core_timing.cpp
+@@ -70,7 +70,7 @@ void CoreTiming::Initialize(std::function<void()>&& on_thread_init_) {
+         -> std::optional<std::chrono::nanoseconds> { return std::nullopt; };
+     ev_lost = CreateEvent("_lost_event", empty_timed_callback);
+     if (is_multicore) {
+-        timer_thread = std::make_unique<std::thread>(ThreadEntry, std::ref(*this));
++        timer_thread = std::make_unique<std::jthread>(ThreadEntry, std::ref(*this));
+     }
+ }
+ 
+@@ -255,7 +255,6 @@ void CoreTiming::ThreadLoop() {
+ #ifdef _WIN32
+                     while (!paused && !event.IsSet() && wait_time > 0) {
+                         wait_time = *next_time - GetGlobalTimeNs().count();
+-
+                         if (wait_time >= timer_resolution_ns) {
+                             Common::Windows::SleepForOneTick();
+                         } else {
+diff --git a/src/core/core_timing.h b/src/core/core_timing.h
+index 5bca1c78dd9..c20e906fba7 100644
+--- a/src/core/core_timing.h
++++ b/src/core/core_timing.h
+@@ -163,7 +163,7 @@ class CoreTiming {
+     Common::Event pause_event{};
+     std::mutex basic_lock;
+     std::mutex advance_lock;
+-    std::unique_ptr<std::thread> timer_thread;
++    std::unique_ptr<std::jthread> timer_thread;
+     std::atomic<bool> paused{};
+     std::atomic<bool> paused_set{};
+     std::atomic<bool> wait_set{};
+diff --git a/src/core/hle/service/hle_ipc.cpp b/src/core/hle/service/hle_ipc.cpp
+index 2290df7055a..f6a1e54f2b5 100644
+--- a/src/core/hle/service/hle_ipc.cpp
++++ b/src/core/hle/service/hle_ipc.cpp
+@@ -329,8 +329,22 @@ std::vector<u8> HLERequestContext::ReadBufferCopy(std::size_t buffer_index) cons
+ }
+ 
+ std::span<const u8> HLERequestContext::ReadBuffer(std::size_t buffer_index) const {
+-    static thread_local std::array<Common::ScratchBuffer<u8>, 2> read_buffer_a;
+-    static thread_local std::array<Common::ScratchBuffer<u8>, 2> read_buffer_x;
++    static thread_local std::array read_buffer_a{
++        Core::Memory::CpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::SafeRead>(memory, 0, 0),
++        Core::Memory::CpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::SafeRead>(memory, 0, 0),
++    };
++    static thread_local std::array read_buffer_data_a{
++        Common::ScratchBuffer<u8>(),
++        Common::ScratchBuffer<u8>(),
++    };
++    static thread_local std::array read_buffer_x{
++        Core::Memory::CpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::SafeRead>(memory, 0, 0),
++        Core::Memory::CpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::SafeRead>(memory, 0, 0),
++    };
++    static thread_local std::array read_buffer_data_x{
++        Common::ScratchBuffer<u8>(),
++        Common::ScratchBuffer<u8>(),
++    };
+ 
+     const bool is_buffer_a{BufferDescriptorA().size() > buffer_index &&
+                            BufferDescriptorA()[buffer_index].Size()};
+@@ -339,19 +353,17 @@ std::span<const u8> HLERequestContext::ReadBuffer(std::size_t buffer_index) cons
+             BufferDescriptorA().size() > buffer_index, { return {}; },
+             "BufferDescriptorA invalid buffer_index {}", buffer_index);
+         auto& read_buffer = read_buffer_a[buffer_index];
+-        read_buffer.resize_destructive(BufferDescriptorA()[buffer_index].Size());
+-        memory.ReadBlock(BufferDescriptorA()[buffer_index].Address(), read_buffer.data(),
+-                         read_buffer.size());
+-        return read_buffer;
++        return read_buffer.Read(BufferDescriptorA()[buffer_index].Address(),
++                                BufferDescriptorA()[buffer_index].Size(),
++                                &read_buffer_data_a[buffer_index]);
+     } else {
+         ASSERT_OR_EXECUTE_MSG(
+             BufferDescriptorX().size() > buffer_index, { return {}; },
+             "BufferDescriptorX invalid buffer_index {}", buffer_index);
+         auto& read_buffer = read_buffer_x[buffer_index];
+-        read_buffer.resize_destructive(BufferDescriptorX()[buffer_index].Size());
+-        memory.ReadBlock(BufferDescriptorX()[buffer_index].Address(), read_buffer.data(),
+-                         read_buffer.size());
+-        return read_buffer;
++        return read_buffer.Read(BufferDescriptorX()[buffer_index].Address(),
++                                BufferDescriptorX()[buffer_index].Size(),
++                                &read_buffer_data_x[buffer_index]);
+     }
+ }
+ 
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 257406f09bc..805963178e1 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -266,6 +266,22 @@ struct Memory::Impl {
+         ReadBlockImpl<true>(*system.ApplicationProcess(), src_addr, dest_buffer, size);
+     }
+ 
++    const u8* GetSpan(const VAddr src_addr, const std::size_t size) const {
++        if (current_page_table->blocks[src_addr >> YUZU_PAGEBITS] ==
++            current_page_table->blocks[(src_addr + size) >> YUZU_PAGEBITS]) {
++            return GetPointerSilent(src_addr);
++        }
++        return nullptr;
++    }
++
++    u8* GetSpan(const VAddr src_addr, const std::size_t size) {
++        if (current_page_table->blocks[src_addr >> YUZU_PAGEBITS] ==
++            current_page_table->blocks[(src_addr + size) >> YUZU_PAGEBITS]) {
++            return GetPointerSilent(src_addr);
++        }
++        return nullptr;
++    }
++
+     template <bool UNSAFE>
+     void WriteBlockImpl(const Kernel::KProcess& process, const Common::ProcessAddress dest_addr,
+                         const void* src_buffer, const std::size_t size) {
+@@ -559,7 +575,7 @@ struct Memory::Impl {
+             }
+         }
+ 
+-        const Common::ProcessAddress end = base + size;
++        const auto end = base + size;
+         ASSERT_MSG(end <= page_table.pointers.size(), "out of range mapping at {:016X}",
+                    base + page_table.pointers.size());
+ 
+@@ -570,14 +586,18 @@ struct Memory::Impl {
+             while (base != end) {
+                 page_table.pointers[base].Store(nullptr, type);
+                 page_table.backing_addr[base] = 0;
+-
++                page_table.blocks[base] = 0;
+                 base += 1;
+             }
+         } else {
++            auto orig_base = base;
+             while (base != end) {
+-                page_table.pointers[base].Store(
+-                    system.DeviceMemory().GetPointer<u8>(target) - (base << YUZU_PAGEBITS), type);
+-                page_table.backing_addr[base] = GetInteger(target) - (base << YUZU_PAGEBITS);
++                auto host_ptr =
++                    system.DeviceMemory().GetPointer<u8>(target) - (base << YUZU_PAGEBITS);
++                auto backing = GetInteger(target) - (base << YUZU_PAGEBITS);
++                page_table.pointers[base].Store(host_ptr, type);
++                page_table.backing_addr[base] = backing;
++                page_table.blocks[base] = orig_base << YUZU_PAGEBITS;
+ 
+                 ASSERT_MSG(page_table.pointers[base].Pointer(),
+                            "memory mapping base yield a nullptr within the table");
+@@ -747,6 +767,14 @@ struct Memory::Impl {
+         VAddr last_address;
+     };
+ 
++    void InvalidateRegion(Common::ProcessAddress dest_addr, size_t size) {
++        system.GPU().InvalidateRegion(GetInteger(dest_addr), size);
++    }
++
++    void FlushRegion(Common::ProcessAddress dest_addr, size_t size) {
++        system.GPU().FlushRegion(GetInteger(dest_addr), size);
++    }
++
+     Core::System& system;
+     Common::PageTable* current_page_table = nullptr;
+     std::array<VideoCore::RasterizerDownloadArea, Core::Hardware::NUM_CPU_CORES>
+@@ -881,6 +909,14 @@ void Memory::ReadBlockUnsafe(const Common::ProcessAddress src_addr, void* dest_b
+     impl->ReadBlockUnsafe(src_addr, dest_buffer, size);
+ }
+ 
++const u8* Memory::GetSpan(const VAddr src_addr, const std::size_t size) const {
++    return impl->GetSpan(src_addr, size);
++}
++
++u8* Memory::GetSpan(const VAddr src_addr, const std::size_t size) {
++    return impl->GetSpan(src_addr, size);
++}
++
+ void Memory::WriteBlock(const Common::ProcessAddress dest_addr, const void* src_buffer,
+                         const std::size_t size) {
+     impl->WriteBlock(dest_addr, src_buffer, size);
+@@ -924,4 +960,12 @@ void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug)
+     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
+ }
+ 
++void Memory::InvalidateRegion(Common::ProcessAddress dest_addr, size_t size) {
++    impl->InvalidateRegion(dest_addr, size);
++}
++
++void Memory::FlushRegion(Common::ProcessAddress dest_addr, size_t size) {
++    impl->FlushRegion(dest_addr, size);
++}
++
+ } // namespace Core::Memory
+diff --git a/src/core/memory.h b/src/core/memory.h
+index ea01824f858..ea33c769cf6 100644
+--- a/src/core/memory.h
++++ b/src/core/memory.h
+@@ -5,8 +5,12 @@
+ 
+ #include <cstddef>
+ #include <memory>
++#include <optional>
+ #include <span>
+ #include <string>
++#include <vector>
++
++#include "common/scratch_buffer.h"
+ #include "common/typed_address.h"
+ #include "core/hle/result.h"
+ 
+@@ -24,6 +28,10 @@ class PhysicalMemory;
+ class KProcess;
+ } // namespace Kernel
+ 
++namespace Tegra {
++class MemoryManager;
++}
++
+ namespace Core::Memory {
+ 
+ /**
+@@ -343,6 +351,9 @@ class Memory {
+      */
+     void ReadBlockUnsafe(Common::ProcessAddress src_addr, void* dest_buffer, std::size_t size);
+ 
++    const u8* GetSpan(const VAddr src_addr, const std::size_t size) const;
++    u8* GetSpan(const VAddr src_addr, const std::size_t size);
++
+     /**
+      * Writes a range of bytes into the current process' address space at the specified
+      * virtual address.
+@@ -461,6 +472,8 @@ class Memory {
+     void MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug);
+ 
+     void SetGPUDirtyManagers(std::span<Core::GPUDirtyMemoryManager> managers);
++    void InvalidateRegion(Common::ProcessAddress dest_addr, size_t size);
++    void FlushRegion(Common::ProcessAddress dest_addr, size_t size);
+ 
+ private:
+     Core::System& system;
+@@ -469,4 +482,203 @@ class Memory {
+     std::unique_ptr<Impl> impl;
+ };
+ 
++enum GuestMemoryFlags : u32 {
++    Read = 1 << 0,
++    Write = 1 << 1,
++    Safe = 1 << 2,
++    Cached = 1 << 3,
++
++    SafeRead = Read | Safe,
++    SafeWrite = Write | Safe,
++    SafeReadWrite = SafeRead | SafeWrite,
++    SafeReadCachedWrite = SafeReadWrite | Cached,
++
++    UnsafeRead = Read,
++    UnsafeWrite = Write,
++    UnsafeReadWrite = UnsafeRead | UnsafeWrite,
++    UnsafeReadCachedWrite = UnsafeReadWrite | Cached,
++};
++
++namespace {
++template <typename M, typename T, GuestMemoryFlags FLAGS>
++class GuestMemory {
++    using iterator = T*;
++    using const_iterator = const T*;
++    using value_type = T;
++    using element_type = T;
++    using iterator_category = std::contiguous_iterator_tag;
++
++public:
++    GuestMemory() = delete;
++    explicit GuestMemory(M& memory_, u64 addr_, std::size_t size_,
++                         Common::ScratchBuffer<T>* backup = nullptr)
++        : memory{memory_}, addr{addr_}, size{size_} {
++        static_assert(FLAGS & GuestMemoryFlags::Read || FLAGS & GuestMemoryFlags::Write);
++        if constexpr (FLAGS & GuestMemoryFlags::Read) {
++            Read(addr, size, backup);
++        }
++    }
++
++    ~GuestMemory() = default;
++
++    T* data() noexcept {
++        return data_span.data();
++    }
++
++    const T* data() const noexcept {
++        return data_span.data();
++    }
++
++    [[nodiscard]] T* begin() noexcept {
++        return data();
++    }
++
++    [[nodiscard]] const T* begin() const noexcept {
++        return data();
++    }
++
++    [[nodiscard]] T* end() noexcept {
++        return data() + size;
++    }
++
++    [[nodiscard]] const T* end() const noexcept {
++        return data() + size;
++    }
++
++    T& operator[](size_t index) noexcept {
++        return data_span[index];
++    }
++
++    const T& operator[](size_t index) const noexcept {
++        return data_span[index];
++    }
++
++    void SetAddressAndSize(u64 addr_, std::size_t size_) noexcept {
++        addr = addr_;
++        size = size_;
++        addr_changed = true;
++    }
++
++    std::span<T> Read(u64 addr_, std::size_t size_,
++                      Common::ScratchBuffer<T>* backup = nullptr) noexcept {
++        addr = addr_;
++        size = size_;
++        if (size == 0) {
++            is_data_copy = true;
++            return {};
++        }
++
++        if (TrySetSpan()) {
++            if constexpr (FLAGS & GuestMemoryFlags::Safe) {
++                memory.FlushRegion(addr, size * sizeof(T));
++            }
++        } else {
++            if (backup) {
++                backup->resize_destructive(size);
++                data_span = *backup;
++            } else {
++                data_copy.resize(size);
++                data_span = std::span(data_copy);
++            }
++            is_data_copy = true;
++            span_valid = true;
++            if constexpr (FLAGS & GuestMemoryFlags::Safe) {
++                memory.ReadBlock(addr, data_span.data(), size * sizeof(T));
++            } else {
++                memory.ReadBlockUnsafe(addr, data_span.data(), size * sizeof(T));
++            }
++        }
++        return data_span;
++    }
++
++    void Write(std::span<T> write_data) noexcept {
++        if constexpr (FLAGS & GuestMemoryFlags::Cached) {
++            memory.WriteBlockCached(addr, write_data.data(), size * sizeof(T));
++        } else if constexpr (FLAGS & GuestMemoryFlags::Safe) {
++            memory.WriteBlock(addr, write_data.data(), size * sizeof(T));
++        } else {
++            memory.WriteBlockUnsafe(addr, write_data.data(), size * sizeof(T));
++        }
++    }
++
++    bool TrySetSpan() noexcept {
++        if (u8* ptr = memory.GetSpan(addr, size * sizeof(T)); ptr) {
++            data_span = {reinterpret_cast<T*>(ptr), size};
++            span_valid = true;
++            return true;
++        }
++        return false;
++    }
++
++protected:
++    bool IsDataCopy() const noexcept {
++        return is_data_copy;
++    }
++
++    bool AddressChanged() const noexcept {
++        return addr_changed;
++    }
++
++    M& memory;
++    u64 addr;
++    size_t size;
++    std::span<T> data_span{};
++    std::vector<T> data_copy;
++    bool span_valid{false};
++    bool is_data_copy{false};
++    bool addr_changed{false};
++};
++
++template <typename M, typename T, GuestMemoryFlags FLAGS>
++class GuestMemoryScoped : public GuestMemory<M, T, FLAGS> {
++public:
++    GuestMemoryScoped() = delete;
++    explicit GuestMemoryScoped(M& memory_, u64 addr_, std::size_t size_,
++                               Common::ScratchBuffer<T>* backup = nullptr)
++        : GuestMemory<M, T, FLAGS>(memory_, addr_, size_, backup) {
++        if constexpr (!(FLAGS & GuestMemoryFlags::Read)) {
++            if (!this->TrySetSpan()) {
++                if (backup) {
++                    this->data_span = *backup;
++                    this->span_valid = true;
++                    this->is_data_copy = true;
++                }
++            }
++        }
++    }
++
++    ~GuestMemoryScoped() {
++        if constexpr (FLAGS & GuestMemoryFlags::Write) {
++            if (this->size == 0) [[unlikely]] {
++                return;
++            }
++
++            if (this->AddressChanged() || this->IsDataCopy()) {
++                ASSERT(this->span_valid);
++                if constexpr (FLAGS & GuestMemoryFlags::Cached) {
++                    this->memory.WriteBlockCached(this->addr, this->data_span.data(),
++                                                  this->size * sizeof(T));
++                } else if constexpr (FLAGS & GuestMemoryFlags::Safe) {
++                    this->memory.WriteBlock(this->addr, this->data_span.data(),
++                                            this->size * sizeof(T));
++                } else {
++                    this->memory.WriteBlockUnsafe(this->addr, this->data_span.data(),
++                                                  this->size * sizeof(T));
++                }
++            } else if constexpr (FLAGS & GuestMemoryFlags::Safe) {
++                this->memory.InvalidateRegion(this->addr, this->size * sizeof(T));
++            }
++        }
++    }
++};
++} // namespace
++
++template <typename T, GuestMemoryFlags FLAGS>
++using CpuGuestMemory = GuestMemory<Memory, T, FLAGS>;
++template <typename T, GuestMemoryFlags FLAGS>
++using CpuGuestMemoryScoped = GuestMemoryScoped<Memory, T, FLAGS>;
++template <typename T, GuestMemoryFlags FLAGS>
++using GpuGuestMemory = GuestMemory<Tegra::MemoryManager, T, FLAGS>;
++template <typename T, GuestMemoryFlags FLAGS>
++using GpuGuestMemoryScoped = GuestMemoryScoped<Tegra::MemoryManager, T, FLAGS>;
+ } // namespace Core::Memory
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index b5ed3380f60..6ed4b78f2c4 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -234,9 +234,10 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+     if (has_new_downloads) {
+         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
+     }
+-    tmp_buffer.resize_destructive(amount);
+-    cpu_memory.ReadBlockUnsafe(*cpu_src_address, tmp_buffer.data(), amount);
+-    cpu_memory.WriteBlockUnsafe(*cpu_dest_address, tmp_buffer.data(), amount);
++
++    Core::Memory::CpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::UnsafeReadWrite> tmp(
++        cpu_memory, *cpu_src_address, amount, &tmp_buffer);
++    tmp.SetAddressAndSize(*cpu_dest_address, amount);
+     return true;
+ }
+ 
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index 55192982484..9f1b340a952 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -5,6 +5,7 @@
+ #include "common/microprofile.h"
+ #include "common/settings.h"
+ #include "core/core.h"
++#include "core/memory.h"
+ #include "video_core/dma_pusher.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/gpu.h"
+@@ -12,6 +13,8 @@
+ 
+ namespace Tegra {
+ 
++constexpr u32 MacroRegistersStart = 0xE00;
++
+ DmaPusher::DmaPusher(Core::System& system_, GPU& gpu_, MemoryManager& memory_manager_,
+                      Control::ChannelState& channel_state_)
+     : gpu{gpu_}, system{system_}, memory_manager{memory_manager_}, puller{gpu_, memory_manager_,
+@@ -74,25 +77,16 @@ bool DmaPusher::Step() {
+         }
+ 
+         // Push buffer non-empty, read a word
+-        command_headers.resize_destructive(command_list_header.size);
+-        constexpr u32 MacroRegistersStart = 0xE00;
+-        if (dma_state.method < MacroRegistersStart) {
+-            if (Settings::IsGPULevelHigh()) {
+-                memory_manager.ReadBlock(dma_state.dma_get, command_headers.data(),
+-                                         command_list_header.size * sizeof(u32));
+-            } else {
+-                memory_manager.ReadBlockUnsafe(dma_state.dma_get, command_headers.data(),
+-                                               command_list_header.size * sizeof(u32));
+-            }
+-        } else {
+-            const size_t copy_size = command_list_header.size * sizeof(u32);
++        if (dma_state.method >= MacroRegistersStart) {
+             if (subchannels[dma_state.subchannel]) {
+-                subchannels[dma_state.subchannel]->current_dirty =
+-                    memory_manager.IsMemoryDirty(dma_state.dma_get, copy_size);
++                subchannels[dma_state.subchannel]->current_dirty = memory_manager.IsMemoryDirty(
++                    dma_state.dma_get, command_list_header.size * sizeof(u32));
+             }
+-            memory_manager.ReadBlockUnsafe(dma_state.dma_get, command_headers.data(), copy_size);
+         }
+-        ProcessCommands(command_headers);
++        Core::Memory::GpuGuestMemory<Tegra::CommandHeader,
++                                     Core::Memory::GuestMemoryFlags::UnsafeRead>
++            headers(memory_manager, dma_state.dma_get, command_list_header.size, &command_headers);
++        ProcessCommands(headers);
+     }
+ 
+     return true;
+diff --git a/src/video_core/engines/engine_upload.cpp b/src/video_core/engines/engine_upload.cpp
+index 7f5a0c29d72..bc64d44863f 100644
+--- a/src/video_core/engines/engine_upload.cpp
++++ b/src/video_core/engines/engine_upload.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include "common/algorithm.h"
+ #include "common/assert.h"
++#include "core/memory.h"
+ #include "video_core/engines/engine_upload.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/rasterizer_interface.h"
+@@ -46,15 +47,11 @@ void State::ProcessData(const u32* data, size_t num_data) {
+ void State::ProcessData(std::span<const u8> read_buffer) {
+     const GPUVAddr address{regs.dest.Address()};
+     if (is_linear) {
+-        if (regs.line_count == 1) {
+-            rasterizer->AccelerateInlineToMemory(address, copy_size, read_buffer);
+-        } else {
+-            for (size_t line = 0; line < regs.line_count; ++line) {
+-                const GPUVAddr dest_line = address + line * regs.dest.pitch;
+-                std::span<const u8> buffer(read_buffer.data() + line * regs.line_length_in,
+-                                           regs.line_length_in);
+-                rasterizer->AccelerateInlineToMemory(dest_line, regs.line_length_in, buffer);
+-            }
++        for (size_t line = 0; line < regs.line_count; ++line) {
++            const GPUVAddr dest_line = address + line * regs.dest.pitch;
++            std::span<const u8> buffer(read_buffer.data() + line * regs.line_length_in,
++                                       regs.line_length_in);
++            rasterizer->AccelerateInlineToMemory(dest_line, regs.line_length_in, buffer);
+         }
+     } else {
+         u32 width = regs.dest.width;
+@@ -70,13 +67,14 @@ void State::ProcessData(std::span<const u8> read_buffer) {
+         const std::size_t dst_size = Tegra::Texture::CalculateSize(
+             true, bytes_per_pixel, width, regs.dest.height, regs.dest.depth,
+             regs.dest.BlockHeight(), regs.dest.BlockDepth());
+-        tmp_buffer.resize_destructive(dst_size);
+-        memory_manager.ReadBlock(address, tmp_buffer.data(), dst_size);
+-        Tegra::Texture::SwizzleSubrect(tmp_buffer, read_buffer, bytes_per_pixel, width,
+-                                       regs.dest.height, regs.dest.depth, x_offset, regs.dest.y,
+-                                       x_elements, regs.line_count, regs.dest.BlockHeight(),
++
++        Core::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeReadCachedWrite>
++            tmp(memory_manager, address, dst_size, &tmp_buffer);
++
++        Tegra::Texture::SwizzleSubrect(tmp, read_buffer, bytes_per_pixel, width, regs.dest.height,
++                                       regs.dest.depth, x_offset, regs.dest.y, x_elements,
++                                       regs.line_count, regs.dest.BlockHeight(),
+                                        regs.dest.BlockDepth(), regs.line_length_in);
+-        memory_manager.WriteBlockCached(address, tmp_buffer.data(), dst_size);
+     }
+ }
+ 
+diff --git a/src/video_core/engines/kepler_compute.cpp b/src/video_core/engines/kepler_compute.cpp
+index 601095f038c..a38d9528a1b 100644
+--- a/src/video_core/engines/kepler_compute.cpp
++++ b/src/video_core/engines/kepler_compute.cpp
+@@ -84,7 +84,6 @@ Texture::TICEntry KeplerCompute::GetTICEntry(u32 tic_index) const {
+ 
+     Texture::TICEntry tic_entry;
+     memory_manager.ReadBlockUnsafe(tic_address_gpu, &tic_entry, sizeof(Texture::TICEntry));
+-
+     return tic_entry;
+ }
+ 
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index 62d70e9f3c9..c3696096d30 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -9,6 +9,7 @@
+ #include "common/settings.h"
+ #include "core/core.h"
+ #include "core/core_timing.h"
++#include "core/memory.h"
+ #include "video_core/dirty_flags.h"
+ #include "video_core/engines/draw_manager.h"
+ #include "video_core/engines/maxwell_3d.h"
+@@ -679,17 +680,14 @@ void Maxwell3D::ProcessCBData(u32 value) {
+ Texture::TICEntry Maxwell3D::GetTICEntry(u32 tic_index) const {
+     const GPUVAddr tic_address_gpu{regs.tex_header.Address() +
+                                    tic_index * sizeof(Texture::TICEntry)};
+-
+     Texture::TICEntry tic_entry;
+     memory_manager.ReadBlockUnsafe(tic_address_gpu, &tic_entry, sizeof(Texture::TICEntry));
+-
+     return tic_entry;
+ }
+ 
+ Texture::TSCEntry Maxwell3D::GetTSCEntry(u32 tsc_index) const {
+     const GPUVAddr tsc_address_gpu{regs.tex_sampler.Address() +
+                                    tsc_index * sizeof(Texture::TSCEntry)};
+-
+     Texture::TSCEntry tsc_entry;
+     memory_manager.ReadBlockUnsafe(tsc_address_gpu, &tsc_entry, sizeof(Texture::TSCEntry));
+     return tsc_entry;
+diff --git a/src/video_core/engines/maxwell_dma.cpp b/src/video_core/engines/maxwell_dma.cpp
+index f8598fd9801..cd8e24b0b3a 100644
+--- a/src/video_core/engines/maxwell_dma.cpp
++++ b/src/video_core/engines/maxwell_dma.cpp
+@@ -7,6 +7,7 @@
+ #include "common/microprofile.h"
+ #include "common/settings.h"
+ #include "core/core.h"
++#include "core/memory.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/engines/maxwell_dma.h"
+ #include "video_core/memory_manager.h"
+@@ -130,11 +131,12 @@ void MaxwellDMA::Launch() {
+                 UNIMPLEMENTED_IF(regs.offset_out % 16 != 0);
+                 read_buffer.resize_destructive(16);
+                 for (u32 offset = 0; offset < regs.line_length_in; offset += 16) {
+-                    memory_manager.ReadBlock(
+-                        convert_linear_2_blocklinear_addr(regs.offset_in + offset),
+-                        read_buffer.data(), read_buffer.size());
+-                    memory_manager.WriteBlockCached(regs.offset_out + offset, read_buffer.data(),
+-                                                    read_buffer.size());
++                    Core::Memory::GpuGuestMemoryScoped<
++                        u8, Core::Memory::GuestMemoryFlags::SafeReadCachedWrite>
++                        tmp_write_buffer(memory_manager,
++                                         convert_linear_2_blocklinear_addr(regs.offset_in + offset),
++                                         16, &read_buffer);
++                    tmp_write_buffer.SetAddressAndSize(regs.offset_out + offset, 16);
+                 }
+             } else if (is_src_pitch && !is_dst_pitch) {
+                 UNIMPLEMENTED_IF(regs.line_length_in % 16 != 0);
+@@ -142,20 +144,19 @@ void MaxwellDMA::Launch() {
+                 UNIMPLEMENTED_IF(regs.offset_out % 16 != 0);
+                 read_buffer.resize_destructive(16);
+                 for (u32 offset = 0; offset < regs.line_length_in; offset += 16) {
+-                    memory_manager.ReadBlock(regs.offset_in + offset, read_buffer.data(),
+-                                             read_buffer.size());
+-                    memory_manager.WriteBlockCached(
+-                        convert_linear_2_blocklinear_addr(regs.offset_out + offset),
+-                        read_buffer.data(), read_buffer.size());
++                    Core::Memory::GpuGuestMemoryScoped<
++                        u8, Core::Memory::GuestMemoryFlags::SafeReadCachedWrite>
++                        tmp_write_buffer(memory_manager, regs.offset_in + offset, 16, &read_buffer);
++                    tmp_write_buffer.SetAddressAndSize(
++                        convert_linear_2_blocklinear_addr(regs.offset_out + offset), 16);
+                 }
+             } else {
+                 if (!accelerate.BufferCopy(regs.offset_in, regs.offset_out, regs.line_length_in)) {
+-                    read_buffer.resize_destructive(regs.line_length_in);
+-                    memory_manager.ReadBlock(regs.offset_in, read_buffer.data(),
+-                                             regs.line_length_in,
+-                                             VideoCommon::CacheType::NoBufferCache);
+-                    memory_manager.WriteBlockCached(regs.offset_out, read_buffer.data(),
+-                                                    regs.line_length_in);
++                    Core::Memory::GpuGuestMemoryScoped<
++                        u8, Core::Memory::GuestMemoryFlags::SafeReadCachedWrite>
++                        tmp_write_buffer(memory_manager, regs.offset_in, regs.line_length_in,
++                                         &read_buffer);
++                    tmp_write_buffer.SetAddressAndSize(regs.offset_out, regs.line_length_in);
+                 }
+             }
+         }
+@@ -222,17 +223,15 @@ void MaxwellDMA::CopyBlockLinearToPitch() {
+         CalculateSize(true, bytes_per_pixel, width, height, depth, block_height, block_depth);
+ 
+     const size_t dst_size = dst_operand.pitch * regs.line_count;
+-    read_buffer.resize_destructive(src_size);
+-    write_buffer.resize_destructive(dst_size);
+ 
+-    memory_manager.ReadBlock(src_operand.address, read_buffer.data(), src_size);
+-    memory_manager.ReadBlock(dst_operand.address, write_buffer.data(), dst_size);
++    Core::Memory::GpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::SafeRead> tmp_read_buffer(
++        memory_manager, src_operand.address, src_size, &read_buffer);
++    Core::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeReadCachedWrite>
++        tmp_write_buffer(memory_manager, dst_operand.address, dst_size, &write_buffer);
+ 
+-    UnswizzleSubrect(write_buffer, read_buffer, bytes_per_pixel, width, height, depth, x_offset,
+-                     src_params.origin.y, x_elements, regs.line_count, block_height, block_depth,
+-                     dst_operand.pitch);
+-
+-    memory_manager.WriteBlockCached(regs.offset_out, write_buffer.data(), dst_size);
++    UnswizzleSubrect(tmp_write_buffer, tmp_read_buffer, bytes_per_pixel, width, height, depth,
++                     x_offset, src_params.origin.y, x_elements, regs.line_count, block_height,
++                     block_depth, dst_operand.pitch);
+ }
+ 
+ void MaxwellDMA::CopyPitchToBlockLinear() {
+@@ -287,18 +286,17 @@ void MaxwellDMA::CopyPitchToBlockLinear() {
+         CalculateSize(true, bytes_per_pixel, width, height, depth, block_height, block_depth);
+     const size_t src_size = static_cast<size_t>(regs.pitch_in) * regs.line_count;
+ 
+-    read_buffer.resize_destructive(src_size);
+-    write_buffer.resize_destructive(dst_size);
+-
+-    memory_manager.ReadBlock(regs.offset_in, read_buffer.data(), src_size);
+-    memory_manager.ReadBlockUnsafe(regs.offset_out, write_buffer.data(), dst_size);
+-
+-    // If the input is linear and the output is tiled, swizzle the input and copy it over.
+-    SwizzleSubrect(write_buffer, read_buffer, bytes_per_pixel, width, height, depth, x_offset,
+-                   dst_params.origin.y, x_elements, regs.line_count, block_height, block_depth,
+-                   regs.pitch_in);
+-
+-    memory_manager.WriteBlockCached(regs.offset_out, write_buffer.data(), dst_size);
++    GPUVAddr src_addr = regs.offset_in;
++    GPUVAddr dst_addr = regs.offset_out;
++    Core::Memory::GpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::SafeRead> tmp_read_buffer(
++        memory_manager, src_addr, src_size, &read_buffer);
++    Core::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeReadCachedWrite>
++        tmp_write_buffer(memory_manager, dst_addr, dst_size, &write_buffer);
++
++    //  If the input is linear and the output is tiled, swizzle the input and copy it over.
++    SwizzleSubrect(tmp_write_buffer, tmp_read_buffer, bytes_per_pixel, width, height, depth,
++                   x_offset, dst_params.origin.y, x_elements, regs.line_count, block_height,
++                   block_depth, regs.pitch_in);
+ }
+ 
+ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
+@@ -342,23 +340,20 @@ void MaxwellDMA::CopyBlockLinearToBlockLinear() {
+     const u32 pitch = x_elements * bytes_per_pixel;
+     const size_t mid_buffer_size = pitch * regs.line_count;
+ 
+-    read_buffer.resize_destructive(src_size);
+-    write_buffer.resize_destructive(dst_size);
+-
+     intermediate_buffer.resize_destructive(mid_buffer_size);
+ 
+-    memory_manager.ReadBlock(regs.offset_in, read_buffer.data(), src_size);
+-    memory_manager.ReadBlock(regs.offset_out, write_buffer.data(), dst_size);
++    Core::Memory::GpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::SafeRead> tmp_read_buffer(
++        memory_manager, regs.offset_in, src_size, &read_buffer);
++    Core::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeReadCachedWrite>
++        tmp_write_buffer(memory_manager, regs.offset_out, dst_size, &write_buffer);
+ 
+-    UnswizzleSubrect(intermediate_buffer, read_buffer, bytes_per_pixel, src_width, src.height,
++    UnswizzleSubrect(intermediate_buffer, tmp_read_buffer, bytes_per_pixel, src_width, src.height,
+                      src.depth, src_x_offset, src.origin.y, x_elements, regs.line_count,
+                      src.block_size.height, src.block_size.depth, pitch);
+ 
+-    SwizzleSubrect(write_buffer, intermediate_buffer, bytes_per_pixel, dst_width, dst.height,
++    SwizzleSubrect(tmp_write_buffer, intermediate_buffer, bytes_per_pixel, dst_width, dst.height,
+                    dst.depth, dst_x_offset, dst.origin.y, x_elements, regs.line_count,
+                    dst.block_size.height, dst.block_size.depth, pitch);
+-
+-    memory_manager.WriteBlockCached(regs.offset_out, write_buffer.data(), dst_size);
+ }
+ 
+ void MaxwellDMA::ReleaseSemaphore() {
+diff --git a/src/video_core/engines/sw_blitter/blitter.cpp b/src/video_core/engines/sw_blitter/blitter.cpp
+index ff88cd03da8..3a599f46665 100644
+--- a/src/video_core/engines/sw_blitter/blitter.cpp
++++ b/src/video_core/engines/sw_blitter/blitter.cpp
+@@ -159,11 +159,11 @@ bool SoftwareBlitEngine::Blit(Fermi2D::Surface& src, Fermi2D::Surface& dst,
+     const auto src_bytes_per_pixel = BytesPerBlock(PixelFormatFromRenderTargetFormat(src.format));
+     const auto dst_bytes_per_pixel = BytesPerBlock(PixelFormatFromRenderTargetFormat(dst.format));
+     const size_t src_size = get_surface_size(src, src_bytes_per_pixel);
+-    impl->tmp_buffer.resize_destructive(src_size);
+-    memory_manager.ReadBlock(src.Address(), impl->tmp_buffer.data(), src_size);
+ 
+-    const size_t src_copy_size = src_extent_x * src_extent_y * src_bytes_per_pixel;
++    Core::Memory::GpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::SafeRead> tmp_buffer(
++        memory_manager, src.Address(), src_size, &impl->tmp_buffer);
+ 
++    const size_t src_copy_size = src_extent_x * src_extent_y * src_bytes_per_pixel;
+     const size_t dst_copy_size = dst_extent_x * dst_extent_y * dst_bytes_per_pixel;
+ 
+     impl->src_buffer.resize_destructive(src_copy_size);
+@@ -200,12 +200,11 @@ bool SoftwareBlitEngine::Blit(Fermi2D::Surface& src, Fermi2D::Surface& dst,
+ 
+     impl->dst_buffer.resize_destructive(dst_copy_size);
+     if (src.linear == Fermi2D::MemoryLayout::BlockLinear) {
+-        UnswizzleSubrect(impl->src_buffer, impl->tmp_buffer, src_bytes_per_pixel, src.width,
+-                         src.height, src.depth, config.src_x0, config.src_y0, src_extent_x,
+-                         src_extent_y, src.block_height, src.block_depth,
+-                         src_extent_x * src_bytes_per_pixel);
++        UnswizzleSubrect(impl->src_buffer, tmp_buffer, src_bytes_per_pixel, src.width, src.height,
++                         src.depth, config.src_x0, config.src_y0, src_extent_x, src_extent_y,
++                         src.block_height, src.block_depth, src_extent_x * src_bytes_per_pixel);
+     } else {
+-        process_pitch_linear(false, impl->tmp_buffer, impl->src_buffer, src_extent_x, src_extent_y,
++        process_pitch_linear(false, tmp_buffer, impl->src_buffer, src_extent_x, src_extent_y,
+                              src.pitch, config.src_x0, config.src_y0, src_bytes_per_pixel);
+     }
+ 
+@@ -221,20 +220,18 @@ bool SoftwareBlitEngine::Blit(Fermi2D::Surface& src, Fermi2D::Surface& dst,
+     }
+ 
+     const size_t dst_size = get_surface_size(dst, dst_bytes_per_pixel);
+-    impl->tmp_buffer.resize_destructive(dst_size);
+-    memory_manager.ReadBlock(dst.Address(), impl->tmp_buffer.data(), dst_size);
++    Core::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::SafeReadWrite>
++        tmp_buffer2(memory_manager, dst.Address(), dst_size, &impl->tmp_buffer);
+ 
+     if (dst.linear == Fermi2D::MemoryLayout::BlockLinear) {
+-        SwizzleSubrect(impl->tmp_buffer, impl->dst_buffer, dst_bytes_per_pixel, dst.width,
+-                       dst.height, dst.depth, config.dst_x0, config.dst_y0, dst_extent_x,
+-                       dst_extent_y, dst.block_height, dst.block_depth,
+-                       dst_extent_x * dst_bytes_per_pixel);
++        SwizzleSubrect(tmp_buffer2, impl->dst_buffer, dst_bytes_per_pixel, dst.width, dst.height,
++                       dst.depth, config.dst_x0, config.dst_y0, dst_extent_x, dst_extent_y,
++                       dst.block_height, dst.block_depth, dst_extent_x * dst_bytes_per_pixel);
+     } else {
+-        process_pitch_linear(true, impl->dst_buffer, impl->tmp_buffer, dst_extent_x, dst_extent_y,
++        process_pitch_linear(true, impl->dst_buffer, tmp_buffer2, dst_extent_x, dst_extent_y,
+                              dst.pitch, config.dst_x0, config.dst_y0,
+                              static_cast<size_t>(dst_bytes_per_pixel));
+     }
+-    memory_manager.WriteBlock(dst.Address(), impl->tmp_buffer.data(), dst_size);
+     return true;
+ }
+ 
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+index 45141e48833..d160406138f 100644
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -10,13 +10,13 @@
+ #include "core/device_memory.h"
+ #include "core/hle/kernel/k_page_table.h"
+ #include "core/hle/kernel/k_process.h"
+-#include "core/memory.h"
+ #include "video_core/invalidation_accumulator.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/renderer_base.h"
+ 
+ namespace Tegra {
++using Core::Memory::GuestMemoryFlags;
+ 
+ std::atomic<size_t> MemoryManager::unique_identifier_generator{};
+ 
+@@ -587,13 +587,10 @@ void MemoryManager::InvalidateRegion(GPUVAddr gpu_addr, size_t size,
+ 
+ void MemoryManager::CopyBlock(GPUVAddr gpu_dest_addr, GPUVAddr gpu_src_addr, std::size_t size,
+                               VideoCommon::CacheType which) {
+-    tmp_buffer.resize_destructive(size);
+-    ReadBlock(gpu_src_addr, tmp_buffer.data(), size, which);
+-
+-    // The output block must be flushed in case it has data modified from the GPU.
+-    // Fixes NPC geometry in Zombie Panic in Wonderland DX
++    Core::Memory::GpuGuestMemoryScoped<u8, GuestMemoryFlags::SafeReadWrite> data(
++        *this, gpu_src_addr, size);
++    data.SetAddressAndSize(gpu_dest_addr, size);
+     FlushRegion(gpu_dest_addr, size, which);
+-    WriteBlock(gpu_dest_addr, tmp_buffer.data(), size, which);
+ }
+ 
+ bool MemoryManager::IsGranularRange(GPUVAddr gpu_addr, std::size_t size) const {
+@@ -758,4 +755,23 @@ void MemoryManager::FlushCaching() {
+     accumulator->Clear();
+ }
+ 
++const u8* MemoryManager::GetSpan(const GPUVAddr src_addr, const std::size_t size) const {
++    auto cpu_addr = GpuToCpuAddress(src_addr);
++    if (cpu_addr) {
++        return memory.GetSpan(*cpu_addr, size);
++    }
++    return nullptr;
++}
++
++u8* MemoryManager::GetSpan(const GPUVAddr src_addr, const std::size_t size) {
++    if (!IsContinuousRange(src_addr, size)) {
++        return nullptr;
++    }
++    auto cpu_addr = GpuToCpuAddress(src_addr);
++    if (cpu_addr) {
++        return memory.GetSpan(*cpu_addr, size);
++    }
++    return nullptr;
++}
++
+ } // namespace Tegra
+diff --git a/src/video_core/memory_manager.h b/src/video_core/memory_manager.h
+index 4202c26ff1f..9b311b9e5f4 100644
+--- a/src/video_core/memory_manager.h
++++ b/src/video_core/memory_manager.h
+@@ -15,6 +15,7 @@
+ #include "common/range_map.h"
+ #include "common/scratch_buffer.h"
+ #include "common/virtual_buffer.h"
++#include "core/memory.h"
+ #include "video_core/cache_types.h"
+ #include "video_core/pte_kind.h"
+ 
+@@ -62,6 +63,20 @@ class MemoryManager final {
+     [[nodiscard]] u8* GetPointer(GPUVAddr addr);
+     [[nodiscard]] const u8* GetPointer(GPUVAddr addr) const;
+ 
++    template <typename T>
++    [[nodiscard]] T* GetPointer(GPUVAddr addr) {
++        const auto address{GpuToCpuAddress(addr)};
++        if (!address) {
++            return {};
++        }
++        return memory.GetPointer(*address);
++    }
++
++    template <typename T>
++    [[nodiscard]] const T* GetPointer(GPUVAddr addr) const {
++        return GetPointer<T*>(addr);
++    }
++
+     /**
+      * ReadBlock and WriteBlock are full read and write operations over virtual
+      * GPU Memory. It's important to use these when GPU memory may not be continuous
+@@ -139,6 +154,9 @@ class MemoryManager final {
+ 
+     void FlushCaching();
+ 
++    const u8* GetSpan(const GPUVAddr src_addr, const std::size_t size) const;
++    u8* GetSpan(const GPUVAddr src_addr, const std::size_t size);
++
+ private:
+     template <bool is_big_pages, typename FuncMapped, typename FuncReserved, typename FuncUnmapped>
+     inline void MemoryOperation(GPUVAddr gpu_src_addr, std::size_t size, FuncMapped&& func_mapped,
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 79f158db4fc..a1457798a94 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -8,6 +8,7 @@
+ 
+ #include "common/alignment.h"
+ #include "common/settings.h"
++#include "core/memory.h"
+ #include "video_core/control/channel_state.h"
+ #include "video_core/dirty_flags.h"
+ #include "video_core/engines/kepler_compute.h"
+@@ -1022,19 +1023,19 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging)
+         runtime.AccelerateImageUpload(image, staging, uploads);
+         return;
+     }
+-    const size_t guest_size_bytes = image.guest_size_bytes;
+-    swizzle_data_buffer.resize_destructive(guest_size_bytes);
+-    gpu_memory->ReadBlockUnsafe(gpu_addr, swizzle_data_buffer.data(), guest_size_bytes);
++
++    Core::Memory::GpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
++        *gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
+ 
+     if (True(image.flags & ImageFlagBits::Converted)) {
+         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
+-        auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data_buffer,
+-                                     unswizzle_data_buffer);
++        auto copies =
++            UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
+         ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
+         image.UploadMemory(staging, copies);
+     } else {
+         const auto copies =
+-            UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data_buffer, mapped_span);
++            UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span);
+         image.UploadMemory(staging, copies);
+     }
+ }
+@@ -1227,11 +1228,12 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
+     decode->image_id = image_id;
+     async_decodes.push_back(std::move(decode));
+ 
+-    Common::ScratchBuffer<u8> local_unswizzle_data_buffer(image.unswizzled_size_bytes);
+-    const size_t guest_size_bytes = image.guest_size_bytes;
+-    swizzle_data_buffer.resize_destructive(guest_size_bytes);
+-    gpu_memory->ReadBlockUnsafe(image.gpu_addr, swizzle_data_buffer.data(), guest_size_bytes);
+-    auto copies = UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, swizzle_data_buffer,
++    static Common::ScratchBuffer<u8> local_unswizzle_data_buffer;
++    local_unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
++    Core::Memory::GpuGuestMemory<u8, Core::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
++        *gpu_memory, image.gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
++
++    auto copies = UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, swizzle_data,
+                                  local_unswizzle_data_buffer);
+     const size_t out_size = MapSizeBytes(image);
+ 
+diff --git a/src/video_core/texture_cache/util.cpp b/src/video_core/texture_cache/util.cpp
+index 0de6ed09d93..a83f5d41cfe 100644
+--- a/src/video_core/texture_cache/util.cpp
++++ b/src/video_core/texture_cache/util.cpp
+@@ -20,6 +20,7 @@
+ #include "common/div_ceil.h"
+ #include "common/scratch_buffer.h"
+ #include "common/settings.h"
++#include "core/memory.h"
+ #include "video_core/compatible_formats.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/memory_manager.h"
+@@ -544,17 +545,15 @@ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
+                        tile_size.height, info.tile_width_spacing);
+     const size_t subresource_size = sizes[level];
+ 
+-    tmp_buffer.resize_destructive(subresource_size);
+-    const std::span<u8> dst(tmp_buffer);
+-
+     for (s32 layer = 0; layer < info.resources.layers; ++layer) {
+         const std::span<const u8> src = input.subspan(host_offset);
+-        gpu_memory.ReadBlockUnsafe(gpu_addr + guest_offset, dst.data(), dst.size_bytes());
+-
+-        SwizzleTexture(dst, src, bytes_per_block, num_tiles.width, num_tiles.height,
+-                       num_tiles.depth, block.height, block.depth);
++        {
++            Core::Memory::GpuGuestMemoryScoped<u8, Core::Memory::GuestMemoryFlags::UnsafeReadWrite>
++                dst(gpu_memory, gpu_addr + guest_offset, subresource_size, &tmp_buffer);
+ 
+-        gpu_memory.WriteBlockUnsafe(gpu_addr + guest_offset, dst.data(), dst.size_bytes());
++            SwizzleTexture(dst, src, bytes_per_block, num_tiles.width, num_tiles.height,
++                           num_tiles.depth, block.height, block.depth);
++        }
+ 
+         host_offset += host_bytes_per_layer;
+         guest_offset += layer_stride;
+@@ -837,6 +836,7 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
+     const Extent3D size = info.size;
+ 
+     if (info.type == ImageType::Linear) {
++        ASSERT(output.size_bytes() >= guest_size_bytes);
+         gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
+ 
+         ASSERT((info.pitch >> bpp_log2) << bpp_log2 == info.pitch);
+@@ -904,16 +904,6 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
+     return copies;
+ }
+ 
+-BufferCopy UploadBufferCopy(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr,
+-                            const ImageBase& image, std::span<u8> output) {
+-    gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), image.guest_size_bytes);
+-    return BufferCopy{
+-        .src_offset = 0,
+-        .dst_offset = 0,
+-        .size = image.guest_size_bytes,
+-    };
+-}
+-
+ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8> output,
+                   std::span<BufferImageCopy> copies) {
+     u32 output_offset = 0;
+diff --git a/src/video_core/texture_cache/util.h b/src/video_core/texture_cache/util.h
+index ab45a43c47a..5a0649d2435 100644
+--- a/src/video_core/texture_cache/util.h
++++ b/src/video_core/texture_cache/util.h
+@@ -66,9 +66,6 @@ struct OverlapResult {
+     Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
+     std::span<const u8> input, std::span<u8> output);
+ 
+-[[nodiscard]] BufferCopy UploadBufferCopy(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr,
+-                                          const ImageBase& image, std::span<u8> output);
+-
+ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8> output,
+                   std::span<BufferImageCopy> copies);
+ 

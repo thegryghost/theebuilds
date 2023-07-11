@@ -1,0 +1,15 @@
+diff --git a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+index a2ef0efa40e..42f3ee0b491 100644
+--- a/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
++++ b/src/video_core/vulkan_common/vulkan_memory_allocator.cpp
+@@ -221,8 +221,8 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo& ci) const {
+     const VmaAllocationCreateInfo alloc_ci = {
+         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
+         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+-        .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+-        .preferredFlags = 0,
++        .requiredFlags = 0,
++        .preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+         .memoryTypeBits = 0,
+         .pool = VK_NULL_HANDLE,
+         .pUserData = nullptr,

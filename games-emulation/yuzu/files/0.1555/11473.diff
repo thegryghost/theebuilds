@@ -1,0 +1,315 @@
+diff --git a/src/android/app/src/main/jni/native.cpp b/src/android/app/src/main/jni/native.cpp
+index 0f2a6d9e4ef..b9ecefa7459 100644
+--- a/src/android/app/src/main/jni/native.cpp
++++ b/src/android/app/src/main/jni/native.cpp
+@@ -270,6 +270,7 @@ class EmulationSession final {
+                                                        m_vulkan_library);
+ 
+         m_system.SetFilesystem(m_vfs);
++        m_system.GetUserChannel().clear();
+ 
+         // Initialize system.
+         jauto android_keyboard = std::make_unique<SoftwareKeyboard::AndroidKeyboard>();
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index e95ae80da1a..f075ae7fa2c 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -562,6 +562,8 @@ struct System::Impl {
+ 
+     std::array<Core::GPUDirtyMemoryManager, Core::Hardware::NUM_CPU_CORES>
+         gpu_dirty_memory_write_manager{};
++
++    std::deque<std::vector<u8>> user_channel;
+ };
+ 
+ System::System() : impl{std::make_unique<Impl>(*this)} {}
+@@ -1036,6 +1038,10 @@ void System::ExecuteProgram(std::size_t program_index) {
+     }
+ }
+ 
++std::deque<std::vector<u8>>& System::GetUserChannel() {
++    return impl->user_channel;
++}
++
+ void System::RegisterExitCallback(ExitCallback&& callback) {
+     impl->exit_callback = std::move(callback);
+ }
+diff --git a/src/core/core.h b/src/core/core.h
+index a9ff9315e33..fba3121257d 100644
+--- a/src/core/core.h
++++ b/src/core/core.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <cstddef>
++#include <deque>
+ #include <functional>
+ #include <memory>
+ #include <mutex>
+@@ -459,6 +460,12 @@ class System {
+      */
+     void ExecuteProgram(std::size_t program_index);
+ 
++    /**
++     * Gets a reference to the user channel stack.
++     * It is used to transfer data between programs.
++     */
++    [[nodiscard]] std::deque<std::vector<u8>>& GetUserChannel();
++
+     /// Type used for the frontend to designate a callback for System to exit the application.
+     using ExitCallback = std::function<void()>;
+ 
+diff --git a/src/core/hle/service/am/am.cpp b/src/core/hle/service/am/am.cpp
+index e92f400de25..f9c4f9678cf 100644
+--- a/src/core/hle/service/am/am.cpp
++++ b/src/core/hle/service/am/am.cpp
+@@ -46,7 +46,7 @@ constexpr Result ResultNoMessages{ErrorModule::AM, 3};
+ constexpr Result ResultInvalidOffset{ErrorModule::AM, 503};
+ 
+ enum class LaunchParameterKind : u32 {
+-    ApplicationSpecific = 1,
++    UserChannel = 1,
+     AccountPreselectedUser = 2,
+ };
+ 
+@@ -1518,27 +1518,26 @@ void IApplicationFunctions::PopLaunchParameter(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+     const auto kind = rp.PopEnum<LaunchParameterKind>();
+ 
+-    LOG_DEBUG(Service_AM, "called, kind={:08X}", kind);
+-
+-    if (kind == LaunchParameterKind::ApplicationSpecific && !launch_popped_application_specific) {
+-        const auto backend = BCAT::CreateBackendFromSettings(system, [this](u64 tid) {
+-            return system.GetFileSystemController().GetBCATDirectory(tid);
+-        });
+-        const auto build_id_full = system.GetApplicationProcessBuildID();
+-        u64 build_id{};
+-        std::memcpy(&build_id, build_id_full.data(), sizeof(u64));
+-
+-        auto data =
+-            backend->GetLaunchParameter({system.GetApplicationProcessProgramID(), build_id});
+-        if (data.has_value()) {
+-            IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-            rb.Push(ResultSuccess);
+-            rb.PushIpcInterface<IStorage>(system, std::move(*data));
+-            launch_popped_application_specific = true;
++    LOG_INFO(Service_AM, "called, kind={:08X}", kind);
++
++    if (kind == LaunchParameterKind::UserChannel) {
++        auto channel = system.GetUserChannel();
++        if (channel.empty()) {
++            LOG_ERROR(Service_AM, "Attempted to load launch parameter but none was found!");
++            IPC::ResponseBuilder rb{ctx, 2};
++            rb.Push(AM::ResultNoDataInChannel);
+             return;
+         }
++
++        auto data = channel.back();
++        channel.pop_back();
++
++        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
++        rb.Push(ResultSuccess);
++        rb.PushIpcInterface<IStorage>(system, std::move(data));
+     } else if (kind == LaunchParameterKind::AccountPreselectedUser &&
+                !launch_popped_account_preselect) {
++        // TODO: Verify this is hw-accurate
+         LaunchParameterAccountPreselectedUser params{};
+ 
+         params.magic = LAUNCH_PARAMETER_ACCOUNT_PRESELECTED_USER_MAGIC;
+@@ -1550,7 +1549,6 @@ void IApplicationFunctions::PopLaunchParameter(HLERequestContext& ctx) {
+         params.current_user = *uuid;
+ 
+         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-
+         rb.Push(ResultSuccess);
+ 
+         std::vector<u8> buffer(sizeof(LaunchParameterAccountPreselectedUser));
+@@ -1558,12 +1556,11 @@ void IApplicationFunctions::PopLaunchParameter(HLERequestContext& ctx) {
+ 
+         rb.PushIpcInterface<IStorage>(system, std::move(buffer));
+         launch_popped_account_preselect = true;
+-        return;
++    } else {
++        LOG_ERROR(Service_AM, "Unknown launch parameter kind.");
++        IPC::ResponseBuilder rb{ctx, 2};
++        rb.Push(AM::ResultNoDataInChannel);
+     }
+-
+-    LOG_ERROR(Service_AM, "Attempted to load launch parameter but none was found!");
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(AM::ResultNoDataInChannel);
+ }
+ 
+ void IApplicationFunctions::CreateApplicationAndRequestToStartForQuest(HLERequestContext& ctx) {
+@@ -1855,14 +1852,22 @@ void IApplicationFunctions::ExecuteProgram(HLERequestContext& ctx) {
+ }
+ 
+ void IApplicationFunctions::ClearUserChannel(HLERequestContext& ctx) {
+-    LOG_WARNING(Service_AM, "(STUBBED) called");
++    LOG_DEBUG(Service_AM, "called");
++
++    system.GetUserChannel().clear();
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+ }
+ 
+ void IApplicationFunctions::UnpopToUserChannel(HLERequestContext& ctx) {
+-    LOG_WARNING(Service_AM, "(STUBBED) called");
++    LOG_DEBUG(Service_AM, "called");
++
++    IPC::RequestParser rp{ctx};
++    const auto storage = rp.PopIpcInterface<IStorage>().lock();
++    if (storage) {
++        system.GetUserChannel().push_back(storage->GetData());
++    }
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+diff --git a/src/core/hle/service/am/am.h b/src/core/hle/service/am/am.h
+index d68998f0494..f75a665b252 100644
+--- a/src/core/hle/service/am/am.h
++++ b/src/core/hle/service/am/am.h
+@@ -339,7 +339,6 @@ class IApplicationFunctions final : public ServiceFramework<IApplicationFunction
+ 
+     KernelHelpers::ServiceContext service_context;
+ 
+-    bool launch_popped_application_specific = false;
+     bool launch_popped_account_preselect = false;
+     s32 previous_program_index{-1};
+     Kernel::KEvent* gpu_error_detected_event;
+diff --git a/src/yuzu/game_list.cpp b/src/yuzu/game_list.cpp
+index b5a02700d50..c29d762c2b8 100644
+--- a/src/yuzu/game_list.cpp
++++ b/src/yuzu/game_list.cpp
+@@ -588,10 +588,12 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
+         emit OpenFolderRequested(program_id, GameListOpenTarget::SaveData, path);
+     });
+     connect(start_game, &QAction::triggered, [this, path]() {
+-        emit BootGame(QString::fromStdString(path), 0, 0, StartGameType::Normal);
++        emit BootGame(QString::fromStdString(path), 0, 0, StartGameType::Normal,
++                      AmLaunchType::UserInitiated);
+     });
+     connect(start_game_global, &QAction::triggered, [this, path]() {
+-        emit BootGame(QString::fromStdString(path), 0, 0, StartGameType::Global);
++        emit BootGame(QString::fromStdString(path), 0, 0, StartGameType::Global,
++                      AmLaunchType::UserInitiated);
+     });
+     connect(open_mod_location, &QAction::triggered, [this, program_id, path]() {
+         emit OpenFolderRequested(program_id, GameListOpenTarget::ModData, path);
+diff --git a/src/yuzu/game_list.h b/src/yuzu/game_list.h
+index 6c2f75e53ed..45d6dee88c8 100644
+--- a/src/yuzu/game_list.h
++++ b/src/yuzu/game_list.h
+@@ -28,6 +28,7 @@ class GameListWorker;
+ class GameListSearchField;
+ class GameListDir;
+ class GMainWindow;
++enum class AmLaunchType;
+ enum class StartGameType;
+ 
+ namespace FileSys {
+@@ -103,7 +104,7 @@ class GameList : public QWidget {
+ 
+ signals:
+     void BootGame(const QString& game_path, u64 program_id, std::size_t program_index,
+-                  StartGameType type);
++                  StartGameType type, AmLaunchType launch_type);
+     void GameChosen(const QString& game_path, const u64 title_id = 0);
+     void ShouldCancelWorker();
+     void OpenFolderRequested(u64 program_id, GameListOpenTarget target,
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index 4e435c7e2a1..538174462f4 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -1698,7 +1698,8 @@ void GMainWindow::AllowOSSleep() {
+ #endif
+ }
+ 
+-bool GMainWindow::LoadROM(const QString& filename, u64 program_id, std::size_t program_index) {
++bool GMainWindow::LoadROM(const QString& filename, u64 program_id, std::size_t program_index,
++                          AmLaunchType launch_type) {
+     // Shutdown previous session if the emu thread is still active...
+     if (emu_thread != nullptr) {
+         ShutdownGame();
+@@ -1710,6 +1711,10 @@ bool GMainWindow::LoadROM(const QString& filename, u64 program_id, std::size_t p
+ 
+     system->SetFilesystem(vfs);
+ 
++    if (launch_type == AmLaunchType::UserInitiated) {
++        system->GetUserChannel().clear();
++    }
++
+     system->SetAppletFrontendSet({
+         std::make_unique<QtAmiiboSettings>(*this), // Amiibo Settings
+         (UISettings::values.controller_applet_disabled.GetValue() == true)
+@@ -1849,7 +1854,7 @@ void GMainWindow::ConfigureFilesystemProvider(const std::string& filepath) {
+ }
+ 
+ void GMainWindow::BootGame(const QString& filename, u64 program_id, std::size_t program_index,
+-                           StartGameType type) {
++                           StartGameType type, AmLaunchType launch_type) {
+     LOG_INFO(Frontend, "yuzu starting...");
+     StoreRecentFile(filename); // Put the filename on top of the list
+ 
+@@ -1893,7 +1898,7 @@ void GMainWindow::BootGame(const QString& filename, u64 program_id, std::size_t
+         }
+     }
+ 
+-    if (!LoadROM(filename, program_id, program_index)) {
++    if (!LoadROM(filename, program_id, program_index, launch_type)) {
+         return;
+     }
+ 
+@@ -3314,7 +3319,8 @@ void GMainWindow::OnLoadComplete() {
+ 
+ void GMainWindow::OnExecuteProgram(std::size_t program_index) {
+     ShutdownGame();
+-    BootGame(last_filename_booted, 0, program_index);
++    BootGame(last_filename_booted, 0, program_index, StartGameType::Normal,
++             AmLaunchType::ApplicationInitiated);
+ }
+ 
+ void GMainWindow::OnExit() {
+diff --git a/src/yuzu/main.h b/src/yuzu/main.h
+index 668dbc3b135..fd8b196c395 100644
+--- a/src/yuzu/main.h
++++ b/src/yuzu/main.h
+@@ -58,6 +58,11 @@ enum class StartGameType {
+     Global, // Only uses global configuration
+ };
+ 
++enum class AmLaunchType {
++    UserInitiated,
++    ApplicationInitiated,
++};
++
+ namespace Core {
+ enum class SystemResultStatus : u32;
+ class System;
+@@ -239,9 +244,11 @@ public slots:
+     void PreventOSSleep();
+     void AllowOSSleep();
+ 
+-    bool LoadROM(const QString& filename, u64 program_id, std::size_t program_index);
++    bool LoadROM(const QString& filename, u64 program_id, std::size_t program_index,
++                 AmLaunchType launch_type);
+     void BootGame(const QString& filename, u64 program_id = 0, std::size_t program_index = 0,
+-                  StartGameType with_config = StartGameType::Normal);
++                  StartGameType with_config = StartGameType::Normal,
++                  AmLaunchType launch_type = AmLaunchType::UserInitiated);
+     void ShutdownGame();
+ 
+     void ShowTelemetryCallout();
+diff --git a/src/yuzu_cmd/yuzu.cpp b/src/yuzu_cmd/yuzu.cpp
+index c1695cc6e40..55d0938f7e3 100644
+--- a/src/yuzu_cmd/yuzu.cpp
++++ b/src/yuzu_cmd/yuzu.cpp
+@@ -358,6 +358,7 @@ int main(int argc, char** argv) {
+     system.SetContentProvider(std::make_unique<FileSys::ContentProviderUnion>());
+     system.SetFilesystem(std::make_shared<FileSys::RealVfsFilesystem>());
+     system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
++    system.GetUserChannel().clear();
+ 
+     const Core::SystemResultStatus load_result{system.Load(*emu_window, filepath)};
+ 

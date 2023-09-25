@@ -1,0 +1,43 @@
+diff --git a/externals/ffmpeg/CMakeLists.txt b/externals/ffmpeg/CMakeLists.txt
+index 0a926e399085..f2886eb6c220 100644
+--- a/externals/ffmpeg/CMakeLists.txt
++++ b/externals/ffmpeg/CMakeLists.txt
+@@ -164,7 +164,7 @@ if (NOT WIN32 AND NOT ANDROID)
+                 --enable-decoder=h264
+                 --enable-decoder=vp8
+                 --enable-decoder=vp9
+-                --enable-filter=yadif
++                --enable-filter=yadif,scale
+                 --cc="${FFmpeg_CC}"
+                 --cxx="${FFmpeg_CXX}"
+                 ${FFmpeg_HWACCEL_FLAGS}
+@@ -254,7 +254,7 @@ elseif(ANDROID)
+     set(FFmpeg_INCLUDE_DIR "${FFmpeg_INCLUDE_DIR}" PARENT_SCOPE)
+ elseif(WIN32)
+     # Use yuzu FFmpeg binaries
+-    set(FFmpeg_EXT_NAME "ffmpeg-5.1.3")
++    set(FFmpeg_EXT_NAME "ffmpeg-6.0")
+     set(FFmpeg_PATH "${CMAKE_BINARY_DIR}/externals/${FFmpeg_EXT_NAME}")
+     download_bundled_external("ffmpeg/" ${FFmpeg_EXT_NAME} "")
+     set(FFmpeg_FOUND YES)
+diff --git a/src/video_core/host1x/codecs/codec.cpp b/src/video_core/host1x/codecs/codec.cpp
+index 220cce28ab8f..8d7da50fc0cf 100644
+--- a/src/video_core/host1x/codecs/codec.cpp
++++ b/src/video_core/host1x/codecs/codec.cpp
+@@ -319,6 +319,7 @@ void Codec::Decode() {
+         LOG_WARNING(Service_NVDRV, "Zero width or height in frame");
+         return;
+     }
++    bool is_interlaced = initial_frame->interlaced_frame != 0;
+     if (av_codec_ctx->hw_device_ctx) {
+         final_frame = AVFramePtr{av_frame_alloc(), AVFrameDeleter};
+         ASSERT_MSG(final_frame, "av_frame_alloc final_frame failed");
+@@ -334,7 +335,7 @@ void Codec::Decode() {
+         UNIMPLEMENTED_MSG("Unexpected video format: {}", final_frame->format);
+         return;
+     }
+-    if (!final_frame->interlaced_frame) {
++    if (!is_interlaced) {
+         av_frames.push(std::move(final_frame));
+     } else {
+         if (!filters_initialized) {

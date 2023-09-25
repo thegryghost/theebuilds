@@ -1,0 +1,402 @@
+diff --git a/src/core/loader/loader.cpp b/src/core/loader/loader.cpp
+index 07c65dc1a22..b6e355622ea 100644
+--- a/src/core/loader/loader.cpp
++++ b/src/core/loader/loader.cpp
+@@ -108,7 +108,7 @@ std::string GetFileTypeString(FileType type) {
+     return "unknown";
+ }
+ 
+-constexpr std::array<const char*, 66> RESULT_MESSAGES{
++constexpr std::array<const char*, 68> RESULT_MESSAGES{
+     "The operation completed successfully.",
+     "The loader requested to load is already loaded.",
+     "The operation is not implemented.",
+@@ -175,6 +175,8 @@ constexpr std::array<const char*, 66> RESULT_MESSAGES{
+     "The KIP BLZ decompression of the section failed unexpectedly.",
+     "The INI file has a bad header.",
+     "The INI file contains more than the maximum allowable number of KIP files.",
++    "Integrity verification could not be performed for this file.",
++    "Integrity verification failed.",
+ };
+ 
+ std::string GetResultStatusString(ResultStatus status) {
+diff --git a/src/core/loader/loader.h b/src/core/loader/loader.h
+index 721eb8e8c77..b4828f7cd1e 100644
+--- a/src/core/loader/loader.h
++++ b/src/core/loader/loader.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <functional>
+ #include <iosfwd>
+ #include <memory>
+ #include <optional>
+@@ -132,6 +133,8 @@ enum class ResultStatus : u16 {
+     ErrorBLZDecompressionFailed,
+     ErrorBadINIHeader,
+     ErrorINITooManyKIPs,
++    ErrorIntegrityVerificationNotImplemented,
++    ErrorIntegrityVerificationFailed,
+ };
+ 
+ std::string GetResultStatusString(ResultStatus status);
+@@ -169,6 +172,13 @@ class AppLoader {
+      */
+     virtual LoadResult Load(Kernel::KProcess& process, Core::System& system) = 0;
+ 
++    /**
++     * Try to verify the integrity of the file.
++     */
++    virtual ResultStatus VerifyIntegrity(std::function<bool(size_t, size_t)> progress_callback) {
++        return ResultStatus::ErrorIntegrityVerificationNotImplemented;
++    }
++
+     /**
+      * Get the code (typically .code section) of the application
+      *
+diff --git a/src/core/loader/nca.cpp b/src/core/loader/nca.cpp
+index 09d40e695dc..4feb6968aef 100644
+--- a/src/core/loader/nca.cpp
++++ b/src/core/loader/nca.cpp
+@@ -3,6 +3,8 @@
+ 
+ #include <utility>
+ 
++#include "common/hex_util.h"
++#include "common/scope_exit.h"
+ #include "core/core.h"
+ #include "core/file_sys/content_archive.h"
+ #include "core/file_sys/nca_metadata.h"
+@@ -12,6 +14,7 @@
+ #include "core/hle/service/filesystem/filesystem.h"
+ #include "core/loader/deconstructed_rom_directory.h"
+ #include "core/loader/nca.h"
++#include "mbedtls/sha256.h"
+ 
+ namespace Loader {
+ 
+@@ -80,6 +83,79 @@ AppLoader_NCA::LoadResult AppLoader_NCA::Load(Kernel::KProcess& process, Core::S
+     return load_result;
+ }
+ 
++ResultStatus AppLoader_NCA::VerifyIntegrity(std::function<bool(size_t, size_t)> progress_callback) {
++    using namespace Common::Literals;
++
++    constexpr size_t NcaFileNameWithHashLength = 36;
++    constexpr size_t NcaFileNameHashLength = 32;
++    constexpr size_t NcaSha256HashLength = 32;
++    constexpr size_t NcaSha256HalfHashLength = NcaSha256HashLength / 2;
++
++    // Get the file name.
++    const auto name = file->GetName();
++
++    // We won't try to verify meta NCAs.
++    if (name.ends_with(".cnmt.nca")) {
++        return ResultStatus::Success;
++    }
++
++    // Check if we can verify this file. NCAs should be named after their hashes.
++    if (!name.ends_with(".nca") || name.size() != NcaFileNameWithHashLength) {
++        LOG_WARNING(Loader, "Unable to validate NCA with name {}", name);
++        return ResultStatus::ErrorIntegrityVerificationNotImplemented;
++    }
++
++    // Get the expected truncated hash of the NCA.
++    const auto input_hash =
++        Common::HexStringToVector(file->GetName().substr(0, NcaFileNameHashLength), false);
++
++    // Declare buffer to read into.
++    std::vector<u8> buffer(4_MiB);
++
++    // Initialize sha256 verification context.
++    mbedtls_sha256_context ctx;
++    mbedtls_sha256_init(&ctx);
++    mbedtls_sha256_starts_ret(&ctx, 0);
++
++    // Ensure we maintain a clean state on exit.
++    SCOPE_EXIT({ mbedtls_sha256_free(&ctx); });
++
++    // Declare counters.
++    const size_t total_size = file->GetSize();
++    size_t processed_size = 0;
++
++    // Begin iterating the file.
++    while (processed_size < total_size) {
++        // Refill the buffer.
++        const size_t intended_read_size = std::min(buffer.size(), total_size - processed_size);
++        const size_t read_size = file->Read(buffer.data(), intended_read_size, processed_size);
++
++        // Update the hash function with the buffer contents.
++        mbedtls_sha256_update_ret(&ctx, buffer.data(), read_size);
++
++        // Update counters.
++        processed_size += read_size;
++
++        // Call the progress function.
++        if (!progress_callback(processed_size, total_size)) {
++            return ResultStatus::ErrorIntegrityVerificationFailed;
++        }
++    }
++
++    // Finalize context and compute the output hash.
++    std::array<u8, NcaSha256HashLength> output_hash;
++    mbedtls_sha256_finish_ret(&ctx, output_hash.data());
++
++    // Compare to expected.
++    if (std::memcmp(input_hash.data(), output_hash.data(), NcaSha256HalfHashLength) != 0) {
++        LOG_ERROR(Loader, "NCA hash mismatch detected for file {}", name);
++        return ResultStatus::ErrorIntegrityVerificationFailed;
++    }
++
++    // File verified.
++    return ResultStatus::Success;
++}
++
+ ResultStatus AppLoader_NCA::ReadRomFS(FileSys::VirtualFile& dir) {
+     if (nca == nullptr) {
+         return ResultStatus::ErrorNotInitialized;
+diff --git a/src/core/loader/nca.h b/src/core/loader/nca.h
+index cf356ce63bf..96779e27fc6 100644
+--- a/src/core/loader/nca.h
++++ b/src/core/loader/nca.h
+@@ -39,6 +39,8 @@ class AppLoader_NCA final : public AppLoader {
+ 
+     LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
+ 
++    ResultStatus VerifyIntegrity(std::function<bool(size_t, size_t)> progress_callback) override;
++
+     ResultStatus ReadRomFS(FileSys::VirtualFile& dir) override;
+     ResultStatus ReadProgramId(u64& out_program_id) override;
+ 
+diff --git a/src/core/loader/nsp.cpp b/src/core/loader/nsp.cpp
+index f9b2549a320..fe2af1ae6f0 100644
+--- a/src/core/loader/nsp.cpp
++++ b/src/core/loader/nsp.cpp
+@@ -117,6 +117,42 @@ AppLoader_NSP::LoadResult AppLoader_NSP::Load(Kernel::KProcess& process, Core::S
+     return result;
+ }
+ 
++ResultStatus AppLoader_NSP::VerifyIntegrity(std::function<bool(size_t, size_t)> progress_callback) {
++    // Extracted-type NSPs can't be verified.
++    if (nsp->IsExtractedType()) {
++        return ResultStatus::ErrorIntegrityVerificationNotImplemented;
++    }
++
++    // Get list of all NCAs.
++    const auto ncas = nsp->GetNCAsCollapsed();
++
++    size_t total_size = 0;
++    size_t processed_size = 0;
++
++    // Loop over NCAs, collecting the total size to verify.
++    for (const auto& nca : ncas) {
++        total_size += nca->GetBaseFile()->GetSize();
++    }
++
++    // Loop over NCAs again, verifying each.
++    for (const auto& nca : ncas) {
++        AppLoader_NCA loader_nca(nca->GetBaseFile());
++
++        const auto NcaProgressCallback = [&](size_t nca_processed_size, size_t nca_total_size) {
++            return progress_callback(processed_size + nca_processed_size, total_size);
++        };
++
++        const auto verification_result = loader_nca.VerifyIntegrity(NcaProgressCallback);
++        if (verification_result != ResultStatus::Success) {
++            return verification_result;
++        }
++
++        processed_size += nca->GetBaseFile()->GetSize();
++    }
++
++    return ResultStatus::Success;
++}
++
+ ResultStatus AppLoader_NSP::ReadRomFS(FileSys::VirtualFile& out_file) {
+     return secondary_loader->ReadRomFS(out_file);
+ }
+diff --git a/src/core/loader/nsp.h b/src/core/loader/nsp.h
+index 79df4586ac1..7ce436c67ea 100644
+--- a/src/core/loader/nsp.h
++++ b/src/core/loader/nsp.h
+@@ -45,6 +45,8 @@ class AppLoader_NSP final : public AppLoader {
+ 
+     LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
+ 
++    ResultStatus VerifyIntegrity(std::function<bool(size_t, size_t)> progress_callback) override;
++
+     ResultStatus ReadRomFS(FileSys::VirtualFile& out_file) override;
+     ResultStatus ReadUpdateRaw(FileSys::VirtualFile& out_file) override;
+     ResultStatus ReadProgramId(u64& out_program_id) override;
+diff --git a/src/core/loader/xci.cpp b/src/core/loader/xci.cpp
+index 3a76bc78888..12d72c38096 100644
+--- a/src/core/loader/xci.cpp
++++ b/src/core/loader/xci.cpp
+@@ -85,6 +85,40 @@ AppLoader_XCI::LoadResult AppLoader_XCI::Load(Kernel::KProcess& process, Core::S
+     return result;
+ }
+ 
++ResultStatus AppLoader_XCI::VerifyIntegrity(std::function<bool(size_t, size_t)> progress_callback) {
++    // Verify secure partition, as it is the only thing we can process.
++    auto secure_partition = xci->GetSecurePartitionNSP();
++
++    // Get list of all NCAs.
++    const auto ncas = secure_partition->GetNCAsCollapsed();
++
++    size_t total_size = 0;
++    size_t processed_size = 0;
++
++    // Loop over NCAs, collecting the total size to verify.
++    for (const auto& nca : ncas) {
++        total_size += nca->GetBaseFile()->GetSize();
++    }
++
++    // Loop over NCAs again, verifying each.
++    for (const auto& nca : ncas) {
++        AppLoader_NCA loader_nca(nca->GetBaseFile());
++
++        const auto NcaProgressCallback = [&](size_t nca_processed_size, size_t nca_total_size) {
++            return progress_callback(processed_size + nca_processed_size, total_size);
++        };
++
++        const auto verification_result = loader_nca.VerifyIntegrity(NcaProgressCallback);
++        if (verification_result != ResultStatus::Success) {
++            return verification_result;
++        }
++
++        processed_size += nca->GetBaseFile()->GetSize();
++    }
++
++    return ResultStatus::Success;
++}
++
+ ResultStatus AppLoader_XCI::ReadRomFS(FileSys::VirtualFile& out_file) {
+     return nca_loader->ReadRomFS(out_file);
+ }
+diff --git a/src/core/loader/xci.h b/src/core/loader/xci.h
+index ff05e6f6285..b02e136d3d6 100644
+--- a/src/core/loader/xci.h
++++ b/src/core/loader/xci.h
+@@ -45,6 +45,8 @@ class AppLoader_XCI final : public AppLoader {
+ 
+     LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
+ 
++    ResultStatus VerifyIntegrity(std::function<bool(size_t, size_t)> progress_callback) override;
++
+     ResultStatus ReadRomFS(FileSys::VirtualFile& out_file) override;
+     ResultStatus ReadUpdateRaw(FileSys::VirtualFile& out_file) override;
+     ResultStatus ReadProgramId(u64& out_program_id) override;
+diff --git a/src/yuzu/game_list.cpp b/src/yuzu/game_list.cpp
+index b5a02700d50..6842ced3e3c 100644
+--- a/src/yuzu/game_list.cpp
++++ b/src/yuzu/game_list.cpp
+@@ -557,6 +557,7 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
+     QMenu* dump_romfs_menu = context_menu.addMenu(tr("Dump RomFS"));
+     QAction* dump_romfs = dump_romfs_menu->addAction(tr("Dump RomFS"));
+     QAction* dump_romfs_sdmc = dump_romfs_menu->addAction(tr("Dump RomFS to SDMC"));
++    QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
+     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
+     QAction* navigate_to_gamedb_entry = context_menu.addAction(tr("Navigate to GameDB entry"));
+ #ifndef WIN32
+@@ -628,6 +629,8 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
+     connect(dump_romfs_sdmc, &QAction::triggered, [this, program_id, path]() {
+         emit DumpRomFSRequested(program_id, path, DumpRomFSTarget::SDMC);
+     });
++    connect(verify_integrity, &QAction::triggered,
++            [this, path]() { emit VerifyIntegrityRequested(path); });
+     connect(copy_tid, &QAction::triggered,
+             [this, program_id]() { emit CopyTIDRequested(program_id); });
+     connect(navigate_to_gamedb_entry, &QAction::triggered, [this, program_id]() {
+diff --git a/src/yuzu/game_list.h b/src/yuzu/game_list.h
+index 6c2f75e53ed..8aea646b24a 100644
+--- a/src/yuzu/game_list.h
++++ b/src/yuzu/game_list.h
+@@ -113,6 +113,7 @@ class GameList : public QWidget {
+     void RemoveFileRequested(u64 program_id, GameListRemoveTarget target,
+                              const std::string& game_path);
+     void DumpRomFSRequested(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
++    void VerifyIntegrityRequested(const std::string& game_path);
+     void CopyTIDRequested(u64 program_id);
+     void CreateShortcut(u64 program_id, const std::string& game_path,
+                         GameListShortcutTarget target);
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index f2e6c03f0d3..0bef1ebfef7 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -1447,6 +1447,8 @@ void GMainWindow::ConnectWidgetEvents() {
+             &GMainWindow::OnGameListRemoveInstalledEntry);
+     connect(game_list, &GameList::RemoveFileRequested, this, &GMainWindow::OnGameListRemoveFile);
+     connect(game_list, &GameList::DumpRomFSRequested, this, &GMainWindow::OnGameListDumpRomFS);
++    connect(game_list, &GameList::VerifyIntegrityRequested, this,
++            &GMainWindow::OnGameListVerifyIntegrity);
+     connect(game_list, &GameList::CopyTIDRequested, this, &GMainWindow::OnGameListCopyTID);
+     connect(game_list, &GameList::NavigateToGamedbEntryRequested, this,
+             &GMainWindow::OnGameListNavigateToGamedbEntry);
+@@ -2684,6 +2686,54 @@ void GMainWindow::OnGameListDumpRomFS(u64 program_id, const std::string& game_pa
+     }
+ }
+ 
++void GMainWindow::OnGameListVerifyIntegrity(const std::string& game_path) {
++    const auto NotImplemented = [this] {
++        QMessageBox::warning(this, tr("Integrity verification couldn't be performed!"),
++                             tr("File contents were not checked for validity."));
++    };
++    const auto Failed = [this] {
++        QMessageBox::critical(this, tr("Integrity verification failed!"),
++                              tr("File contents may be corrupt."));
++    };
++
++    const auto loader = Loader::GetLoader(*system, vfs->OpenFile(game_path, FileSys::Mode::Read));
++    if (loader == nullptr) {
++        NotImplemented();
++        return;
++    }
++
++    QProgressDialog progress(tr("Verifying integrity..."), tr("Cancel"), 0, 100, this);
++    progress.setWindowModality(Qt::WindowModal);
++    progress.setMinimumDuration(100);
++    progress.setAutoClose(false);
++    progress.setAutoReset(false);
++
++    const auto QtProgressCallback = [&](size_t processed_size, size_t total_size) {
++        if (progress.wasCanceled()) {
++            return false;
++        }
++
++        progress.setValue(static_cast<int>((processed_size * 100) / total_size));
++        return true;
++    };
++
++    const auto status = loader->VerifyIntegrity(QtProgressCallback);
++    if (progress.wasCanceled() ||
++        status == Loader::ResultStatus::ErrorIntegrityVerificationNotImplemented) {
++        NotImplemented();
++        return;
++    }
++
++    if (status == Loader::ResultStatus::ErrorIntegrityVerificationFailed) {
++        Failed();
++        return;
++    }
++
++    progress.close();
++    QMessageBox::information(this, tr("Integrity verification succeeded!"),
++                             tr("The operation completed successfully."));
++}
++
+ void GMainWindow::OnGameListCopyTID(u64 program_id) {
+     QClipboard* clipboard = QGuiApplication::clipboard();
+     clipboard->setText(QString::fromStdString(fmt::format("{:016X}", program_id)));
+diff --git a/src/yuzu/main.h b/src/yuzu/main.h
+index 668dbc3b135..1e4f6e477ee 100644
+--- a/src/yuzu/main.h
++++ b/src/yuzu/main.h
+@@ -313,6 +313,7 @@ private slots:
+     void OnGameListRemoveFile(u64 program_id, GameListRemoveTarget target,
+                               const std::string& game_path);
+     void OnGameListDumpRomFS(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
++    void OnGameListVerifyIntegrity(const std::string& game_path);
+     void OnGameListCopyTID(u64 program_id);
+     void OnGameListNavigateToGamedbEntry(u64 program_id,
+                                          const CompatibilityList& compatibility_list);

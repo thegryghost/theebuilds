@@ -1,0 +1,554 @@
+diff --git a/src/android/app/src/main/jni/config.cpp b/src/android/app/src/main/jni/config.cpp
+index 34b425cb45c..81120ab0f1b 100644
+--- a/src/android/app/src/main/jni/config.cpp
++++ b/src/android/app/src/main/jni/config.cpp
+@@ -282,7 +282,7 @@ void Config::ReadValues() {
+     std::stringstream ss(title_list);
+     std::string line;
+     while (std::getline(ss, line, '|')) {
+-        const auto title_id = std::stoul(line, nullptr, 16);
++        const auto title_id = std::strtoul(line.c_str(), nullptr, 16);
+         const auto disabled_list = config->Get("AddOns", "disabled_" + line, "");
+ 
+         std::stringstream inner_ss(disabled_list);
+diff --git a/src/common/settings_common.h b/src/common/settings_common.h
+index 5b170dfd5dd..067234aab05 100644
+--- a/src/common/settings_common.h
++++ b/src/common/settings_common.h
+@@ -225,6 +225,16 @@ class BasicSetting {
+      */
+     [[nodiscard]] virtual constexpr u32 EnumIndex() const = 0;
+ 
++    /**
++     * @returns True if the underlying type is a floating point storage
++     */
++    [[nodiscard]] virtual constexpr bool IsFloatingPoint() const = 0;
++
++    /**
++     * @returns True if the underlying type is a integer storage
++     */
++    [[nodiscard]] virtual constexpr bool IsIntegral() const = 0;
++
+     /*
+      * Switchable settings
+      */
+diff --git a/src/common/settings_setting.h b/src/common/settings_setting.h
+index e10843c73c6..7be6f26f7a5 100644
+--- a/src/common/settings_setting.h
++++ b/src/common/settings_setting.h
+@@ -10,6 +10,7 @@
+ #include <string>
+ #include <typeindex>
+ #include <typeinfo>
++#include <fmt/core.h>
+ #include "common/common_types.h"
+ #include "common/settings_common.h"
+ #include "common/settings_enums.h"
+@@ -115,8 +116,12 @@ class Setting : public BasicSetting {
+         } else if constexpr (std::is_same_v<Type, AudioEngine>) {
+             // Compatibility with old AudioEngine setting being a string
+             return CanonicalizeEnum(value_);
++        } else if constexpr (std::is_floating_point_v<Type>) {
++            return fmt::format("{:f}", value_);
++        } else if constexpr (std::is_enum_v<Type>) {
++            return std::to_string(static_cast<u32>(value_));
+         } else {
+-            return std::to_string(static_cast<u64>(value_));
++            return std::to_string(value_);
+         }
+     }
+ 
+@@ -180,13 +185,15 @@ class Setting : public BasicSetting {
+                 this->SetValue(static_cast<u32>(std::stoul(input)));
+             } else if constexpr (std::is_same_v<Type, bool>) {
+                 this->SetValue(input == "true");
+-            } else if constexpr (std::is_same_v<Type, AudioEngine>) {
+-                this->SetValue(ToEnum<Type>(input));
++            } else if constexpr (std::is_same_v<Type, float>) {
++                this->SetValue(std::stof(input));
+             } else {
+                 this->SetValue(static_cast<Type>(std::stoll(input)));
+             }
+         } catch (std::invalid_argument&) {
+             this->SetValue(this->GetDefault());
++        } catch (std::out_of_range&) {
++            this->SetValue(this->GetDefault());
+         }
+     }
+ 
+@@ -215,11 +222,27 @@ class Setting : public BasicSetting {
+         }
+     }
+ 
++    [[nodiscard]] constexpr bool IsFloatingPoint() const final {
++        return std::is_floating_point_v<Type>;
++    }
++
++    [[nodiscard]] constexpr bool IsIntegral() const final {
++        return std::is_integral_v<Type>;
++    }
++
+     [[nodiscard]] std::string MinVal() const override final {
+-        return this->ToString(minimum);
++        if constexpr (std::is_arithmetic_v<Type> && !ranged) {
++            return this->ToString(std::numeric_limits<Type>::min());
++        } else {
++            return this->ToString(minimum);
++        }
+     }
+     [[nodiscard]] std::string MaxVal() const override final {
+-        return this->ToString(maximum);
++        if constexpr (std::is_arithmetic_v<Type> && !ranged) {
++            return this->ToString(std::numeric_limits<Type>::max());
++        } else {
++            return this->ToString(maximum);
++        }
+     }
+ 
+     [[nodiscard]] constexpr bool Ranged() const override {
+diff --git a/src/core/crypto/key_manager.cpp b/src/core/crypto/key_manager.cpp
+index e13c5cdc7c7..43a3c5ffd6e 100644
+--- a/src/core/crypto/key_manager.cpp
++++ b/src/core/crypto/key_manager.cpp
+@@ -724,14 +724,14 @@ void KeyManager::LoadFromFile(const std::filesystem::path& file_path, bool is_ti
+                     continue;
+                 }
+ 
+-                const auto index = std::stoul(out[0].substr(8, 2), nullptr, 16);
++                const auto index = std::strtoul(out[0].substr(8, 2).c_str(), nullptr, 16);
+                 keyblobs[index] = Common::HexStringToArray<0x90>(out[1]);
+             } else if (out[0].compare(0, 18, "encrypted_keyblob_") == 0) {
+                 if (!ValidCryptoRevisionString(out[0], 18, 2)) {
+                     continue;
+                 }
+ 
+-                const auto index = std::stoul(out[0].substr(18, 2), nullptr, 16);
++                const auto index = std::strtoul(out[0].substr(18, 2).c_str(), nullptr, 16);
+                 encrypted_keyblobs[index] = Common::HexStringToArray<0xB0>(out[1]);
+             } else if (out[0].compare(0, 20, "eticket_extended_kek") == 0) {
+                 eticket_extended_kek = Common::HexStringToArray<576>(out[1]);
+@@ -750,7 +750,7 @@ void KeyManager::LoadFromFile(const std::filesystem::path& file_path, bool is_ti
+                     }
+                     if (out[0].compare(0, kv.second.size(), kv.second) == 0) {
+                         const auto index =
+-                            std::stoul(out[0].substr(kv.second.size(), 2), nullptr, 16);
++                            std::strtoul(out[0].substr(kv.second.size(), 2).c_str(), nullptr, 16);
+                         const auto sub = kv.first.second;
+                         if (sub == 0) {
+                             s128_keys[{kv.first.first, index, 0}] =
+@@ -770,7 +770,7 @@ void KeyManager::LoadFromFile(const std::filesystem::path& file_path, bool is_ti
+                     const auto& match = kak_names[j];
+                     if (out[0].compare(0, std::strlen(match), match) == 0) {
+                         const auto index =
+-                            std::stoul(out[0].substr(std::strlen(match), 2), nullptr, 16);
++                            std::strtoul(out[0].substr(std::strlen(match), 2).c_str(), nullptr, 16);
+                         s128_keys[{S128KeyType::KeyArea, index, j}] =
+                             Common::HexStringToArray<16>(out[1]);
+                     }
+diff --git a/src/core/file_sys/ips_layer.cpp b/src/core/file_sys/ips_layer.cpp
+index efdf18cee8f..7be1322cc10 100644
+--- a/src/core/file_sys/ips_layer.cpp
++++ b/src/core/file_sys/ips_layer.cpp
+@@ -165,7 +165,7 @@ static std::string EscapeStringSequences(std::string in) {
+ void IPSwitchCompiler::ParseFlag(const std::string& line) {
+     if (StartsWith(line, "@flag offset_shift ")) {
+         // Offset Shift Flag
+-        offset_shift = std::stoll(line.substr(19), nullptr, 0);
++        offset_shift = std::strtoll(line.substr(19).c_str(), nullptr, 0);
+     } else if (StartsWith(line, "@little-endian")) {
+         // Set values to read as little endian
+         is_little_endian = true;
+@@ -263,7 +263,7 @@ void IPSwitchCompiler::Parse() {
+                 // 11 - 8 hex digit offset + space + minimum two digit overwrite val
+                 if (patch_line.length() < 11)
+                     break;
+-                auto offset = std::stoul(patch_line.substr(0, 8), nullptr, 16);
++                auto offset = std::strtoul(patch_line.substr(0, 8).c_str(), nullptr, 16);
+                 offset += static_cast<unsigned long>(offset_shift);
+ 
+                 std::vector<u8> replace;
+diff --git a/src/core/memory/cheat_engine.cpp b/src/core/memory/cheat_engine.cpp
+index 7b52f61a7f8..a06e9916678 100644
+--- a/src/core/memory/cheat_engine.cpp
++++ b/src/core/memory/cheat_engine.cpp
+@@ -154,7 +154,7 @@ std::vector<CheatEntry> TextCheatParser::Parse(std::string_view data) const {
+                 return {};
+             }
+ 
+-            const auto value = static_cast<u32>(std::stoul(hex, nullptr, 0x10));
++            const auto value = static_cast<u32>(std::strtoul(hex.c_str(), nullptr, 0x10));
+             out[*current_entry].definition.opcodes[out[*current_entry].definition.num_opcodes++] =
+                 value;
+ 
+diff --git a/src/yuzu/configuration/configure_ui.cpp b/src/yuzu/configuration/configure_ui.cpp
+index 34ab0161710..a9fde9f4f34 100644
+--- a/src/yuzu/configuration/configure_ui.cpp
++++ b/src/yuzu/configuration/configure_ui.cpp
+@@ -4,6 +4,7 @@
+ #include "yuzu/configuration/configure_ui.h"
+ 
+ #include <array>
++#include <cstdlib>
+ #include <set>
+ #include <stdexcept>
+ #include <string>
+@@ -94,11 +95,7 @@ static void PopulateResolutionComboBox(QComboBox* screenshot_height, QWidget* pa
+ }
+ 
+ static u32 ScreenshotDimensionToInt(const QString& height) {
+-    try {
+-        return std::stoi(height.toStdString());
+-    } catch (std::invalid_argument&) {
+-        return 0;
+-    }
++    return std::strtoul(height.toUtf8(), nullptr, 0);
+ }
+ 
+ ConfigureUi::ConfigureUi(Core::System& system_, QWidget* parent)
+diff --git a/src/yuzu/configuration/shared_widget.cpp b/src/yuzu/configuration/shared_widget.cpp
+index d63093985b3..e5e071386b5 100644
+--- a/src/yuzu/configuration/shared_widget.cpp
++++ b/src/yuzu/configuration/shared_widget.cpp
+@@ -151,7 +151,7 @@ QWidget* Widget::CreateCombobox(std::function<std::string()>& serializer,
+         return -1;
+     };
+ 
+-    const u32 setting_value = std::stoi(setting.ToString());
++    const u32 setting_value = std::strtoul(setting.ToString().c_str(), nullptr, 0);
+     combobox->setCurrentIndex(find_index(setting_value));
+ 
+     serializer = [this, enumeration]() {
+@@ -160,7 +160,7 @@ QWidget* Widget::CreateCombobox(std::function<std::string()>& serializer,
+     };
+ 
+     restore_func = [this, find_index]() {
+-        const u32 global_value = std::stoi(RelevantDefault(setting));
++        const u32 global_value = std::strtoul(RelevantDefault(setting).c_str(), nullptr, 0);
+         combobox->setCurrentIndex(find_index(global_value));
+     };
+ 
+@@ -209,7 +209,7 @@ QWidget* Widget::CreateRadioGroup(std::function<std::string()>& serializer,
+         }
+     };
+ 
+-    const u32 setting_value = std::stoi(setting.ToString());
++    const u32 setting_value = std::strtoul(setting.ToString().c_str(), nullptr, 0);
+     set_index(setting_value);
+ 
+     serializer = [get_selected]() {
+@@ -218,7 +218,7 @@ QWidget* Widget::CreateRadioGroup(std::function<std::string()>& serializer,
+     };
+ 
+     restore_func = [this, set_index]() {
+-        const u32 global_value = std::stoi(RelevantDefault(setting));
++        const u32 global_value = std::strtoul(RelevantDefault(setting).c_str(), nullptr, 0);
+         set_index(global_value);
+     };
+ 
+@@ -255,6 +255,58 @@ QWidget* Widget::CreateLineEdit(std::function<std::string()>& serializer,
+     return line_edit;
+ }
+ 
++static void CreateIntSlider(Settings::BasicSetting& setting, bool reversed, float multiplier,
++                            QLabel* feedback, const QString& use_format, QSlider* slider,
++                            std::function<std::string()>& serializer,
++                            std::function<void()>& restore_func) {
++    int max_val = std::strtol(setting.MaxVal().c_str(), nullptr, 0);
++
++    const auto update_feedback = [=](int value) {
++        int present = (reversed ? max_val - value : value) * multiplier + 0.5f;
++        feedback->setText(use_format.arg(QVariant::fromValue(present).value<QString>()));
++    };
++
++    QObject::connect(slider, &QAbstractSlider::valueChanged, update_feedback);
++    update_feedback(std::strtol(setting.ToString().c_str(), nullptr, 0));
++
++    slider->setMinimum(std::strtol(setting.MinVal().c_str(), nullptr, 0));
++    slider->setMaximum(max_val);
++    slider->setValue(std::strtol(setting.ToString().c_str(), nullptr, 0));
++
++    serializer = [slider]() { return std::to_string(slider->value()); };
++    restore_func = [slider, &setting]() {
++        slider->setValue(std::strtol(RelevantDefault(setting).c_str(), nullptr, 0));
++    };
++}
++
++static void CreateFloatSlider(Settings::BasicSetting& setting, bool reversed, float multiplier,
++                              QLabel* feedback, const QString& use_format, QSlider* slider,
++                              std::function<std::string()>& serializer,
++                              std::function<void()>& restore_func) {
++    float max_val = std::strtof(setting.MaxVal().c_str(), nullptr);
++    float min_val = std::strtof(setting.MinVal().c_str(), nullptr);
++    float use_multiplier = multiplier == default_multiplier ? default_float_multiplier : multiplier;
++
++    const auto update_feedback = [=](float value) {
++        int present = (reversed ? max_val - value : value) + 0.5f;
++        feedback->setText(use_format.arg(QVariant::fromValue(present).value<QString>()));
++    };
++
++    QObject::connect(slider, &QAbstractSlider::valueChanged, update_feedback);
++    update_feedback(std::strtof(setting.ToString().c_str(), nullptr));
++
++    slider->setMinimum(min_val * use_multiplier);
++    slider->setMaximum(max_val * use_multiplier);
++    slider->setValue(std::strtof(setting.ToString().c_str(), nullptr) * use_multiplier);
++
++    serializer = [slider, use_multiplier]() {
++        return std::to_string(slider->value() / use_multiplier);
++    };
++    restore_func = [slider, &setting, use_multiplier]() {
++        slider->setValue(std::strtof(RelevantDefault(setting).c_str(), nullptr) * use_multiplier);
++    };
++}
++
+ QWidget* Widget::CreateSlider(bool reversed, float multiplier, const QString& given_suffix,
+                               std::function<std::string()>& serializer,
+                               std::function<void()>& restore_func,
+@@ -278,27 +330,20 @@ QWidget* Widget::CreateSlider(bool reversed, float multiplier, const QString& gi
+ 
+     layout->setContentsMargins(0, 0, 0, 0);
+ 
+-    int max_val = std::stoi(setting.MaxVal());
+-
+     QString suffix =
+         given_suffix == QStringLiteral("") ? DefaultSuffix(this, setting) : given_suffix;
+ 
+     const QString use_format = QStringLiteral("%1").append(suffix);
+ 
+-    QObject::connect(slider, &QAbstractSlider::valueChanged, [=](int value) {
+-        int present = (reversed ? max_val - value : value) * multiplier + 0.5f;
+-        feedback->setText(use_format.arg(QVariant::fromValue(present).value<QString>()));
+-    });
+-
+-    slider->setMinimum(std::stoi(setting.MinVal()));
+-    slider->setMaximum(max_val);
+-    slider->setValue(std::stoi(setting.ToString()));
++    if (setting.IsIntegral()) {
++        CreateIntSlider(setting, reversed, multiplier, feedback, use_format, slider, serializer,
++                        restore_func);
++    } else {
++        CreateFloatSlider(setting, reversed, multiplier, feedback, use_format, slider, serializer,
++                          restore_func);
++    }
+ 
+     slider->setInvertedAppearance(reversed);
+-    slider->setInvertedControls(reversed);
+-
+-    serializer = [this]() { return std::to_string(slider->value()); };
+-    restore_func = [this]() { slider->setValue(std::stoi(RelevantDefault(setting))); };
+ 
+     if (!Settings::IsConfiguringGlobal()) {
+         QObject::connect(slider, &QAbstractSlider::actionTriggered, [touch]() { touch(); });
+@@ -311,11 +356,9 @@ QWidget* Widget::CreateSpinBox(const QString& given_suffix,
+                                std::function<std::string()>& serializer,
+                                std::function<void()>& restore_func,
+                                const std::function<void()>& touch) {
+-    const int min_val =
+-        setting.Ranged() ? std::stoi(setting.MinVal()) : std::numeric_limits<int>::min();
+-    const int max_val =
+-        setting.Ranged() ? std::stoi(setting.MaxVal()) : std::numeric_limits<int>::max();
+-    const int default_val = std::stoi(setting.ToString());
++    const auto min_val = std::strtol(setting.MinVal().c_str(), nullptr, 0);
++    const auto max_val = std::strtol(setting.MaxVal().c_str(), nullptr, 0);
++    const auto default_val = std::strtol(setting.ToString().c_str(), nullptr, 0);
+ 
+     QString suffix =
+         given_suffix == QStringLiteral("") ? DefaultSuffix(this, setting) : given_suffix;
+@@ -329,13 +372,13 @@ QWidget* Widget::CreateSpinBox(const QString& given_suffix,
+     serializer = [this]() { return std::to_string(spinbox->value()); };
+ 
+     restore_func = [this]() {
+-        auto value{std::stol(RelevantDefault(setting))};
++        auto value{std::strtol(RelevantDefault(setting).c_str(), nullptr, 0)};
+         spinbox->setValue(value);
+     };
+ 
+     if (!Settings::IsConfiguringGlobal()) {
+         QObject::connect(spinbox, QOverload<int>::of(&QSpinBox::valueChanged), [this, touch]() {
+-            if (spinbox->value() != std::stoi(setting.ToStringGlobal())) {
++            if (spinbox->value() != std::strtol(setting.ToStringGlobal().c_str(), nullptr, 0)) {
+                 touch();
+             }
+         });
+@@ -344,6 +387,43 @@ QWidget* Widget::CreateSpinBox(const QString& given_suffix,
+     return spinbox;
+ }
+ 
++QWidget* Widget::CreateDoubleSpinBox(const QString& given_suffix,
++                                     std::function<std::string()>& serializer,
++                                     std::function<void()>& restore_func,
++                                     const std::function<void()>& touch) {
++    const auto min_val = std::strtod(setting.MinVal().c_str(), nullptr);
++    const auto max_val = std::strtod(setting.MaxVal().c_str(), nullptr);
++    const auto default_val = std::strtod(setting.ToString().c_str(), nullptr);
++
++    QString suffix =
++        given_suffix == QStringLiteral("") ? DefaultSuffix(this, setting) : given_suffix;
++
++    double_spinbox = new QDoubleSpinBox(this);
++    double_spinbox->setRange(min_val, max_val);
++    double_spinbox->setValue(default_val);
++    double_spinbox->setSuffix(suffix);
++    double_spinbox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
++
++    serializer = [this]() { return fmt::format("{:f}", double_spinbox->value()); };
++
++    restore_func = [this]() {
++        auto value{std::strtod(RelevantDefault(setting).c_str(), nullptr)};
++        double_spinbox->setValue(value);
++    };
++
++    if (!Settings::IsConfiguringGlobal()) {
++        QObject::connect(double_spinbox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
++                         [this, touch]() {
++                             if (double_spinbox->value() !=
++                                 std::strtod(setting.ToStringGlobal().c_str(), nullptr)) {
++                                 touch();
++                             }
++                         });
++    }
++
++    return double_spinbox;
++}
++
+ QWidget* Widget::CreateHexEdit(std::function<std::string()>& serializer,
+                                std::function<void()>& restore_func,
+                                const std::function<void()>& touch) {
+@@ -353,7 +433,8 @@ QWidget* Widget::CreateHexEdit(std::function<std::string()>& serializer,
+     }
+ 
+     auto to_hex = [=](const std::string& input) {
+-        return QString::fromStdString(fmt::format("{:08x}", std::stoul(input)));
++        return QString::fromStdString(
++            fmt::format("{:08x}", std::strtoul(input.c_str(), nullptr, 0)));
+     };
+ 
+     QRegularExpressionValidator* regex = new QRegularExpressionValidator(
+@@ -366,7 +447,7 @@ QWidget* Widget::CreateHexEdit(std::function<std::string()>& serializer,
+     line_edit->setValidator(regex);
+ 
+     auto hex_to_dec = [this]() -> std::string {
+-        return std::to_string(std::stoul(line_edit->text().toStdString(), nullptr, 16));
++        return std::to_string(std::strtoul(line_edit->text().toStdString().c_str(), nullptr, 16));
+     };
+ 
+     serializer = [hex_to_dec]() { return hex_to_dec(); };
+@@ -386,7 +467,8 @@ QWidget* Widget::CreateDateTimeEdit(bool disabled, bool restrict,
+                                     std::function<void()>& restore_func,
+                                     const std::function<void()>& touch) {
+     const long long current_time = QDateTime::currentSecsSinceEpoch();
+-    const s64 the_time = disabled ? current_time : std::stoll(setting.ToString());
++    const s64 the_time =
++        disabled ? current_time : std::strtoll(setting.ToString().c_str(), nullptr, 0);
+     const auto default_val = QDateTime::fromSecsSinceEpoch(the_time);
+ 
+     date_time_edit = new QDateTimeEdit(this);
+@@ -399,7 +481,7 @@ QWidget* Widget::CreateDateTimeEdit(bool disabled, bool restrict,
+     auto get_clear_val = [this, restrict, current_time]() {
+         return QDateTime::fromSecsSinceEpoch([this, restrict, current_time]() {
+             if (restrict && checkbox->checkState() == Qt::Checked) {
+-                return std::stoll(RelevantDefault(setting));
++                return std::strtoll(RelevantDefault(setting).c_str(), nullptr, 0);
+             }
+             return current_time;
+         }());
+@@ -506,8 +588,7 @@ void Widget::SetupComponent(const QString& label, std::function<void()>& load_fu
+         } else {
+             data_component = CreateCombobox(serializer, restore_func, touch);
+         }
+-    } else if (type == typeid(u32) || type == typeid(int) || type == typeid(u16) ||
+-               type == typeid(s64) || type == typeid(u8)) {
++    } else if (setting.IsIntegral()) {
+         switch (request) {
+         case RequestType::Slider:
+         case RequestType::ReverseSlider:
+@@ -534,6 +615,20 @@ void Widget::SetupComponent(const QString& label, std::function<void()>& load_fu
+         default:
+             UNIMPLEMENTED();
+         }
++    } else if (setting.IsFloatingPoint()) {
++        switch (request) {
++        case RequestType::Default:
++        case RequestType::SpinBox:
++            data_component = CreateDoubleSpinBox(suffix, serializer, restore_func, touch);
++            break;
++        case RequestType::Slider:
++        case RequestType::ReverseSlider:
++            data_component = CreateSlider(request == RequestType::ReverseSlider, multiplier, suffix,
++                                          serializer, restore_func, touch);
++            break;
++        default:
++            UNIMPLEMENTED();
++        }
+     } else if (type == typeid(std::string)) {
+         switch (request) {
+         case RequestType::Default:
+diff --git a/src/yuzu/configuration/shared_widget.h b/src/yuzu/configuration/shared_widget.h
+index 5303dd898d1..86edaacc88a 100644
+--- a/src/yuzu/configuration/shared_widget.h
++++ b/src/yuzu/configuration/shared_widget.h
+@@ -22,6 +22,7 @@ class QObject;
+ class QPushButton;
+ class QSlider;
+ class QSpinBox;
++class QDoubleSpinBox;
+ class QRadioButton;
+ 
+ namespace Settings {
+@@ -43,6 +44,9 @@ enum class RequestType {
+     MaxEnum,
+ };
+ 
++constexpr const float default_multiplier{1.f};
++constexpr const float default_float_multiplier{100.f};
++
+ class Widget : public QWidget {
+     Q_OBJECT
+ 
+@@ -89,6 +93,7 @@ class Widget : public QWidget {
+     QPushButton* restore_button{}; ///< Restore button for custom configurations
+     QLineEdit* line_edit{};        ///< QLineEdit, used for LineEdit and HexEdit
+     QSpinBox* spinbox{};
++    QDoubleSpinBox* double_spinbox{};
+     QCheckBox* checkbox{};
+     QSlider* slider{};
+     QComboBox* combobox{};
+@@ -126,6 +131,9 @@ class Widget : public QWidget {
+                                 const std::function<void()>& touch);
+     QWidget* CreateSpinBox(const QString& suffix, std::function<std::string()>& serializer,
+                            std::function<void()>& restore_func, const std::function<void()>& touch);
++    QWidget* CreateDoubleSpinBox(const QString& suffix, std::function<std::string()>& serializer,
++                                 std::function<void()>& restore_func,
++                                 const std::function<void()>& touch);
+ 
+     QWidget* parent;
+     const TranslationMap& translations;
+diff --git a/src/yuzu_cmd/config.cpp b/src/yuzu_cmd/config.cpp
+index c42d987090a..0d25ff40019 100644
+--- a/src/yuzu_cmd/config.cpp
++++ b/src/yuzu_cmd/config.cpp
+@@ -259,7 +259,7 @@ void Config::ReadValues() {
+     std::stringstream ss(title_list);
+     std::string line;
+     while (std::getline(ss, line, '|')) {
+-        const auto title_id = std::stoul(line, nullptr, 16);
++        const auto title_id = std::strtoul(line.c_str(), nullptr, 16);
+         const auto disabled_list = sdl2_config->Get("AddOns", "disabled_" + line, "");
+ 
+         std::stringstream inner_ss(disabled_list);
+diff --git a/src/yuzu_cmd/yuzu.cpp b/src/yuzu_cmd/yuzu.cpp
+index 55d0938f7e3..087cfaa26e9 100644
+--- a/src/yuzu_cmd/yuzu.cpp
++++ b/src/yuzu_cmd/yuzu.cpp
+@@ -264,8 +264,9 @@ int main(int argc, char** argv) {
+                 nickname = match[1];
+                 password = match[2];
+                 address = match[3];
+-                if (!match[4].str().empty())
+-                    port = static_cast<u16>(std::stoi(match[4]));
++                if (!match[4].str().empty()) {
++                    port = static_cast<u16>(std::strtoul(match[4].str().c_str(), nullptr, 0));
++                }
+                 std::regex nickname_re("^[a-zA-Z0-9._\\- ]+$");
+                 if (!std::regex_match(nickname, nickname_re)) {
+                     std::cout

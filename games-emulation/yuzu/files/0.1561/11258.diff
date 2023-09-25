@@ -1,0 +1,13 @@
+diff --git a/src/video_core/texture_cache/format_lookup_table.cpp b/src/video_core/texture_cache/format_lookup_table.cpp
+index 11ced6c38b8..56307d03092 100644
+--- a/src/video_core/texture_cache/format_lookup_table.cpp
++++ b/src/video_core/texture_cache/format_lookup_table.cpp
+@@ -140,6 +140,8 @@ PixelFormat PixelFormatFromTextureInfo(TextureFormat format, ComponentType red,
+         return PixelFormat::D32_FLOAT;
+     case Hash(TextureFormat::Z16, UNORM):
+         return PixelFormat::D16_UNORM;
++    case Hash(TextureFormat::Z16, UNORM, UINT, UINT, UINT, LINEAR):
++        return PixelFormat::D16_UNORM;
+     case Hash(TextureFormat::Z24S8, UINT, UNORM, UNORM, UNORM, LINEAR):
+         return PixelFormat::S8_UINT_D24_UNORM;
+     case Hash(TextureFormat::Z24S8, UINT, UNORM, UINT, UINT, LINEAR):

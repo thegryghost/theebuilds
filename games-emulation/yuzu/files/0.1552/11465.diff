@@ -1,0 +1,96 @@
+diff --git a/src/audio_core/adsp/apps/audio_renderer/audio_renderer.cpp b/src/audio_core/adsp/apps/audio_renderer/audio_renderer.cpp
+index 3da342ea3eb..2e549bc6f50 100644
+--- a/src/audio_core/adsp/apps/audio_renderer/audio_renderer.cpp
++++ b/src/audio_core/adsp/apps/audio_renderer/audio_renderer.cpp
+@@ -88,8 +88,13 @@ MailboxMessage AudioRenderer::Receive(Direction dir, bool block) {
+     return mailbox.Receive(dir, block);
+ }
+ 
+-void AudioRenderer::SetCommandBuffer(s32 session_id, CommandBuffer& buffer) noexcept {
+-    command_buffers[session_id] = buffer;
++void AudioRenderer::SetCommandBuffer(s32 session_id, CpuAddr buffer, u64 size, u64 time_limit,
++                                     u64 applet_resource_user_id, bool reset) noexcept {
++    command_buffers[session_id].buffer = buffer;
++    command_buffers[session_id].size = size;
++    command_buffers[session_id].time_limit = time_limit;
++    command_buffers[session_id].applet_resource_user_id = applet_resource_user_id;
++    command_buffers[session_id].reset_buffer = reset;
+ }
+ 
+ u32 AudioRenderer::GetRemainCommandCount(s32 session_id) const noexcept {
+diff --git a/src/audio_core/adsp/apps/audio_renderer/audio_renderer.h b/src/audio_core/adsp/apps/audio_renderer/audio_renderer.h
+index b225e10fbf0..3f5b7dca2ae 100644
+--- a/src/audio_core/adsp/apps/audio_renderer/audio_renderer.h
++++ b/src/audio_core/adsp/apps/audio_renderer/audio_renderer.h
+@@ -75,7 +75,8 @@ class AudioRenderer {
+     void Send(Direction dir, MailboxMessage message);
+     MailboxMessage Receive(Direction dir, bool block = true);
+ 
+-    void SetCommandBuffer(s32 session_id, CommandBuffer& buffer) noexcept;
++    void SetCommandBuffer(s32 session_id, CpuAddr buffer, u64 size, u64 time_limit,
++                          u64 applet_resource_user_id, bool reset) noexcept;
+     u32 GetRemainCommandCount(s32 session_id) const noexcept;
+     void ClearRemainCommandCount(s32 session_id) noexcept;
+     u64 GetRenderingStartTick(s32 session_id) const noexcept;
+diff --git a/src/audio_core/adsp/apps/audio_renderer/command_list_processor.cpp b/src/audio_core/adsp/apps/audio_renderer/command_list_processor.cpp
+index acbc9100c7c..24e4d04962e 100644
+--- a/src/audio_core/adsp/apps/audio_renderer/command_list_processor.cpp
++++ b/src/audio_core/adsp/apps/audio_renderer/command_list_processor.cpp
+@@ -37,11 +37,6 @@ u32 CommandListProcessor::GetRemainingCommandCount() const {
+     return command_count - processed_command_count;
+ }
+ 
+-void CommandListProcessor::SetBuffer(const CpuAddr buffer, const u64 size) {
+-    commands = reinterpret_cast<u8*>(buffer + sizeof(Renderer::CommandListHeader));
+-    commands_buffer_size = size;
+-}
+-
+ Sink::SinkStream* CommandListProcessor::GetOutputSinkStream() const {
+     return stream;
+ }
+diff --git a/src/audio_core/adsp/apps/audio_renderer/command_list_processor.h b/src/audio_core/adsp/apps/audio_renderer/command_list_processor.h
+index 9d6fe185116..4e5fb793e94 100644
+--- a/src/audio_core/adsp/apps/audio_renderer/command_list_processor.h
++++ b/src/audio_core/adsp/apps/audio_renderer/command_list_processor.h
+@@ -56,14 +56,6 @@ class CommandListProcessor {
+      */
+     u32 GetRemainingCommandCount() const;
+ 
+-    /**
+-     * Set the command buffer.
+-     *
+-     * @param buffer - The buffer to use.
+-     * @param size   - The size of the buffer.
+-     */
+-    void SetBuffer(CpuAddr buffer, u64 size);
+-
+     /**
+      * Get the stream for this command list.
+      *
+diff --git a/src/audio_core/renderer/system.cpp b/src/audio_core/renderer/system.cpp
+index 8f02754c52a..d29754634e1 100644
+--- a/src/audio_core/renderer/system.cpp
++++ b/src/audio_core/renderer/system.cpp
+@@ -609,17 +609,11 @@ void System::SendCommandToDsp() {
+                 time_limit_percent = 70.0f;
+             }
+ 
+-            AudioRenderer::CommandBuffer command_buffer{
+-                .buffer{translated_addr},
+-                .size{command_size},
+-                .time_limit{
+-                    static_cast<u64>((time_limit_percent / 100) * 2'880'000.0 *
+-                                     (static_cast<f32>(render_time_limit_percent) / 100.0f))},
+-                .applet_resource_user_id{applet_resource_user_id},
+-                .reset_buffer{reset_command_buffers},
+-            };
+-
+-            audio_renderer.SetCommandBuffer(session_id, command_buffer);
++            auto time_limit{
++                static_cast<u64>((time_limit_percent / 100) * 2'880'000.0 *
++                                 (static_cast<f32>(render_time_limit_percent) / 100.0f))};
++            audio_renderer.SetCommandBuffer(session_id, translated_addr, command_size, time_limit,
++                                            applet_resource_user_id, reset_command_buffers);
+             reset_command_buffers = false;
+             command_buffer_size = command_size;
+             if (remaining_command_count == 0) {

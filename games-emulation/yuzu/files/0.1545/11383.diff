@@ -1,0 +1,365 @@
+diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/move_special_register.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/move_special_register.cpp
+index 753c620984ab..e593132e61d2 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate/impl/move_special_register.cpp
++++ b/src/shader_recompiler/frontend/maxwell/translate/impl/move_special_register.cpp
+@@ -161,7 +161,8 @@ enum class SpecialRegister : u64 {
+         LOG_WARNING(Shader, "(STUBBED) SR_AFFINITY");
+         return ir.Imm32(0); // This is the default value hardware returns.
+     default:
+-        throw NotImplementedException("S2R special register {}", special_register);
++        LOG_CRITICAL(Shader, "(STUBBED) Special register {}", special_register);
++        return ir.Imm32(0); // This is the default value hardware returns.
+     }
+ }
+ } // Anonymous namespace
+diff --git a/src/video_core/dma_pusher.cpp b/src/video_core/dma_pusher.cpp
+index 9f1b340a952b..58ce0d8c20a1 100644
+--- a/src/video_core/dma_pusher.cpp
++++ b/src/video_core/dma_pusher.cpp
+@@ -14,6 +14,7 @@
+ namespace Tegra {
+ 
+ constexpr u32 MacroRegistersStart = 0xE00;
++constexpr u32 ComputeInline = 0x6D;
+ 
+ DmaPusher::DmaPusher(Core::System& system_, GPU& gpu_, MemoryManager& memory_manager_,
+                      Control::ChannelState& channel_state_)
+@@ -83,12 +84,35 @@ bool DmaPusher::Step() {
+                     dma_state.dma_get, command_list_header.size * sizeof(u32));
+             }
+         }
+-        Core::Memory::GpuGuestMemory<Tegra::CommandHeader,
+-                                     Core::Memory::GuestMemoryFlags::UnsafeRead>
+-            headers(memory_manager, dma_state.dma_get, command_list_header.size, &command_headers);
+-        ProcessCommands(headers);
++        const auto safe_process = [&] {
++            Core::Memory::GpuGuestMemory<Tegra::CommandHeader,
++                                         Core::Memory::GuestMemoryFlags::SafeRead>
++                headers(memory_manager, dma_state.dma_get, command_list_header.size,
++                        &command_headers);
++            ProcessCommands(headers);
++        };
++        const auto unsafe_process = [&] {
++            Core::Memory::GpuGuestMemory<Tegra::CommandHeader,
++                                         Core::Memory::GuestMemoryFlags::UnsafeRead>
++                headers(memory_manager, dma_state.dma_get, command_list_header.size,
++                        &command_headers);
++            ProcessCommands(headers);
++        };
++        if (Settings::IsGPULevelHigh()) {
++            if (dma_state.method >= MacroRegistersStart) {
++                unsafe_process();
++                return true;
++            }
++            if (subchannel_type[dma_state.subchannel] == Engines::EngineTypes::KeplerCompute &&
++                dma_state.method == ComputeInline) {
++                unsafe_process();
++                return true;
++            }
++            safe_process();
++            return true;
++        }
++        unsafe_process();
+     }
+-
+     return true;
+ }
+ 
+diff --git a/src/video_core/dma_pusher.h b/src/video_core/dma_pusher.h
+index 8a2784cdca60..c9fab2d9038b 100644
+--- a/src/video_core/dma_pusher.h
++++ b/src/video_core/dma_pusher.h
+@@ -130,8 +130,10 @@ class DmaPusher final {
+ 
+     void DispatchCalls();
+ 
+-    void BindSubchannel(Engines::EngineInterface* engine, u32 subchannel_id) {
++    void BindSubchannel(Engines::EngineInterface* engine, u32 subchannel_id,
++                        Engines::EngineTypes engine_type) {
+         subchannels[subchannel_id] = engine;
++        subchannel_type[subchannel_id] = engine_type;
+     }
+ 
+     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
+@@ -170,6 +172,7 @@ class DmaPusher final {
+     const bool ib_enable{true}; ///< IB mode enabled
+ 
+     std::array<Engines::EngineInterface*, max_subchannels> subchannels{};
++    std::array<Engines::EngineTypes, max_subchannels> subchannel_type;
+ 
+     GPU& gpu;
+     Core::System& system;
+diff --git a/src/video_core/engines/engine_interface.h b/src/video_core/engines/engine_interface.h
+index 39232235892c..54631ee6cc24 100644
+--- a/src/video_core/engines/engine_interface.h
++++ b/src/video_core/engines/engine_interface.h
+@@ -11,6 +11,14 @@
+ 
+ namespace Tegra::Engines {
+ 
++enum class EngineTypes : u32 {
++    KeplerCompute,
++    Maxwell3D,
++    Fermi2D,
++    MaxwellDMA,
++    KeplerMemory,
++};
++
+ class EngineInterface {
+ public:
+     virtual ~EngineInterface() = default;
+diff --git a/src/video_core/engines/engine_upload.h b/src/video_core/engines/engine_upload.h
+index 7242d25292d8..21bf8aeb4648 100644
+--- a/src/video_core/engines/engine_upload.h
++++ b/src/video_core/engines/engine_upload.h
+@@ -69,6 +69,14 @@ class State {
+     /// Binds a rasterizer to this engine.
+     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
+ 
++    GPUVAddr ExecTargetAddress() const {
++        return regs.dest.Address();
++    }
++
++    u32 GetUploadSize() const {
++        return copy_size;
++    }
++
+ private:
+     void ProcessData(std::span<const u8> read_buffer);
+ 
+diff --git a/src/video_core/engines/kepler_compute.cpp b/src/video_core/engines/kepler_compute.cpp
+index a38d9528a1be..cd61ab222bd5 100644
+--- a/src/video_core/engines/kepler_compute.cpp
++++ b/src/video_core/engines/kepler_compute.cpp
+@@ -43,16 +43,33 @@ void KeplerCompute::CallMethod(u32 method, u32 method_argument, bool is_last_cal
+ 
+     switch (method) {
+     case KEPLER_COMPUTE_REG_INDEX(exec_upload): {
++        UploadInfo info{.upload_address = upload_address,
++                        .exec_address = upload_state.ExecTargetAddress(),
++                        .copy_size = upload_state.GetUploadSize()};
++        uploads.push_back(info);
+         upload_state.ProcessExec(regs.exec_upload.linear != 0);
+         break;
+     }
+     case KEPLER_COMPUTE_REG_INDEX(data_upload): {
++        upload_address = current_dma_segment;
+         upload_state.ProcessData(method_argument, is_last_call);
+         break;
+     }
+-    case KEPLER_COMPUTE_REG_INDEX(launch):
++    case KEPLER_COMPUTE_REG_INDEX(launch): {
++        const GPUVAddr launch_desc_loc = regs.launch_desc_loc.Address();
++
++        for (auto& data : uploads) {
++            const GPUVAddr offset = data.exec_address - launch_desc_loc;
++            if (offset / sizeof(u32) == LAUNCH_REG_INDEX(grid_dim_x) &&
++                memory_manager.IsMemoryDirty(data.upload_address, data.copy_size)) {
++                indirect_compute = {data.upload_address};
++            }
++        }
++        uploads.clear();
+         ProcessLaunch();
++        indirect_compute = std::nullopt;
+         break;
++    }
+     default:
+         break;
+     }
+@@ -62,6 +79,7 @@ void KeplerCompute::CallMultiMethod(u32 method, const u32* base_start, u32 amoun
+                                     u32 methods_pending) {
+     switch (method) {
+     case KEPLER_COMPUTE_REG_INDEX(data_upload):
++        upload_address = current_dma_segment;
+         upload_state.ProcessData(base_start, amount);
+         return;
+     default:
+diff --git a/src/video_core/engines/kepler_compute.h b/src/video_core/engines/kepler_compute.h
+index 2092e685fe4d..735e05fb43a1 100644
+--- a/src/video_core/engines/kepler_compute.h
++++ b/src/video_core/engines/kepler_compute.h
+@@ -5,6 +5,7 @@
+ 
+ #include <array>
+ #include <cstddef>
++#include <optional>
+ #include <vector>
+ #include "common/bit_field.h"
+ #include "common/common_funcs.h"
+@@ -36,6 +37,9 @@ namespace Tegra::Engines {
+ #define KEPLER_COMPUTE_REG_INDEX(field_name)                                                       \
+     (offsetof(Tegra::Engines::KeplerCompute::Regs, field_name) / sizeof(u32))
+ 
++#define LAUNCH_REG_INDEX(field_name)                                                               \
++    (offsetof(Tegra::Engines::KeplerCompute::LaunchParams, field_name) / sizeof(u32))
++
+ class KeplerCompute final : public EngineInterface {
+ public:
+     explicit KeplerCompute(Core::System& system, MemoryManager& memory_manager);
+@@ -201,6 +205,10 @@ class KeplerCompute final : public EngineInterface {
+     void CallMultiMethod(u32 method, const u32* base_start, u32 amount,
+                          u32 methods_pending) override;
+ 
++    std::optional<GPUVAddr> GetIndirectComputeAddress() const {
++        return indirect_compute;
++    }
++
+ private:
+     void ProcessLaunch();
+ 
+@@ -216,6 +224,15 @@ class KeplerCompute final : public EngineInterface {
+     MemoryManager& memory_manager;
+     VideoCore::RasterizerInterface* rasterizer = nullptr;
+     Upload::State upload_state;
++    GPUVAddr upload_address;
++
++    struct UploadInfo {
++        GPUVAddr upload_address;
++        GPUVAddr exec_address;
++        u32 copy_size;
++    };
++    std::vector<UploadInfo> uploads;
++    std::optional<GPUVAddr> indirect_compute{};
+ };
+ 
+ #define ASSERT_REG_POSITION(field_name, position)                                                  \
+diff --git a/src/video_core/engines/puller.cpp b/src/video_core/engines/puller.cpp
+index 7718a09b3bbe..6de2543b7ecb 100644
+--- a/src/video_core/engines/puller.cpp
++++ b/src/video_core/engines/puller.cpp
+@@ -34,19 +34,24 @@ void Puller::ProcessBindMethod(const MethodCall& method_call) {
+     bound_engines[method_call.subchannel] = engine_id;
+     switch (engine_id) {
+     case EngineID::FERMI_TWOD_A:
+-        dma_pusher.BindSubchannel(channel_state.fermi_2d.get(), method_call.subchannel);
++        dma_pusher.BindSubchannel(channel_state.fermi_2d.get(), method_call.subchannel,
++                                  EngineTypes::Fermi2D);
+         break;
+     case EngineID::MAXWELL_B:
+-        dma_pusher.BindSubchannel(channel_state.maxwell_3d.get(), method_call.subchannel);
++        dma_pusher.BindSubchannel(channel_state.maxwell_3d.get(), method_call.subchannel,
++                                  EngineTypes::Maxwell3D);
+         break;
+     case EngineID::KEPLER_COMPUTE_B:
+-        dma_pusher.BindSubchannel(channel_state.kepler_compute.get(), method_call.subchannel);
++        dma_pusher.BindSubchannel(channel_state.kepler_compute.get(), method_call.subchannel,
++                                  EngineTypes::KeplerCompute);
+         break;
+     case EngineID::MAXWELL_DMA_COPY_A:
+-        dma_pusher.BindSubchannel(channel_state.maxwell_dma.get(), method_call.subchannel);
++        dma_pusher.BindSubchannel(channel_state.maxwell_dma.get(), method_call.subchannel,
++                                  EngineTypes::MaxwellDMA);
+         break;
+     case EngineID::KEPLER_INLINE_TO_MEMORY_B:
+-        dma_pusher.BindSubchannel(channel_state.kepler_memory.get(), method_call.subchannel);
++        dma_pusher.BindSubchannel(channel_state.kepler_memory.get(), method_call.subchannel,
++                                  EngineTypes::KeplerMemory);
+         break;
+     default:
+         UNIMPLEMENTED_MSG("Unimplemented engine {:04X}", engine_id);
+diff --git a/src/video_core/renderer_opengl/gl_rasterizer.cpp b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+index 1ba31be88cad..dd03efecd41c 100644
+--- a/src/video_core/renderer_opengl/gl_rasterizer.cpp
++++ b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+@@ -380,6 +380,17 @@ void RasterizerOpenGL::DispatchCompute() {
+     pipeline->SetEngine(kepler_compute, gpu_memory);
+     pipeline->Configure();
+     const auto& qmd{kepler_compute->launch_description};
++    auto indirect_address = kepler_compute->GetIndirectComputeAddress();
++    if (indirect_address) {
++        // DispatchIndirect
++        static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
++        const auto post_op = VideoCommon::ObtainBufferOperation::DiscardWrite;
++        const auto [buffer, offset] =
++            buffer_cache.ObtainBuffer(*indirect_address, 12, sync_info, post_op);
++        glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, buffer->Handle());
++        glDispatchComputeIndirect(static_cast<GLintptr>(offset));
++        return;
++    }
+     glDispatchCompute(qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z);
+     ++num_queued_commands;
+     has_written_global_memory |= pipeline->WritesGlobalMemory();
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index c1314ca996b7..b1730a170bef 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -664,6 +664,19 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
+         std::move(modules), infos);
+ 
+ } catch (const Shader::Exception& exception) {
++    auto hash = key.Hash();
++    size_t env_index{0};
++    for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
++        if (key.unique_hashes[index] == 0) {
++            continue;
++        }
++        Shader::Environment& env{*envs[env_index]};
++        ++env_index;
++
++        const u32 cfg_offset{static_cast<u32>(env.StartAddress() + sizeof(Shader::ProgramHeader))};
++        Shader::Maxwell::Flow::CFG cfg(env, pools.flow_block, cfg_offset, index == 0);
++        env.Dump(hash, key.unique_hashes[index]);
++    }
+     LOG_ERROR(Render_Vulkan, "{}", exception.what());
+     return nullptr;
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 032f694bc2dc..01e76a82caaf 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -463,6 +463,20 @@ void RasterizerVulkan::DispatchCompute() {
+     pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache, texture_cache);
+ 
+     const auto& qmd{kepler_compute->launch_description};
++    auto indirect_address = kepler_compute->GetIndirectComputeAddress();
++    if (indirect_address) {
++        // DispatchIndirect
++        static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::FullSynchronize;
++        const auto post_op = VideoCommon::ObtainBufferOperation::DiscardWrite;
++        const auto [buffer, offset] =
++            buffer_cache.ObtainBuffer(*indirect_address, 12, sync_info, post_op);
++        scheduler.RequestOutsideRenderPassOperationContext();
++        scheduler.Record([indirect_buffer = buffer->Handle(),
++                          indirect_offset = offset](vk::CommandBuffer cmdbuf) {
++            cmdbuf.DispatchIndirect(indirect_buffer, indirect_offset);
++        });
++        return;
++    }
+     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
+     scheduler.RequestOutsideRenderPassOperationContext();
+     scheduler.Record([dim](vk::CommandBuffer cmdbuf) { cmdbuf.Dispatch(dim[0], dim[1], dim[2]); });
+diff --git a/src/video_core/vulkan_common/vulkan_wrapper.cpp b/src/video_core/vulkan_common/vulkan_wrapper.cpp
+index 78e5a248f6ce..c3f388d89541 100644
+--- a/src/video_core/vulkan_common/vulkan_wrapper.cpp
++++ b/src/video_core/vulkan_common/vulkan_wrapper.cpp
+@@ -92,6 +92,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
+     X(vkCmdCopyImage);
+     X(vkCmdCopyImageToBuffer);
+     X(vkCmdDispatch);
++    X(vkCmdDispatchIndirect);
+     X(vkCmdDraw);
+     X(vkCmdDrawIndexed);
+     X(vkCmdDrawIndirect);
+diff --git a/src/video_core/vulkan_common/vulkan_wrapper.h b/src/video_core/vulkan_common/vulkan_wrapper.h
+index c226a2a29f47..049fa8038755 100644
+--- a/src/video_core/vulkan_common/vulkan_wrapper.h
++++ b/src/video_core/vulkan_common/vulkan_wrapper.h
+@@ -203,6 +203,7 @@ struct DeviceDispatch : InstanceDispatch {
+     PFN_vkCmdCopyImage vkCmdCopyImage{};
+     PFN_vkCmdCopyImageToBuffer vkCmdCopyImageToBuffer{};
+     PFN_vkCmdDispatch vkCmdDispatch{};
++    PFN_vkCmdDispatchIndirect vkCmdDispatchIndirect{};
+     PFN_vkCmdDraw vkCmdDraw{};
+     PFN_vkCmdDrawIndexed vkCmdDrawIndexed{};
+     PFN_vkCmdDrawIndirect vkCmdDrawIndirect{};
+@@ -1209,6 +1210,10 @@ class CommandBuffer {
+         dld->vkCmdDispatch(handle, x, y, z);
+     }
+ 
++    void DispatchIndirect(VkBuffer indirect_buffer, VkDeviceSize offset) const noexcept {
++        dld->vkCmdDispatchIndirect(handle, indirect_buffer, offset);
++    }
++
+     void PipelineBarrier(VkPipelineStageFlags src_stage_mask, VkPipelineStageFlags dst_stage_mask,
+                          VkDependencyFlags dependency_flags, Span<VkMemoryBarrier> memory_barriers,
+                          Span<VkBufferMemoryBarrier> buffer_barriers,

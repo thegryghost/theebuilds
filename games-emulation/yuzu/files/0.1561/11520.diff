@@ -1,0 +1,36 @@
+diff --git a/src/audio_core/renderer/command/command_processing_time_estimator.cpp b/src/audio_core/renderer/command/command_processing_time_estimator.cpp
+index a48a016b1b0..0f7aff1b473 100644
+--- a/src/audio_core/renderer/command/command_processing_time_estimator.cpp
++++ b/src/audio_core/renderer/command/command_processing_time_estimator.cpp
+@@ -27,12 +27,12 @@ u32 CommandProcessingTimeEstimatorVersion1::Estimate(
+ 
+ u32 CommandProcessingTimeEstimatorVersion1::Estimate(
+     const AdpcmDataSourceVersion1Command& command) const {
+-    return static_cast<u32>(command.pitch * 0.25f * 1.2f);
++    return static_cast<u32>(command.pitch * 0.46f * 1.2f);
+ }
+ 
+ u32 CommandProcessingTimeEstimatorVersion1::Estimate(
+     const AdpcmDataSourceVersion2Command& command) const {
+-    return static_cast<u32>(command.pitch * 0.25f * 1.2f);
++    return static_cast<u32>(command.pitch * 0.46f * 1.2f);
+ }
+ 
+ u32 CommandProcessingTimeEstimatorVersion1::Estimate(
+diff --git a/src/audio_core/renderer/system.cpp b/src/audio_core/renderer/system.cpp
+index d29754634e1..c065ef41cb5 100644
+--- a/src/audio_core/renderer/system.cpp
++++ b/src/audio_core/renderer/system.cpp
+@@ -684,11 +684,11 @@ u64 System::GenerateCommand(std::span<u8> in_command_buffer,
+                                        sink_context,   splitter_context,     perf_manager};
+ 
+     voice_context.SortInfo();
++    command_generator.GenerateVoiceCommands();
+ 
+     const auto start_estimated_time{drop_voice_param *
+                                     static_cast<f32>(command_buffer.estimated_process_time)};
+ 
+-    command_generator.GenerateVoiceCommands();
+     command_generator.GenerateSubMixCommands();
+     command_generator.GenerateFinalMixCommands();
+     command_generator.GenerateSinkCommands();

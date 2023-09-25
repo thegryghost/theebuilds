@@ -2,7 +2,7 @@ EAPI=7
 
 #inherit linux-info linux-mod git-r3
 #inherit autotools dist-kernel-utils flag-o-matic linux-mod toolchain-funcs git-r3
-inherit eutils linux-mod git-r3
+inherit linux-mod git-r3
 #autotools dist-kernel-utils flag-o-matic linux-mod toolchain-funcs git-r3
 DESCRIPTION="A linux kernel module for Ceton"
 HOMEPAGE="https://github.com/ceton/infinitv_pcie"
@@ -23,7 +23,9 @@ pkg_setup() {
 
 src_prepare() {
 	default
-	eapply ${FILESDIR}/13.diff
+#	eapply ${FILESDIR}/13.diff
+#	eapply ${FILESDIR}/2.patch
+	eapply ${FILESDIR}/6.5.patch
         cd "${S}"
         sed -e 's:KERNEL_VERSION \:=:#KERNEL_VERSION \:=:g' -i Makefile
         sed -e 's:KERNEL_DIR\t\:= :#KERNEL_DIR\t\:= :g' -i Makefile

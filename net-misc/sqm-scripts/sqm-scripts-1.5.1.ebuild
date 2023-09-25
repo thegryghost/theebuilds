@@ -4,7 +4,8 @@
 
 EAPI=7
 
-inherit eutils git-r3
+#inherit eutils git-r3
+inherit git-r3
 
 DESCRIPTION="sqm-scripts traffic shaper"
 HOMEPAGE="https://github.com/tohojo/sqm-scripts"

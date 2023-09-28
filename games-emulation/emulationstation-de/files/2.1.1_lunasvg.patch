@@ -1,0 +1,10 @@
+--- ./CMakeLists.txt.org	2023-09-09 01:35:55.289748828 -0400
++++ ./CMakeLists.txt	2023-09-09 01:34:35.144539733 -0400
+@@ -419,6 +419,7 @@
+                         ${CMAKE_CURRENT_SOURCE_DIR}/external/CImg
+                         ${CMAKE_CURRENT_SOURCE_DIR}/external/glm
+                         ${CMAKE_CURRENT_SOURCE_DIR}/external/lunasvg/include
++                        ${CMAKE_CURRENT_BINARY_DIR}/external/lunasvg/include
+                         ${CMAKE_CURRENT_SOURCE_DIR}/external/rapidjson/include
+                         ${CMAKE_CURRENT_SOURCE_DIR}/external/rlottie/inc
+                         ${CMAKE_CURRENT_SOURCE_DIR}/es-core/src)

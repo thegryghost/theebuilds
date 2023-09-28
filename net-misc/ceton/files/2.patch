@@ -1,0 +1,35 @@
+diff --git a/ctn91xx_driver.c b/ctn91xx_driver.c
+index 062d1f3..fd925e2 100644
+--- a/ctn91xx_driver.c
++++ b/ctn91xx_driver.c
+@@ -129,7 +129,7 @@ static int ctn91xx_mmap(struct file* filp, struct vm_area_struct* vma)
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(3,7,0)
+             vma->vm_flags |= VM_IO | VM_RESERVED;
+ #else
+-            vma->vm_flags |= VM_IO | VM_DONTEXPAND | VM_DONTDUMP;
++            vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
+ #endif
+ 
+             if(io_remap_pfn_range(vma, vma->vm_start,
+@@ -151,7 +151,7 @@ static int ctn91xx_mmap(struct file* filp, struct vm_area_struct* vma)
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(3,7,0)
+             vma->vm_flags |= VM_IO | VM_RESERVED;
+ #else
+-            vma->vm_flags |= VM_IO | VM_DONTEXPAND | VM_DONTDUMP;
++            vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
+ #endif
+ 
+             if(io_remap_pfn_range(vma, vma->vm_start,
+@@ -221,7 +221,11 @@ static int __init ctn91xx_init(void)
+         return ret;
+     }
+ 
+-    ctn91xx_class = class_create( THIS_MODULE, DEVICE_NAME );
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)
++     ctn91xx_class = class_create( THIS_MODULE, DEVICE_NAME );
++#else
++    ctn91xx_class = class_create( DEVICE_NAME );
++#endif
+ 
+     if( IS_ERR( ctn91xx_class ) ) {
+         ERROR("failed to create class");

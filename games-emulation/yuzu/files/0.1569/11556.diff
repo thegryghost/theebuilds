@@ -1,0 +1,431 @@
+diff --git a/src/video_core/host_shaders/convert_msaa_to_non_msaa.comp b/src/video_core/host_shaders/convert_msaa_to_non_msaa.comp
+index fc3854d18ad4..66f2ad483a41 100644
+--- a/src/video_core/host_shaders/convert_msaa_to_non_msaa.comp
++++ b/src/video_core/host_shaders/convert_msaa_to_non_msaa.comp
+@@ -15,11 +15,14 @@ void main() {
+ 
+     // TODO: Specialization constants for num_samples?
+     const int num_samples = imageSamples(msaa_in);
++    const ivec3 msaa_size = imageSize(msaa_in);
++    const ivec3 out_size = imageSize(output_img);
++    const ivec3 scale = out_size / msaa_size;
+     for (int curr_sample = 0; curr_sample < num_samples; ++curr_sample) {
+         const vec4 pixel = imageLoad(msaa_in, coords, curr_sample);
+ 
+-        const int single_sample_x = 2 * coords.x + (curr_sample & 1);
+-        const int single_sample_y = 2 * coords.y + ((curr_sample / 2) & 1);
++        const int single_sample_x = scale.x * coords.x + (curr_sample & 1);
++        const int single_sample_y = scale.y * coords.y + ((curr_sample / 2) & 1);
+         const ivec3 dest_coords = ivec3(single_sample_x, single_sample_y, coords.z);
+ 
+         if (any(greaterThanEqual(dest_coords, imageSize(output_img)))) {
+diff --git a/src/video_core/host_shaders/convert_non_msaa_to_msaa.comp b/src/video_core/host_shaders/convert_non_msaa_to_msaa.comp
+index dedd962f1cfa..c7ce38efa6e7 100644
+--- a/src/video_core/host_shaders/convert_non_msaa_to_msaa.comp
++++ b/src/video_core/host_shaders/convert_non_msaa_to_msaa.comp
+@@ -15,9 +15,12 @@ void main() {
+ 
+     // TODO: Specialization constants for num_samples?
+     const int num_samples = imageSamples(output_msaa);
++    const ivec3 msaa_size = imageSize(output_msaa);
++    const ivec3 out_size = imageSize(img_in);
++    const ivec3 scale = out_size / msaa_size;
+     for (int curr_sample = 0; curr_sample < num_samples; ++curr_sample) {
+-        const int single_sample_x = 2 * coords.x + (curr_sample & 1);
+-        const int single_sample_y = 2 * coords.y + ((curr_sample / 2) & 1);
++        const int single_sample_x = scale.x * coords.x + (curr_sample & 1);
++        const int single_sample_y = scale.y * coords.y + ((curr_sample / 2) & 1);
+         const ivec3 single_coords = ivec3(single_sample_x, single_sample_y, coords.z);
+ 
+         if (any(greaterThanEqual(single_coords, imageSize(img_in)))) {
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pass.cpp b/src/video_core/renderer_vulkan/vk_compute_pass.cpp
+index 289d5b25cab6..617f92910c2b 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pass.cpp
++++ b/src/video_core/renderer_vulkan/vk_compute_pass.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <array>
+ #include <memory>
++#include <numeric>
+ #include <optional>
+ #include <utility>
+ 
+@@ -11,7 +12,10 @@
+ #include "common/assert.h"
+ #include "common/common_types.h"
+ #include "common/div_ceil.h"
++#include "common/vector_math.h"
+ #include "video_core/host_shaders/astc_decoder_comp_spv.h"
++#include "video_core/host_shaders/convert_msaa_to_non_msaa_comp_spv.h"
++#include "video_core/host_shaders/convert_non_msaa_to_msaa_comp_spv.h"
+ #include "video_core/host_shaders/queries_prefix_scan_sum_comp_spv.h"
+ #include "video_core/host_shaders/queries_prefix_scan_sum_nosubgroups_comp_spv.h"
+ #include "video_core/host_shaders/resolve_conditional_render_comp_spv.h"
+@@ -131,6 +135,33 @@ constexpr DescriptorBankInfo ASTC_BANK_INFO{
+     .score = 2,
+ };
+ 
++constexpr std::array<VkDescriptorSetLayoutBinding, ASTC_NUM_BINDINGS> MSAA_DESCRIPTOR_SET_BINDINGS{{
++    {
++        .binding = 0,
++        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
++        .descriptorCount = 1,
++        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
++        .pImmutableSamplers = nullptr,
++    },
++    {
++        .binding = 1,
++        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
++        .descriptorCount = 1,
++        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
++        .pImmutableSamplers = nullptr,
++    },
++}};
++
++constexpr DescriptorBankInfo MSAA_BANK_INFO{
++    .uniform_buffers = 0,
++    .storage_buffers = 0,
++    .texture_buffers = 0,
++    .image_buffers = 0,
++    .textures = 0,
++    .images = 2,
++    .score = 2,
++};
++
+ constexpr VkDescriptorUpdateTemplateEntry INPUT_OUTPUT_DESCRIPTOR_UPDATE_TEMPLATE{
+     .dstBinding = 0,
+     .dstArrayElement = 0,
+@@ -149,6 +180,15 @@ constexpr VkDescriptorUpdateTemplateEntry QUERIES_SCAN_DESCRIPTOR_UPDATE_TEMPLAT
+     .stride = sizeof(DescriptorUpdateEntry),
+ };
+ 
++constexpr VkDescriptorUpdateTemplateEntry MSAA_DESCRIPTOR_UPDATE_TEMPLATE{
++    .dstBinding = 0,
++    .dstArrayElement = 0,
++    .descriptorCount = 2,
++    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
++    .offset = 0,
++    .stride = sizeof(DescriptorUpdateEntry),
++};
++
+ constexpr std::array<VkDescriptorUpdateTemplateEntry, ASTC_NUM_BINDINGS>
+     ASTC_PASS_DESCRIPTOR_UPDATE_TEMPLATE_ENTRY{{
+         {
+@@ -224,6 +264,9 @@ ComputePass::ComputePass(const Device& device_, DescriptorPool& descriptor_pool,
+         });
+         descriptor_allocator = descriptor_pool.Allocator(*descriptor_set_layout, bank_info);
+     }
++    if (code.empty()) {
++        return;
++    }
+     module = device.GetLogical().CreateShaderModule({
+         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+         .pNext = nullptr,
+@@ -590,4 +633,100 @@ void ASTCDecoderPass::Assemble(Image& image, const StagingBufferRef& map,
+     scheduler.Finish();
+ }
+ 
++MSAACopyPass::MSAACopyPass(const Device& device_, Scheduler& scheduler_,
++                           DescriptorPool& descriptor_pool_,
++                           StagingBufferPool& staging_buffer_pool_,
++                           ComputePassDescriptorQueue& compute_pass_descriptor_queue_)
++    : ComputePass(device_, descriptor_pool_, MSAA_DESCRIPTOR_SET_BINDINGS,
++                  MSAA_DESCRIPTOR_UPDATE_TEMPLATE, MSAA_BANK_INFO, {},
++                  CONVERT_NON_MSAA_TO_MSAA_COMP_SPV),
++      scheduler{scheduler_}, staging_buffer_pool{staging_buffer_pool_},
++      compute_pass_descriptor_queue{compute_pass_descriptor_queue_} {
++    const auto make_msaa_pipeline = [this](size_t i, std::span<const u32> code) {
++        modules[i] = device.GetLogical().CreateShaderModule({
++            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
++            .pNext = nullptr,
++            .flags = 0,
++            .codeSize = static_cast<u32>(code.size_bytes()),
++            .pCode = code.data(),
++        });
++        pipelines[i] = device.GetLogical().CreateComputePipeline({
++            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
++            .pNext = nullptr,
++            .flags = 0,
++            .stage{
++                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
++                .pNext = nullptr,
++                .flags = 0,
++                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
++                .module = *modules[i],
++                .pName = "main",
++                .pSpecializationInfo = nullptr,
++            },
++            .layout = *layout,
++            .basePipelineHandle = nullptr,
++            .basePipelineIndex = 0,
++        });
++    };
++    make_msaa_pipeline(0, CONVERT_NON_MSAA_TO_MSAA_COMP_SPV);
++    make_msaa_pipeline(1, CONVERT_MSAA_TO_NON_MSAA_COMP_SPV);
++}
++
++MSAACopyPass::~MSAACopyPass() = default;
++
++void MSAACopyPass::CopyImage(Image& dst_image, Image& src_image,
++                             std::span<const VideoCommon::ImageCopy> copies,
++                             bool msaa_to_non_msaa) {
++    const VkPipeline msaa_pipeline = *pipelines[msaa_to_non_msaa ? 1 : 0];
++    scheduler.RequestOutsideRenderPassOperationContext();
++    for (const VideoCommon::ImageCopy& copy : copies) {
++        ASSERT(copy.src_subresource.base_layer == 0);
++        ASSERT(copy.src_subresource.num_layers == 1);
++        ASSERT(copy.dst_subresource.base_layer == 0);
++        ASSERT(copy.dst_subresource.num_layers == 1);
++
++        compute_pass_descriptor_queue.Acquire();
++        compute_pass_descriptor_queue.AddImage(
++            src_image.StorageImageView(copy.src_subresource.base_level));
++        compute_pass_descriptor_queue.AddImage(
++            dst_image.StorageImageView(copy.dst_subresource.base_level));
++        const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
++
++        const Common::Vec3<u32> num_dispatches = {
++            Common::DivCeil(copy.extent.width, 8U),
++            Common::DivCeil(copy.extent.height, 8U),
++            copy.extent.depth,
++        };
++
++        scheduler.Record([this, dst = dst_image.Handle(), msaa_pipeline, num_dispatches,
++                          descriptor_data](vk::CommandBuffer cmdbuf) {
++            const VkDescriptorSet set = descriptor_allocator.Commit();
++            device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptor_data);
++            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, msaa_pipeline);
++            cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
++            cmdbuf.Dispatch(num_dispatches.x, num_dispatches.y, num_dispatches.z);
++            const VkImageMemoryBarrier write_barrier{
++                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++                .pNext = nullptr,
++                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
++                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
++                .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
++                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
++                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++                .image = dst,
++                .subresourceRange{
++                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
++                    .baseMipLevel = 0,
++                    .levelCount = VK_REMAINING_MIP_LEVELS,
++                    .baseArrayLayer = 0,
++                    .layerCount = VK_REMAINING_ARRAY_LAYERS,
++                },
++            };
++            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
++                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, write_barrier);
++        });
++    }
++}
++
+ } // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/vk_compute_pass.h b/src/video_core/renderer_vulkan/vk_compute_pass.h
+index 3ff935639b27..7b8f938c1cfe 100644
+--- a/src/video_core/renderer_vulkan/vk_compute_pass.h
++++ b/src/video_core/renderer_vulkan/vk_compute_pass.h
+@@ -11,6 +11,7 @@
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
+ #include "video_core/renderer_vulkan/vk_update_descriptor.h"
++#include "video_core/texture_cache/types.h"
+ #include "video_core/vulkan_common/vulkan_memory_allocator.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ 
+@@ -130,4 +131,22 @@ class ASTCDecoderPass final : public ComputePass {
+     MemoryAllocator& memory_allocator;
+ };
+ 
++class MSAACopyPass final : public ComputePass {
++public:
++    explicit MSAACopyPass(const Device& device_, Scheduler& scheduler_,
++                          DescriptorPool& descriptor_pool_, StagingBufferPool& staging_buffer_pool_,
++                          ComputePassDescriptorQueue& compute_pass_descriptor_queue_);
++    ~MSAACopyPass();
++
++    void CopyImage(Image& dst_image, Image& src_image,
++                   std::span<const VideoCommon::ImageCopy> copies, bool msaa_to_non_msaa);
++
++private:
++    Scheduler& scheduler;
++    StagingBufferPool& staging_buffer_pool;
++    ComputePassDescriptorQueue& compute_pass_descriptor_queue;
++    std::array<vk::ShaderModule, 2> modules;
++    std::array<vk::Pipeline, 2> pipelines;
++};
++
+ } // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 1f9e7acaa012..71fdec80934e 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -176,6 +176,36 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
+     return allocator.CreateImage(image_ci);
+ }
+ 
++[[nodiscard]] vk::ImageView MakeStorageView(const vk::Device& device, u32 level, VkImage image,
++                                            VkFormat format) {
++    static constexpr VkImageViewUsageCreateInfo storage_image_view_usage_create_info{
++        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
++        .pNext = nullptr,
++        .usage = VK_IMAGE_USAGE_STORAGE_BIT,
++    };
++    return device.CreateImageView(VkImageViewCreateInfo{
++        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
++        .pNext = &storage_image_view_usage_create_info,
++        .flags = 0,
++        .image = image,
++        .viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
++        .format = format,
++        .components{
++            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
++            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
++            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
++            .a = VK_COMPONENT_SWIZZLE_IDENTITY,
++        },
++        .subresourceRange{
++            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
++            .baseMipLevel = level,
++            .levelCount = 1,
++            .baseArrayLayer = 0,
++            .layerCount = VK_REMAINING_ARRAY_LAYERS,
++        },
++    });
++}
++
+ [[nodiscard]] VkImageAspectFlags ImageAspectMask(PixelFormat format) {
+     switch (VideoCore::Surface::GetFormatType(format)) {
+     case VideoCore::Surface::SurfaceType::ColorTexture:
+@@ -817,6 +847,10 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
+         astc_decoder_pass.emplace(device, scheduler, descriptor_pool, staging_buffer_pool,
+                                   compute_pass_descriptor_queue, memory_allocator);
+     }
++    if (device.IsStorageImageMultisampleSupported()) {
++        msaa_copy_pass = std::make_unique<MSAACopyPass>(
++            device, scheduler, descriptor_pool, staging_buffer_pool, compute_pass_descriptor_queue);
++    }
+     if (!device.IsKhrImageFormatListSupported()) {
+         return;
+     }
+@@ -1285,7 +1319,11 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
+ 
+ void TextureCacheRuntime::CopyImageMSAA(Image& dst, Image& src,
+                                         std::span<const VideoCommon::ImageCopy> copies) {
+-    UNIMPLEMENTED_MSG("Copying images with different samples is not implemented in Vulkan.");
++    const bool msaa_to_non_msaa = src.info.num_samples > 1 && dst.info.num_samples == 1;
++    if (msaa_copy_pass) {
++        return msaa_copy_pass->CopyImage(dst, src, copies, msaa_to_non_msaa);
++    }
++    UNIMPLEMENTED_MSG("Copying images with different samples is not supported.");
+ }
+ 
+ u64 TextureCacheRuntime::GetDeviceLocalMemory() const {
+@@ -1333,39 +1371,15 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
+     if (runtime->device.HasDebuggingToolAttached()) {
+         original_image.SetObjectNameEXT(VideoCommon::Name(*this).c_str());
+     }
+-    static constexpr VkImageViewUsageCreateInfo storage_image_view_usage_create_info{
+-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+-        .pNext = nullptr,
+-        .usage = VK_IMAGE_USAGE_STORAGE_BIT,
+-    };
+     current_image = *original_image;
++    storage_image_views.resize(info.resources.levels);
+     if (IsPixelFormatASTC(info.format) && !runtime->device.IsOptimalAstcSupported() &&
+         Settings::values.astc_recompression.GetValue() ==
+             Settings::AstcRecompression::Uncompressed) {
+         const auto& device = runtime->device.GetLogical();
+-        storage_image_views.reserve(info.resources.levels);
+         for (s32 level = 0; level < info.resources.levels; ++level) {
+-            storage_image_views.push_back(device.CreateImageView(VkImageViewCreateInfo{
+-                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+-                .pNext = &storage_image_view_usage_create_info,
+-                .flags = 0,
+-                .image = *original_image,
+-                .viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+-                .format = VK_FORMAT_A8B8G8R8_UNORM_PACK32,
+-                .components{
+-                    .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+-                    .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+-                    .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+-                    .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+-                },
+-                .subresourceRange{
+-                    .aspectMask = aspect_mask,
+-                    .baseMipLevel = static_cast<u32>(level),
+-                    .levelCount = 1,
+-                    .baseArrayLayer = 0,
+-                    .layerCount = VK_REMAINING_ARRAY_LAYERS,
+-                },
+-            }));
++            storage_image_views[level] =
++                MakeStorageView(device, level, *original_image, VK_FORMAT_A8B8G8R8_UNORM_PACK32);
+         }
+     }
+ }
+@@ -1496,6 +1510,17 @@ void Image::DownloadMemory(const StagingBufferRef& map, std::span<const BufferIm
+     DownloadMemory(buffers, offsets, copies);
+ }
+ 
++VkImageView Image::StorageImageView(s32 level) noexcept {
++    auto& view = storage_image_views[level];
++    if (!view) {
++        const auto format_info =
++            MaxwellToVK::SurfaceFormat(runtime->device, FormatType::Optimal, true, info.format);
++        view =
++            MakeStorageView(runtime->device.GetLogical(), level, current_image, format_info.format);
++    }
++    return *view;
++}
++
+ bool Image::IsRescaled() const noexcept {
+     return True(flags & ImageFlagBits::Rescaled);
+ }
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 565ce19a9544..d6c5a15ccf9f 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -117,6 +117,7 @@ class TextureCacheRuntime {
+     BlitImageHelper& blit_image_helper;
+     RenderPassCache& render_pass_cache;
+     std::optional<ASTCDecoderPass> astc_decoder_pass;
++    std::unique_ptr<MSAACopyPass> msaa_copy_pass;
+     const Settings::ResolutionScalingInfo& resolution;
+     std::array<std::vector<VkFormat>, VideoCore::Surface::MaxPixelFormat> view_formats;
+ 
+@@ -161,15 +162,13 @@ class Image : public VideoCommon::ImageBase {
+         return aspect_mask;
+     }
+ 
+-    [[nodiscard]] VkImageView StorageImageView(s32 level) const noexcept {
+-        return *storage_image_views[level];
+-    }
+-
+     /// Returns true when the image is already initialized and mark it as initialized
+     [[nodiscard]] bool ExchangeInitialization() noexcept {
+         return std::exchange(initialized, true);
+     }
+ 
++    VkImageView StorageImageView(s32 level) noexcept;
++
+     bool IsRescaled() const noexcept;
+ 
+     bool ScaleUp(bool ignore = false);
+diff --git a/src/video_core/vulkan_common/vulkan_device.h b/src/video_core/vulkan_common/vulkan_device.h
+index 94f41266d4f1..dd1e7ea8c47d 100644
+--- a/src/video_core/vulkan_common/vulkan_device.h
++++ b/src/video_core/vulkan_common/vulkan_device.h
+@@ -324,6 +324,11 @@ class Device {
+         return features.shader_float16_int8.shaderInt8;
+     }
+ 
++    /// Returns true if the device supports binding multisample images as storage images.
++    bool IsStorageImageMultisampleSupported() const {
++        return features.features.shaderStorageImageMultisample;
++    }
++
+     /// Returns true if the device warp size can potentially be bigger than guest's warp size.
+     bool IsWarpSizePotentiallyBiggerThanGuest() const {
+         return is_warp_potentially_bigger;

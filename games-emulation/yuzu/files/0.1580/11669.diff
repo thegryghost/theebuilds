@@ -1,0 +1,70 @@
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 08cbb89783f4..0ab2e3b761ef 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -1078,6 +1078,10 @@ void System::ApplySettings() {
+     impl->RefreshTime();
+ 
+     if (IsPoweredOn()) {
++        if (Settings::values.custom_rtc_enabled) {
++            const s64 posix_time{Settings::values.custom_rtc.GetValue()};
++            GetTimeManager().UpdateLocalSystemClockTime(posix_time);
++        }
+         Renderer().RefreshBaseSettings();
+     }
+ }
+diff --git a/src/yuzu/configuration/configure_audio.cpp b/src/yuzu/configuration/configure_audio.cpp
+index 9ccfb24352df..81dd51ad36c0 100644
+--- a/src/yuzu/configuration/configure_audio.cpp
++++ b/src/yuzu/configuration/configure_audio.cpp
+@@ -42,6 +42,9 @@ void ConfigureAudio::Setup(const ConfigurationShared::Builder& builder) {
+         for (auto* setting : Settings::values.linkage.by_category[category]) {
+             settings.push_back(setting);
+         }
++        for (auto* setting : UISettings::values.linkage.by_category[category]) {
++            settings.push_back(setting);
++        }
+     };
+ 
+     push(Settings::Category::Audio);
+diff --git a/src/yuzu/configuration/shared_translation.cpp b/src/yuzu/configuration/shared_translation.cpp
+index 276bdbaba423..a4e8af1b4be7 100644
+--- a/src/yuzu/configuration/shared_translation.cpp
++++ b/src/yuzu/configuration/shared_translation.cpp
+@@ -29,9 +29,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QWidget* parent) {
+     INSERT(Settings, sink_id, "Output Engine:", "");
+     INSERT(Settings, audio_output_device_id, "Output Device:", "");
+     INSERT(Settings, audio_input_device_id, "Input Device:", "");
+-    INSERT(Settings, audio_muted, "Mute audio when in background", "");
++    INSERT(Settings, audio_muted, "Mute audio", "");
+     INSERT(Settings, volume, "Volume:", "");
+     INSERT(Settings, dump_audio_commands, "", "");
++    INSERT(UISettings, mute_when_in_background, "Mute audio when in background", "");
+ 
+     // Core
+     INSERT(Settings, use_multi_core, "Multicore CPU Emulation", "");
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index 16fa92e2c008..1753fec12145 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -1447,6 +1447,7 @@ void GMainWindow::OnAppFocusStateChanged(Qt::ApplicationState state) {
+             Settings::values.audio_muted = false;
+             auto_muted = false;
+         }
++        UpdateVolumeUI();
+     }
+ }
+ 
+diff --git a/src/yuzu/uisettings.h b/src/yuzu/uisettings.h
+index 8efd63f31fd7..8a2caa9ddf3e 100644
+--- a/src/yuzu/uisettings.h
++++ b/src/yuzu/uisettings.h
+@@ -103,7 +103,7 @@ struct Values {
+                                            true,
+                                            true};
+     Setting<bool> mute_when_in_background{
+-        linkage, false, "muteWhenInBackground", Category::Ui, Settings::Specialization::Default,
++        linkage, false, "muteWhenInBackground", Category::Audio, Settings::Specialization::Default,
+         true,    true};
+     Setting<bool> hide_mouse{
+         linkage, true, "hideInactiveMouse", Category::UiGeneral, Settings::Specialization::Default,

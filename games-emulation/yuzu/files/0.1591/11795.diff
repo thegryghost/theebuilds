@@ -1,0 +1,154 @@
+diff --git a/src/video_core/host_shaders/CMakeLists.txt b/src/video_core/host_shaders/CMakeLists.txt
+index 8bb4295784c3..cd25492328e6 100644
+--- a/src/video_core/host_shaders/CMakeLists.txt
++++ b/src/video_core/host_shaders/CMakeLists.txt
+@@ -19,6 +19,7 @@ set(SHADER_FILES
+     block_linear_unswizzle_2d.comp
+     block_linear_unswizzle_3d.comp
+     convert_abgr8_to_d24s8.frag
++    convert_abgr8_to_d32f.frag
+     convert_d32f_to_abgr8.frag
+     convert_d24s8_to_abgr8.frag
+     convert_depth_to_float.frag
+diff --git a/src/video_core/host_shaders/convert_abgr8_to_d32f.frag b/src/video_core/host_shaders/convert_abgr8_to_d32f.frag
+new file mode 100644
+index 000000000000..095b910c2909
+--- /dev/null
++++ b/src/video_core/host_shaders/convert_abgr8_to_d32f.frag
+@@ -0,0 +1,15 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#version 450
++
++layout(binding = 0) uniform sampler2D color_texture;
++
++void main() {
++    ivec2 coord = ivec2(gl_FragCoord.xy);
++    vec4 color = texelFetch(color_texture, coord, 0).abgr;
++
++    float value = color.a * (color.r + color.g + color.b) / 3.0f;
++
++    gl_FragDepth = value;
++}
+diff --git a/src/video_core/host_shaders/convert_d32f_to_abgr8.frag b/src/video_core/host_shaders/convert_d32f_to_abgr8.frag
+index 04cfef8b55af..4e5a9f955b64 100644
+--- a/src/video_core/host_shaders/convert_d32f_to_abgr8.frag
++++ b/src/video_core/host_shaders/convert_d32f_to_abgr8.frag
+@@ -9,6 +9,6 @@ layout(location = 0) out vec4 color;
+ 
+ void main() {
+     ivec2 coord = ivec2(gl_FragCoord.xy);
+-    float depth = textureLod(depth_tex, coord, 0).r;
++    float depth = texelFetch(depth_tex, coord, 0).r;
+     color = vec4(depth, depth, depth, 1.0);
+ }
+diff --git a/src/video_core/renderer_vulkan/blit_image.cpp b/src/video_core/renderer_vulkan/blit_image.cpp
+index 4778ac4c5913..1a40a4d054c9 100644
+--- a/src/video_core/renderer_vulkan/blit_image.cpp
++++ b/src/video_core/renderer_vulkan/blit_image.cpp
+@@ -8,6 +8,7 @@
+ #include "common/settings.h"
+ #include "video_core/host_shaders/blit_color_float_frag_spv.h"
+ #include "video_core/host_shaders/convert_abgr8_to_d24s8_frag_spv.h"
++#include "video_core/host_shaders/convert_abgr8_to_d32f_frag_spv.h"
+ #include "video_core/host_shaders/convert_d24s8_to_abgr8_frag_spv.h"
+ #include "video_core/host_shaders/convert_d32f_to_abgr8_frag_spv.h"
+ #include "video_core/host_shaders/convert_depth_to_float_frag_spv.h"
+@@ -434,6 +435,7 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
+       convert_depth_to_float_frag(BuildShader(device, CONVERT_DEPTH_TO_FLOAT_FRAG_SPV)),
+       convert_float_to_depth_frag(BuildShader(device, CONVERT_FLOAT_TO_DEPTH_FRAG_SPV)),
+       convert_abgr8_to_d24s8_frag(BuildShader(device, CONVERT_ABGR8_TO_D24S8_FRAG_SPV)),
++      convert_abgr8_to_d32f_frag(BuildShader(device, CONVERT_ABGR8_TO_D32F_FRAG_SPV)),
+       convert_d32f_to_abgr8_frag(BuildShader(device, CONVERT_D32F_TO_ABGR8_FRAG_SPV)),
+       convert_d24s8_to_abgr8_frag(BuildShader(device, CONVERT_D24S8_TO_ABGR8_FRAG_SPV)),
+       convert_s8d24_to_abgr8_frag(BuildShader(device, CONVERT_S8D24_TO_ABGR8_FRAG_SPV)),
+@@ -559,6 +561,13 @@ void BlitImageHelper::ConvertABGR8ToD24S8(const Framebuffer* dst_framebuffer,
+     Convert(*convert_abgr8_to_d24s8_pipeline, dst_framebuffer, src_image_view);
+ }
+ 
++void BlitImageHelper::ConvertABGR8ToD32F(const Framebuffer* dst_framebuffer,
++                                         const ImageView& src_image_view) {
++    ConvertPipelineDepthTargetEx(convert_abgr8_to_d32f_pipeline, dst_framebuffer->RenderPass(),
++                                 convert_abgr8_to_d32f_frag);
++    Convert(*convert_abgr8_to_d32f_pipeline, dst_framebuffer, src_image_view);
++}
++
+ void BlitImageHelper::ConvertD32FToABGR8(const Framebuffer* dst_framebuffer,
+                                          ImageView& src_image_view) {
+     ConvertPipelineColorTargetEx(convert_d32f_to_abgr8_pipeline, dst_framebuffer->RenderPass(),
+diff --git a/src/video_core/renderer_vulkan/blit_image.h b/src/video_core/renderer_vulkan/blit_image.h
+index a032c71fb57d..b2104a59ee90 100644
+--- a/src/video_core/renderer_vulkan/blit_image.h
++++ b/src/video_core/renderer_vulkan/blit_image.h
+@@ -67,6 +67,8 @@ class BlitImageHelper {
+ 
+     void ConvertABGR8ToD24S8(const Framebuffer* dst_framebuffer, const ImageView& src_image_view);
+ 
++    void ConvertABGR8ToD32F(const Framebuffer* dst_framebuffer, const ImageView& src_image_view);
++
+     void ConvertD32FToABGR8(const Framebuffer* dst_framebuffer, ImageView& src_image_view);
+ 
+     void ConvertD24S8ToABGR8(const Framebuffer* dst_framebuffer, ImageView& src_image_view);
+@@ -130,6 +132,7 @@ class BlitImageHelper {
+     vk::ShaderModule convert_depth_to_float_frag;
+     vk::ShaderModule convert_float_to_depth_frag;
+     vk::ShaderModule convert_abgr8_to_d24s8_frag;
++    vk::ShaderModule convert_abgr8_to_d32f_frag;
+     vk::ShaderModule convert_d32f_to_abgr8_frag;
+     vk::ShaderModule convert_d24s8_to_abgr8_frag;
+     vk::ShaderModule convert_s8d24_to_abgr8_frag;
+@@ -149,6 +152,7 @@ class BlitImageHelper {
+     vk::Pipeline convert_d16_to_r16_pipeline;
+     vk::Pipeline convert_r16_to_d16_pipeline;
+     vk::Pipeline convert_abgr8_to_d24s8_pipeline;
++    vk::Pipeline convert_abgr8_to_d32f_pipeline;
+     vk::Pipeline convert_d32f_to_abgr8_pipeline;
+     vk::Pipeline convert_d24s8_to_abgr8_pipeline;
+     vk::Pipeline convert_s8d24_to_abgr8_pipeline;
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index f02d3e8b88c1..cdc41816f9fc 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -1193,6 +1193,11 @@ void TextureCacheRuntime::ConvertImage(Framebuffer* dst, ImageView& dst_view, Im
+             return blit_image_helper.ConvertD16ToR16(dst, src_view);
+         }
+         break;
++    case PixelFormat::A8B8G8R8_SRGB:
++        if (src_view.format == PixelFormat::D32_FLOAT) {
++            return blit_image_helper.ConvertD32FToABGR8(dst, src_view);
++        }
++        break;
+     case PixelFormat::A8B8G8R8_UNORM:
+         if (src_view.format == PixelFormat::S8_UINT_D24_UNORM) {
+             return blit_image_helper.ConvertD24S8ToABGR8(dst, src_view);
+@@ -1204,6 +1209,16 @@ void TextureCacheRuntime::ConvertImage(Framebuffer* dst, ImageView& dst_view, Im
+             return blit_image_helper.ConvertD32FToABGR8(dst, src_view);
+         }
+         break;
++    case PixelFormat::B8G8R8A8_SRGB:
++        if (src_view.format == PixelFormat::D32_FLOAT) {
++            return blit_image_helper.ConvertD32FToABGR8(dst, src_view);
++        }
++        break;
++    case PixelFormat::B8G8R8A8_UNORM:
++        if (src_view.format == PixelFormat::D32_FLOAT) {
++            return blit_image_helper.ConvertD32FToABGR8(dst, src_view);
++        }
++        break;
+     case PixelFormat::R32_FLOAT:
+         if (src_view.format == PixelFormat::D32_FLOAT) {
+             return blit_image_helper.ConvertD32ToR32(dst, src_view);
+@@ -1221,6 +1236,12 @@ void TextureCacheRuntime::ConvertImage(Framebuffer* dst, ImageView& dst_view, Im
+         }
+         break;
+     case PixelFormat::D32_FLOAT:
++        if (src_view.format == PixelFormat::A8B8G8R8_UNORM ||
++            src_view.format == PixelFormat::B8G8R8A8_UNORM ||
++            src_view.format == PixelFormat::A8B8G8R8_SRGB ||
++            src_view.format == PixelFormat::B8G8R8A8_SRGB) {
++            return blit_image_helper.ConvertABGR8ToD32F(dst, src_view);
++        }
+         if (src_view.format == PixelFormat::R32_FLOAT) {
+             return blit_image_helper.ConvertR32ToD32(dst, src_view);
+         }

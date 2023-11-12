@@ -1,0 +1,75 @@
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.h b/src/video_core/renderer_opengl/gl_texture_cache.h
+index 3676eaaa9641..e71b87e99233 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.h
++++ b/src/video_core/renderer_opengl/gl_texture_cache.h
+@@ -118,6 +118,8 @@ class TextureCacheRuntime {
+ 
+     void InsertUploadMemoryBarrier();
+ 
++    void TransitionImageLayout(Image& image) {}
++
+     FormatProperties FormatInfo(VideoCommon::ImageType type, GLenum internal_format) const;
+ 
+     bool HasNativeBgr() const noexcept {
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.cpp b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+index 00ab4726877a..54bfeccb677d 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.cpp
+@@ -2013,4 +2013,32 @@ void TextureCacheRuntime::AccelerateImageUpload(
+     ASSERT(false);
+ }
+ 
++void TextureCacheRuntime::TransitionImageLayout(Image& image) {
++    if (!image.ExchangeInitialization()) {
++        VkImageMemoryBarrier barrier{
++            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++            .pNext = nullptr,
++            .srcAccessMask = VK_ACCESS_NONE,
++            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
++            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
++            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
++            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++            .image = image.Handle(),
++            .subresourceRange{
++                .aspectMask = image.AspectMask(),
++                .baseMipLevel = 0,
++                .levelCount = VK_REMAINING_MIP_LEVELS,
++                .baseArrayLayer = 0,
++                .layerCount = VK_REMAINING_ARRAY_LAYERS,
++            },
++        };
++        scheduler.RequestOutsideRenderPassOperationContext();
++        scheduler.Record([barrier = barrier](vk::CommandBuffer cmdbuf) {
++            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, barrier);
++        });
++    }
++}
++
+ } // namespace Vulkan
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index d6c5a15ccf9f..7a0807709873 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -92,6 +92,8 @@ class TextureCacheRuntime {
+ 
+     void InsertUploadMemoryBarrier() {}
+ 
++    void TransitionImageLayout(Image& image);
++
+     bool HasBrokenTextureViewFormats() const noexcept {
+         // No known Vulkan driver has broken image views
+         return false;
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index 1bdb0def5f20..d575c57ca5e0 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -1016,6 +1016,7 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
+ 
+     if (image.info.num_samples > 1 && !runtime.CanUploadMSAA()) {
+         LOG_WARNING(HW_GPU, "MSAA image uploads are not implemented");
++        runtime.TransitionImageLayout(image);
+         return;
+     }
+     if (True(image.flags & ImageFlagBits::AsynchronousDecode)) {

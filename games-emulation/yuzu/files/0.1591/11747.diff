@@ -1,0 +1,68 @@
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 2edaafa7ef73..66c03bf1733e 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -1436,6 +1436,7 @@ void QueryCacheRuntime::Barriers(bool is_prebarrier) {
+         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+     };
++    impl->scheduler.RequestOutsideRenderPassOperationContext();
+     if (is_prebarrier) {
+         impl->scheduler.Record([](vk::CommandBuffer cmdbuf) {
+             cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+diff --git a/src/video_core/renderer_vulkan/vk_render_pass_cache.cpp b/src/video_core/renderer_vulkan/vk_render_pass_cache.cpp
+index ae9f1de64205..7746a88d34e6 100644
+--- a/src/video_core/renderer_vulkan/vk_render_pass_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_render_pass_cache.cpp
+@@ -19,7 +19,7 @@ VkAttachmentDescription AttachmentDescription(const Device& device, PixelFormat
+                                               VkSampleCountFlagBits samples) {
+     using MaxwellToVK::SurfaceFormat;
+     return {
+-        .flags = VK_ATTACHMENT_DESCRIPTION_MAY_ALIAS_BIT,
++        .flags = {},
+         .format = SurfaceFormat(device, FormatType::Optimal, true, format).format,
+         .samples = samples,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+diff --git a/src/video_core/texture_cache/formatter.cpp b/src/video_core/texture_cache/formatter.cpp
+index 6279d8e9ef45..2b7e0df72a84 100644
+--- a/src/video_core/texture_cache/formatter.cpp
++++ b/src/video_core/texture_cache/formatter.cpp
+@@ -10,19 +10,23 @@
+ #include "video_core/texture_cache/image_info.h"
+ #include "video_core/texture_cache/image_view_base.h"
+ #include "video_core/texture_cache/render_targets.h"
++#include "video_core/texture_cache/samples_helper.h"
+ 
+ namespace VideoCommon {
+ 
+ std::string Name(const ImageBase& image) {
+     const GPUVAddr gpu_addr = image.gpu_addr;
+     const ImageInfo& info = image.info;
+-    const u32 width = info.size.width;
+-    const u32 height = info.size.height;
++    u32 width = info.size.width;
++    u32 height = info.size.height;
+     const u32 depth = info.size.depth;
+     const u32 num_layers = image.info.resources.layers;
+     const u32 num_levels = image.info.resources.levels;
+     std::string resource;
+     if (image.info.num_samples > 1) {
++        const auto [samples_x, samples_y] = VideoCommon::SamplesLog2(image.info.num_samples);
++        width >>= samples_x;
++        height >>= samples_y;
+         resource += fmt::format(":{}xMSAA", image.info.num_samples);
+     }
+     if (num_layers > 1) {
+diff --git a/src/video_core/texture_cache/samples_helper.h b/src/video_core/texture_cache/samples_helper.h
+index 203ac1b11a62..2ee2f83123d2 100644
+--- a/src/video_core/texture_cache/samples_helper.h
++++ b/src/video_core/texture_cache/samples_helper.h
+@@ -24,7 +24,7 @@ namespace VideoCommon {
+         return {2, 2};
+     }
+     ASSERT_MSG(false, "Invalid number of samples={}", num_samples);
+-    return {1, 1};
++    return {0, 0};
+ }
+ 
+ [[nodiscard]] inline int NumSamples(Tegra::Texture::MsaaMode msaa_mode) {

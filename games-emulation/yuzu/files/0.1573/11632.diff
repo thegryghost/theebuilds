@@ -1,0 +1,1708 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index d0f76e57e21a..e02ededfcb3a 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -698,6 +698,8 @@ add_library(core STATIC
+     hle/service/nvnflinger/consumer_base.cpp
+     hle/service/nvnflinger/consumer_base.h
+     hle/service/nvnflinger/consumer_listener.h
++    hle/service/nvnflinger/fb_share_buffer_manager.cpp
++    hle/service/nvnflinger/fb_share_buffer_manager.h
+     hle/service/nvnflinger/graphic_buffer_producer.cpp
+     hle/service/nvnflinger/graphic_buffer_producer.h
+     hle/service/nvnflinger/hos_binder_driver_server.cpp
+diff --git a/src/core/hle/service/am/am.cpp b/src/core/hle/service/am/am.cpp
+index e9bd04842d90..05182a6ab061 100644
+--- a/src/core/hle/service/am/am.cpp
++++ b/src/core/hle/service/am/am.cpp
+@@ -8,6 +8,7 @@
+ #include "common/settings.h"
+ #include "common/settings_enums.h"
+ #include "core/core.h"
++#include "core/core_timing.h"
+ #include "core/file_sys/control_metadata.h"
+ #include "core/file_sys/patch_manager.h"
+ #include "core/file_sys/registered_cache.h"
+@@ -19,6 +20,7 @@
+ #include "core/hle/service/am/am.h"
+ #include "core/hle/service/am/applet_ae.h"
+ #include "core/hle/service/am/applet_oe.h"
++#include "core/hle/service/am/applets/applet_cabinet.h"
+ #include "core/hle/service/am/applets/applet_mii_edit_types.h"
+ #include "core/hle/service/am/applets/applet_profile_select.h"
+ #include "core/hle/service/am/applets/applet_web_browser.h"
+@@ -33,11 +35,13 @@
+ #include "core/hle/service/filesystem/filesystem.h"
+ #include "core/hle/service/ipc_helpers.h"
+ #include "core/hle/service/ns/ns.h"
++#include "core/hle/service/nvnflinger/fb_share_buffer_manager.h"
+ #include "core/hle/service/nvnflinger/nvnflinger.h"
+ #include "core/hle/service/pm/pm.h"
+ #include "core/hle/service/server_manager.h"
+ #include "core/hle/service/sm/sm.h"
+ #include "core/hle/service/vi/vi.h"
++#include "core/hle/service/vi/vi_results.h"
+ #include "core/memory.h"
+ 
+ namespace Service::AM {
+@@ -190,7 +194,7 @@ IDisplayController::IDisplayController(Core::System& system_)
+         {4, nullptr, "UpdateCallerAppletCaptureImage"},
+         {5, nullptr, "GetLastForegroundCaptureImageEx"},
+         {6, nullptr, "GetLastApplicationCaptureImageEx"},
+-        {7, nullptr, "GetCallerAppletCaptureImageEx"},
++        {7, &IDisplayController::GetCallerAppletCaptureImageEx, "GetCallerAppletCaptureImageEx"},
+         {8, &IDisplayController::TakeScreenShotOfOwnLayer, "TakeScreenShotOfOwnLayer"},
+         {9, nullptr, "CopyBetweenCaptureBuffers"},
+         {10, nullptr, "AcquireLastApplicationCaptureBuffer"},
+@@ -208,8 +212,8 @@ IDisplayController::IDisplayController(Core::System& system_)
+         {23, nullptr, "ReleaseLastApplicationCaptureSharedBuffer"},
+         {24, nullptr, "AcquireLastForegroundCaptureSharedBuffer"},
+         {25, nullptr, "ReleaseLastForegroundCaptureSharedBuffer"},
+-        {26, nullptr, "AcquireCallerAppletCaptureSharedBuffer"},
+-        {27, nullptr, "ReleaseCallerAppletCaptureSharedBuffer"},
++        {26, &IDisplayController::AcquireCallerAppletCaptureSharedBuffer, "AcquireCallerAppletCaptureSharedBuffer"},
++        {27, &IDisplayController::ReleaseCallerAppletCaptureSharedBuffer, "ReleaseCallerAppletCaptureSharedBuffer"},
+         {28, nullptr, "TakeScreenShotOfOwnLayerEx"},
+     };
+     // clang-format on
+@@ -219,6 +223,15 @@ IDisplayController::IDisplayController(Core::System& system_)
+ 
+ IDisplayController::~IDisplayController() = default;
+ 
++void IDisplayController::GetCallerAppletCaptureImageEx(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    IPC::ResponseBuilder rb{ctx, 4};
++    rb.Push(ResultSuccess);
++    rb.Push(1u);
++    rb.Push(0);
++}
++
+ void IDisplayController::TakeScreenShotOfOwnLayer(HLERequestContext& ctx) {
+     LOG_WARNING(Service_AM, "(STUBBED) called");
+ 
+@@ -226,6 +239,22 @@ void IDisplayController::TakeScreenShotOfOwnLayer(HLERequestContext& ctx) {
+     rb.Push(ResultSuccess);
+ }
+ 
++void IDisplayController::AcquireCallerAppletCaptureSharedBuffer(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    IPC::ResponseBuilder rb{ctx, 4};
++    rb.Push(ResultSuccess);
++    rb.Push(1U);
++    rb.Push(0);
++}
++
++void IDisplayController::ReleaseCallerAppletCaptureSharedBuffer(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(ResultSuccess);
++}
++
+ IDebugFunctions::IDebugFunctions(Core::System& system_)
+     : ServiceFramework{system_, "IDebugFunctions"} {
+     // clang-format off
+@@ -285,14 +314,14 @@ ISelfController::ISelfController(Core::System& system_, Nvnflinger::Nvnflinger&
+         {20, nullptr, "SetDesirableKeyboardLayout"},
+         {21, nullptr, "GetScreenShotProgramId"},
+         {40, &ISelfController::CreateManagedDisplayLayer, "CreateManagedDisplayLayer"},
+-        {41, nullptr, "IsSystemBufferSharingEnabled"},
+-        {42, nullptr, "GetSystemSharedLayerHandle"},
+-        {43, nullptr, "GetSystemSharedBufferHandle"},
++        {41, &ISelfController::IsSystemBufferSharingEnabled, "IsSystemBufferSharingEnabled"},
++        {42, &ISelfController::GetSystemSharedLayerHandle, "GetSystemSharedLayerHandle"},
++        {43, &ISelfController::GetSystemSharedBufferHandle, "GetSystemSharedBufferHandle"},
+         {44, &ISelfController::CreateManagedDisplaySeparableLayer, "CreateManagedDisplaySeparableLayer"},
+         {45, nullptr, "SetManagedDisplayLayerSeparationMode"},
+         {46, nullptr, "SetRecordingLayerCompositionEnabled"},
+         {50, &ISelfController::SetHandlesRequestToDisplay, "SetHandlesRequestToDisplay"},
+-        {51, nullptr, "ApproveToDisplay"},
++        {51, &ISelfController::ApproveToDisplay, "ApproveToDisplay"},
+         {60, nullptr, "OverrideAutoSleepTimeAndDimmingTime"},
+         {61, nullptr, "SetMediaPlaybackState"},
+         {62, &ISelfController::SetIdleTimeDetectionExtension, "SetIdleTimeDetectionExtension"},
+@@ -491,6 +520,50 @@ void ISelfController::CreateManagedDisplayLayer(HLERequestContext& ctx) {
+     rb.Push(*layer_id);
+ }
+ 
++void ISelfController::IsSystemBufferSharingEnabled(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(this->EnsureBufferSharingEnabled());
++}
++
++void ISelfController::GetSystemSharedLayerHandle(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    IPC::ResponseBuilder rb{ctx, 6};
++    rb.Push(this->EnsureBufferSharingEnabled());
++    rb.Push<s64>(system_shared_buffer_id);
++    rb.Push<s64>(system_shared_layer_id);
++}
++
++void ISelfController::GetSystemSharedBufferHandle(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    IPC::ResponseBuilder rb{ctx, 4};
++    rb.Push(this->EnsureBufferSharingEnabled());
++    rb.Push<s64>(system_shared_buffer_id);
++}
++
++Result ISelfController::EnsureBufferSharingEnabled() {
++    if (buffer_sharing_enabled) {
++        return ResultSuccess;
++    }
++
++    if (system.GetAppletManager().GetCurrentAppletId() <= Applets::AppletId::Application) {
++        return VI::ResultOperationFailed;
++    }
++
++    const auto display_id = nvnflinger.OpenDisplay("Default");
++    const auto result = nvnflinger.GetSystemBufferManager().Initialize(
++        &system_shared_buffer_id, &system_shared_layer_id, *display_id);
++
++    if (result.IsSuccess()) {
++        buffer_sharing_enabled = true;
++    }
++
++    return result;
++}
++
+ void ISelfController::CreateManagedDisplaySeparableLayer(HLERequestContext& ctx) {
+     LOG_WARNING(Service_AM, "(STUBBED) called");
+ 
+@@ -516,6 +589,13 @@ void ISelfController::SetHandlesRequestToDisplay(HLERequestContext& ctx) {
+     rb.Push(ResultSuccess);
+ }
+ 
++void ISelfController::ApproveToDisplay(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(ResultSuccess);
++}
++
+ void ISelfController::SetIdleTimeDetectionExtension(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+     idle_time_detection_extension = rp.Pop<u32>();
+@@ -686,7 +766,8 @@ void AppletMessageQueue::OperationModeChanged() {
+ 
+ ICommonStateGetter::ICommonStateGetter(Core::System& system_,
+                                        std::shared_ptr<AppletMessageQueue> msg_queue_)
+-    : ServiceFramework{system_, "ICommonStateGetter"}, msg_queue{std::move(msg_queue_)} {
++    : ServiceFramework{system_, "ICommonStateGetter"}, msg_queue{std::move(msg_queue_)},
++      service_context{system_, "ICommonStateGetter"} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, &ICommonStateGetter::GetEventHandle, "GetEventHandle"},
+@@ -699,10 +780,10 @@ ICommonStateGetter::ICommonStateGetter(Core::System& system_,
+         {7, nullptr, "GetCradleStatus"},
+         {8, &ICommonStateGetter::GetBootMode, "GetBootMode"},
+         {9, &ICommonStateGetter::GetCurrentFocusState, "GetCurrentFocusState"},
+-        {10, nullptr, "RequestToAcquireSleepLock"},
++        {10, &ICommonStateGetter::RequestToAcquireSleepLock, "RequestToAcquireSleepLock"},
+         {11, nullptr, "ReleaseSleepLock"},
+         {12, nullptr, "ReleaseSleepLockTransiently"},
+-        {13, nullptr, "GetAcquiredSleepLockEvent"},
++        {13, &ICommonStateGetter::GetAcquiredSleepLockEvent, "GetAcquiredSleepLockEvent"},
+         {14, nullptr, "GetWakeupCount"},
+         {20, nullptr, "PushToGeneralChannel"},
+         {30, nullptr, "GetHomeButtonReaderLockAccessor"},
+@@ -745,6 +826,8 @@ ICommonStateGetter::ICommonStateGetter(Core::System& system_,
+ 
+     RegisterHandlers(functions);
+ 
++    sleep_lock_event = service_context.CreateEvent("ICommonStateGetter::SleepLockEvent");
++
+     // Configure applets to be in foreground state
+     msg_queue->PushMessage(AppletMessageQueue::AppletMessage::FocusStateChanged);
+     msg_queue->PushMessage(AppletMessageQueue::AppletMessage::ChangeIntoForeground);
+@@ -793,6 +876,24 @@ void ICommonStateGetter::GetCurrentFocusState(HLERequestContext& ctx) {
+     rb.Push(static_cast<u8>(FocusState::InFocus));
+ }
+ 
++void ICommonStateGetter::RequestToAcquireSleepLock(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    // Sleep lock is acquired immediately.
++    sleep_lock_event->Signal();
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(ResultSuccess);
++}
++
++void ICommonStateGetter::GetAcquiredSleepLockEvent(HLERequestContext& ctx) {
++    LOG_WARNING(Service_AM, "called");
++
++    IPC::ResponseBuilder rb{ctx, 2, 1};
++    rb.Push(ResultSuccess);
++    rb.PushCopyObjects(sleep_lock_event->GetReadableEvent());
++}
++
+ void ICommonStateGetter::IsVrModeEnabled(HLERequestContext& ctx) {
+     LOG_DEBUG(Service_AM, "called");
+ 
+@@ -1385,7 +1486,16 @@ ILibraryAppletSelfAccessor::ILibraryAppletSelfAccessor(Core::System& system_)
+     // clang-format on
+     RegisterHandlers(functions);
+ 
+-    PushInShowMiiEditData();
++    switch (system.GetAppletManager().GetCurrentAppletId()) {
++    case Applets::AppletId::Cabinet:
++        PushInShowCabinetData();
++        break;
++    case Applets::AppletId::MiiEdit:
++        PushInShowMiiEditData();
++        break;
++    default:
++        break;
++    }
+ }
+ 
+ ILibraryAppletSelfAccessor::~ILibraryAppletSelfAccessor() = default;
+@@ -1431,7 +1541,7 @@ void ILibraryAppletSelfAccessor::GetLibraryAppletInfo(HLERequestContext& ctx) {
+     LOG_WARNING(Service_AM, "(STUBBED) called");
+ 
+     const LibraryAppletInfo applet_info{
+-        .applet_id = Applets::AppletId::MiiEdit,
++        .applet_id = system.GetAppletManager().GetCurrentAppletId(),
+         .library_applet_mode = Applets::LibraryAppletMode::AllForeground,
+     };
+ 
+@@ -1459,6 +1569,35 @@ void ILibraryAppletSelfAccessor::GetCallerAppletIdentityInfo(HLERequestContext&
+     rb.PushRaw(applet_info);
+ }
+ 
++void ILibraryAppletSelfAccessor::PushInShowCabinetData() {
++    const Applets::CommonArguments arguments{
++        .arguments_version = Applets::CommonArgumentVersion::Version3,
++        .size = Applets::CommonArgumentSize::Version3,
++        .library_version = static_cast<u32>(Applets::CabinetAppletVersion::Version1),
++        .theme_color = Applets::ThemeColor::BasicBlack,
++        .play_startup_sound = true,
++        .system_tick = system.CoreTiming().GetClockTicks(),
++    };
++
++    const Applets::StartParamForAmiiboSettings amiibo_settings{
++        .param_1 = 0,
++        .applet_mode = system.GetAppletManager().GetCabinetMode(),
++        .flags = Applets::CabinetFlags::None,
++        .amiibo_settings_1 = 0,
++        .device_handle = 0,
++        .tag_info{},
++        .register_info{},
++        .amiibo_settings_3{},
++    };
++
++    std::vector<u8> argument_data(sizeof(arguments));
++    std::vector<u8> settings_data(sizeof(amiibo_settings));
++    std::memcpy(argument_data.data(), &arguments, sizeof(arguments));
++    std::memcpy(settings_data.data(), &amiibo_settings, sizeof(amiibo_settings));
++    queue_data.emplace_back(std::move(argument_data));
++    queue_data.emplace_back(std::move(settings_data));
++}
++
+ void ILibraryAppletSelfAccessor::PushInShowMiiEditData() {
+     struct MiiEditV3 {
+         Applets::MiiEditAppletInputCommon common;
+@@ -2238,7 +2377,7 @@ void IProcessWindingController::GetLaunchReason(HLERequestContext& ctx) {
+ }
+ 
+ void IProcessWindingController::OpenCallingLibraryApplet(HLERequestContext& ctx) {
+-    const auto applet_id = Applets::AppletId::MiiEdit;
++    const auto applet_id = system.GetAppletManager().GetCurrentAppletId();
+     const auto applet_mode = Applets::LibraryAppletMode::AllForeground;
+ 
+     LOG_WARNING(Service_AM, "(STUBBED) called with applet_id={:08X}, applet_mode={:08X}", applet_id,
+@@ -2259,4 +2398,5 @@ void IProcessWindingController::OpenCallingLibraryApplet(HLERequestContext& ctx)
+     rb.Push(ResultSuccess);
+     rb.PushIpcInterface<ILibraryAppletAccessor>(system, applet);
+ }
++
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/am.h b/src/core/hle/service/am/am.h
+index 5b97eb5e3506..349482dcc8ed 100644
+--- a/src/core/hle/service/am/am.h
++++ b/src/core/hle/service/am/am.h
+@@ -122,7 +122,10 @@ class IDisplayController final : public ServiceFramework<IDisplayController> {
+     ~IDisplayController() override;
+ 
+ private:
++    void GetCallerAppletCaptureImageEx(HLERequestContext& ctx);
+     void TakeScreenShotOfOwnLayer(HLERequestContext& ctx);
++    void AcquireCallerAppletCaptureSharedBuffer(HLERequestContext& ctx);
++    void ReleaseCallerAppletCaptureSharedBuffer(HLERequestContext& ctx);
+ };
+ 
+ class IDebugFunctions final : public ServiceFramework<IDebugFunctions> {
+@@ -150,9 +153,13 @@ class ISelfController final : public ServiceFramework<ISelfController> {
+     void SetRestartMessageEnabled(HLERequestContext& ctx);
+     void SetOutOfFocusSuspendingEnabled(HLERequestContext& ctx);
+     void SetAlbumImageOrientation(HLERequestContext& ctx);
++    void IsSystemBufferSharingEnabled(HLERequestContext& ctx);
++    void GetSystemSharedBufferHandle(HLERequestContext& ctx);
++    void GetSystemSharedLayerHandle(HLERequestContext& ctx);
+     void CreateManagedDisplayLayer(HLERequestContext& ctx);
+     void CreateManagedDisplaySeparableLayer(HLERequestContext& ctx);
+     void SetHandlesRequestToDisplay(HLERequestContext& ctx);
++    void ApproveToDisplay(HLERequestContext& ctx);
+     void SetIdleTimeDetectionExtension(HLERequestContext& ctx);
+     void GetIdleTimeDetectionExtension(HLERequestContext& ctx);
+     void ReportUserIsActive(HLERequestContext& ctx);
+@@ -164,6 +171,8 @@ class ISelfController final : public ServiceFramework<ISelfController> {
+     void SaveCurrentScreenshot(HLERequestContext& ctx);
+     void SetRecordVolumeMuted(HLERequestContext& ctx);
+ 
++    Result EnsureBufferSharingEnabled();
++
+     enum class ScreenshotPermission : u32 {
+         Inherit = 0,
+         Enable = 1,
+@@ -179,7 +188,10 @@ class ISelfController final : public ServiceFramework<ISelfController> {
+ 
+     u32 idle_time_detection_extension = 0;
+     u64 num_fatal_sections_entered = 0;
++    u64 system_shared_buffer_id = 0;
++    u64 system_shared_layer_id = 0;
+     bool is_auto_sleep_disabled = false;
++    bool buffer_sharing_enabled = false;
+     ScreenshotPermission screenshot_permission = ScreenshotPermission::Inherit;
+ };
+ 
+@@ -223,6 +235,8 @@ class ICommonStateGetter final : public ServiceFramework<ICommonStateGetter> {
+     void GetEventHandle(HLERequestContext& ctx);
+     void ReceiveMessage(HLERequestContext& ctx);
+     void GetCurrentFocusState(HLERequestContext& ctx);
++    void RequestToAcquireSleepLock(HLERequestContext& ctx);
++    void GetAcquiredSleepLockEvent(HLERequestContext& ctx);
+     void GetDefaultDisplayResolutionChangeEvent(HLERequestContext& ctx);
+     void GetOperationMode(HLERequestContext& ctx);
+     void GetPerformanceMode(HLERequestContext& ctx);
+@@ -240,6 +254,8 @@ class ICommonStateGetter final : public ServiceFramework<ICommonStateGetter> {
+ 
+     std::shared_ptr<AppletMessageQueue> msg_queue;
+     bool vr_mode_state{};
++    Kernel::KEvent* sleep_lock_event;
++    KernelHelpers::ServiceContext service_context;
+ };
+ 
+ class IStorageImpl {
+@@ -311,6 +327,7 @@ class ILibraryAppletSelfAccessor final : public ServiceFramework<ILibraryAppletS
+     void ExitProcessAndReturn(HLERequestContext& ctx);
+     void GetCallerAppletIdentityInfo(HLERequestContext& ctx);
+ 
++    void PushInShowCabinetData();
+     void PushInShowMiiEditData();
+ 
+     std::deque<std::vector<u8>> queue_data;
+diff --git a/src/core/hle/service/am/applets/applet_cabinet.h b/src/core/hle/service/am/applets/applet_cabinet.h
+index b56427021e86..f498796f71f6 100644
+--- a/src/core/hle/service/am/applets/applet_cabinet.h
++++ b/src/core/hle/service/am/applets/applet_cabinet.h
+@@ -29,6 +29,15 @@ enum class CabinetAppletVersion : u32 {
+     Version1 = 0x1,
+ };
+ 
++enum class CabinetFlags : u8 {
++    None = 0,
++    DeviceHandle = 1 << 0,
++    TagInfo = 1 << 1,
++    RegisterInfo = 1 << 2,
++    All = DeviceHandle | TagInfo | RegisterInfo,
++};
++DECLARE_ENUM_FLAG_OPERATORS(CabinetFlags)
++
+ enum class CabinetResult : u8 {
+     Cancel = 0,
+     TagInfo = 1 << 1,
+@@ -51,7 +60,7 @@ static_assert(sizeof(AmiiboSettingsStartParam) == 0x30,
+ struct StartParamForAmiiboSettings {
+     u8 param_1;
+     Service::NFP::CabinetMode applet_mode;
+-    u8 flags;
++    CabinetFlags flags;
+     u8 amiibo_settings_1;
+     u64 device_handle;
+     Service::NFP::TagInfo tag_info;
+diff --git a/src/core/hle/service/am/applets/applet_general_backend.cpp b/src/core/hle/service/am/applets/applet_general_backend.cpp
+index 8b352020e0b5..c0032f652b09 100644
+--- a/src/core/hle/service/am/applets/applet_general_backend.cpp
++++ b/src/core/hle/service/am/applets/applet_general_backend.cpp
+@@ -223,9 +223,9 @@ void StubApplet::Initialize() {
+ 
+     const auto data = broker.PeekDataToAppletForDebug();
+     system.GetReporter().SaveUnimplementedAppletReport(
+-        static_cast<u32>(id), common_args.arguments_version, common_args.library_version,
+-        common_args.theme_color, common_args.play_startup_sound, common_args.system_tick,
+-        data.normal, data.interactive);
++        static_cast<u32>(id), static_cast<u32>(common_args.arguments_version),
++        common_args.library_version, static_cast<u32>(common_args.theme_color),
++        common_args.play_startup_sound, common_args.system_tick, data.normal, data.interactive);
+ 
+     LogCurrentStorage(broker, "Initialize");
+ }
+diff --git a/src/core/hle/service/am/applets/applets.cpp b/src/core/hle/service/am/applets/applets.cpp
+index 10afbc2dac10..89d5434afd04 100644
+--- a/src/core/hle/service/am/applets/applets.cpp
++++ b/src/core/hle/service/am/applets/applets.cpp
+@@ -199,6 +199,14 @@ const AppletFrontendSet& AppletManager::GetAppletFrontendSet() const {
+     return frontend;
+ }
+ 
++NFP::CabinetMode AppletManager::GetCabinetMode() const {
++    return cabinet_mode;
++}
++
++AppletId AppletManager::GetCurrentAppletId() const {
++    return current_applet_id;
++}
++
+ void AppletManager::SetAppletFrontendSet(AppletFrontendSet set) {
+     if (set.cabinet != nullptr) {
+         frontend.cabinet = std::move(set.cabinet);
+@@ -237,6 +245,14 @@ void AppletManager::SetAppletFrontendSet(AppletFrontendSet set) {
+     }
+ }
+ 
++void AppletManager::SetCabinetMode(NFP::CabinetMode mode) {
++    cabinet_mode = mode;
++}
++
++void AppletManager::SetCurrentAppletId(AppletId applet_id) {
++    current_applet_id = applet_id;
++}
++
+ void AppletManager::SetDefaultAppletFrontendSet() {
+     ClearAll();
+     SetDefaultAppletsIfMissing();
+diff --git a/src/core/hle/service/am/applets/applets.h b/src/core/hle/service/am/applets/applets.h
+index 12f374199811..f02bbc450119 100644
+--- a/src/core/hle/service/am/applets/applets.h
++++ b/src/core/hle/service/am/applets/applets.h
+@@ -34,6 +34,10 @@ class KEvent;
+ class KReadableEvent;
+ } // namespace Kernel
+ 
++namespace Service::NFP {
++enum class CabinetMode : u8;
++} // namespace Service::NFP
++
+ namespace Service::AM {
+ 
+ class IStorage;
+@@ -41,6 +45,8 @@ class IStorage;
+ namespace Applets {
+ 
+ enum class AppletId : u32 {
++    None = 0x00,
++    Application = 0x01,
+     OverlayDisplay = 0x02,
+     QLaunch = 0x03,
+     Starter = 0x04,
+@@ -71,6 +77,32 @@ enum class LibraryAppletMode : u32 {
+     AllForegroundInitiallyHidden = 4,
+ };
+ 
++enum class CommonArgumentVersion : u32 {
++    Version0,
++    Version1,
++    Version2,
++    Version3,
++};
++
++enum class CommonArgumentSize : u32 {
++    Version3 = 0x20,
++};
++
++enum class ThemeColor : u32 {
++    BasicWhite = 0,
++    BasicBlack = 3,
++};
++
++struct CommonArguments {
++    CommonArgumentVersion arguments_version;
++    CommonArgumentSize size;
++    u32 library_version;
++    ThemeColor theme_color;
++    bool play_startup_sound;
++    u64_le system_tick;
++};
++static_assert(sizeof(CommonArguments) == 0x20, "CommonArguments has incorrect size.");
++
+ class AppletDataBroker final {
+ public:
+     explicit AppletDataBroker(Core::System& system_, LibraryAppletMode applet_mode_);
+@@ -161,16 +193,6 @@ class Applet {
+     }
+ 
+ protected:
+-    struct CommonArguments {
+-        u32_le arguments_version;
+-        u32_le size;
+-        u32_le library_version;
+-        u32_le theme_color;
+-        bool play_startup_sound;
+-        u64_le system_tick;
+-    };
+-    static_assert(sizeof(CommonArguments) == 0x20, "CommonArguments has incorrect size.");
+-
+     CommonArguments common_args{};
+     AppletDataBroker broker;
+     LibraryAppletMode applet_mode;
+@@ -219,8 +241,12 @@ class AppletManager {
+     ~AppletManager();
+ 
+     const AppletFrontendSet& GetAppletFrontendSet() const;
++    NFP::CabinetMode GetCabinetMode() const;
++    AppletId GetCurrentAppletId() const;
+ 
+     void SetAppletFrontendSet(AppletFrontendSet set);
++    void SetCabinetMode(NFP::CabinetMode mode);
++    void SetCurrentAppletId(AppletId applet_id);
+     void SetDefaultAppletFrontendSet();
+     void SetDefaultAppletsIfMissing();
+     void ClearAll();
+@@ -228,6 +254,9 @@ class AppletManager {
+     std::shared_ptr<Applet> GetApplet(AppletId id, LibraryAppletMode mode) const;
+ 
+ private:
++    AppletId current_applet_id{};
++    NFP::CabinetMode cabinet_mode{};
++
+     AppletFrontendSet frontend;
+     Core::System& system;
+ };
+diff --git a/src/core/hle/service/ldn/ldn.cpp b/src/core/hle/service/ldn/ldn.cpp
+index 9d149a7cd579..7927f826401e 100644
+--- a/src/core/hle/service/ldn/ldn.cpp
++++ b/src/core/hle/service/ldn/ldn.cpp
+@@ -23,19 +23,39 @@ class IMonitorService final : public ServiceFramework<IMonitorService> {
+     explicit IMonitorService(Core::System& system_) : ServiceFramework{system_, "IMonitorService"} {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+-            {0, nullptr, "GetStateForMonitor"},
++            {0, &IMonitorService::GetStateForMonitor, "GetStateForMonitor"},
+             {1, nullptr, "GetNetworkInfoForMonitor"},
+             {2, nullptr, "GetIpv4AddressForMonitor"},
+             {3, nullptr, "GetDisconnectReasonForMonitor"},
+             {4, nullptr, "GetSecurityParameterForMonitor"},
+             {5, nullptr, "GetNetworkConfigForMonitor"},
+-            {100, nullptr, "InitializeMonitor"},
++            {100, &IMonitorService::InitializeMonitor, "InitializeMonitor"},
+             {101, nullptr, "FinalizeMonitor"},
+         };
+         // clang-format on
+ 
+         RegisterHandlers(functions);
+     }
++
++private:
++    void GetStateForMonitor(HLERequestContext& ctx) {
++        LOG_INFO(Service_LDN, "called");
++
++        IPC::ResponseBuilder rb{ctx, 3};
++        rb.Push(ResultSuccess);
++        rb.PushEnum(state);
++    }
++
++    void InitializeMonitor(HLERequestContext& ctx) {
++        LOG_INFO(Service_LDN, "called");
++
++        state = State::Initialized;
++
++        IPC::ResponseBuilder rb{ctx, 2};
++        rb.Push(ResultSuccess);
++    }
++
++    State state{State::None};
+ };
+ 
+ class LDNM final : public ServiceFramework<LDNM> {
+@@ -731,14 +751,81 @@ class LP2PSYS final : public ServiceFramework<LP2PSYS> {
+     }
+ };
+ 
++class ISfMonitorService final : public ServiceFramework<ISfMonitorService> {
++public:
++    explicit ISfMonitorService(Core::System& system_)
++        : ServiceFramework{system_, "ISfMonitorService"} {
++        // clang-format off
++        static const FunctionInfo functions[] = {
++            {0, &ISfMonitorService::Initialize, "Initialize"},
++            {288, &ISfMonitorService::GetGroupInfo, "GetGroupInfo"},
++            {320, nullptr, "GetLinkLevel"},
++        };
++        // clang-format on
++
++        RegisterHandlers(functions);
++    }
++
++private:
++    void Initialize(HLERequestContext& ctx) {
++        LOG_WARNING(Service_LDN, "(STUBBED) called");
++
++        IPC::ResponseBuilder rb{ctx, 3};
++        rb.Push(ResultSuccess);
++        rb.Push(0);
++    }
++
++    void GetGroupInfo(HLERequestContext& ctx) {
++        LOG_WARNING(Service_LDN, "(STUBBED) called");
++
++        struct GroupInfo {
++            std::array<u8, 0x200> info;
++        };
++
++        GroupInfo group_info{};
++
++        ctx.WriteBuffer(group_info);
++        IPC::ResponseBuilder rb{ctx, 2};
++        rb.Push(ResultSuccess);
++    }
++};
++
++class LP2PM final : public ServiceFramework<LP2PM> {
++public:
++    explicit LP2PM(Core::System& system_) : ServiceFramework{system_, "lp2p:m"} {
++        // clang-format off
++        static const FunctionInfo functions[] = {
++            {0, &LP2PM::CreateMonitorService, "CreateMonitorService"},
++        };
++        // clang-format on
++
++        RegisterHandlers(functions);
++    }
++
++private:
++    void CreateMonitorService(HLERequestContext& ctx) {
++        IPC::RequestParser rp{ctx};
++        const u64 reserved_input = rp.Pop<u64>();
++
++        LOG_INFO(Service_LDN, "called, reserved_input={}", reserved_input);
++
++        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
++        rb.Push(ResultSuccess);
++        rb.PushIpcInterface<ISfMonitorService>(system);
++    }
++};
++
+ void LoopProcess(Core::System& system) {
+     auto server_manager = std::make_unique<ServerManager>(system);
+ 
+     server_manager->RegisterNamedService("ldn:m", std::make_shared<LDNM>(system));
+     server_manager->RegisterNamedService("ldn:s", std::make_shared<LDNS>(system));
+     server_manager->RegisterNamedService("ldn:u", std::make_shared<LDNU>(system));
++
+     server_manager->RegisterNamedService("lp2p:app", std::make_shared<LP2PAPP>(system));
+     server_manager->RegisterNamedService("lp2p:sys", std::make_shared<LP2PSYS>(system));
++    server_manager->RegisterNamedService("lp2p:m", std::make_shared<LP2PM>(system));
++
+     ServerManager::RunServer(std::move(server_manager));
+ }
+ 
+diff --git a/src/core/hle/service/nfc/common/device.cpp b/src/core/hle/service/nfc/common/device.cpp
+index 68c407f810d5..e7a00deb3822 100644
+--- a/src/core/hle/service/nfc/common/device.cpp
++++ b/src/core/hle/service/nfc/common/device.cpp
+@@ -830,11 +830,6 @@ Result NfcDevice::SetRegisterInfoPrivate(const NFP::RegisterInfoPrivate& registe
+         return ResultWrongDeviceState;
+     }
+ 
+-    Service::Mii::StoreData store_data{};
+-    Service::Mii::NfpStoreDataExtension extension{};
+-    store_data.BuildBase(Mii::Gender::Male);
+-    extension.SetFromStoreData(store_data);
+-
+     auto& settings = tag_data.settings;
+ 
+     if (tag_data.settings.settings.amiibo_initialized == 0) {
+@@ -843,8 +838,8 @@ Result NfcDevice::SetRegisterInfoPrivate(const NFP::RegisterInfoPrivate& registe
+     }
+ 
+     SetAmiiboName(settings, register_info.amiibo_name);
+-    tag_data.owner_mii.BuildFromStoreData(store_data);
+-    tag_data.mii_extension = extension;
++    tag_data.owner_mii.BuildFromStoreData(register_info.mii_store_data);
++    tag_data.mii_extension.SetFromStoreData(register_info.mii_store_data);
+     tag_data.unknown = 0;
+     tag_data.unknown2 = {};
+     settings.country_code_id = 0;
+diff --git a/src/core/hle/service/nvdrv/devices/nvmap.h b/src/core/hle/service/nvdrv/devices/nvmap.h
+index 40c65b430b61..4c0cc71cd235 100644
+--- a/src/core/hle/service/nvdrv/devices/nvmap.h
++++ b/src/core/hle/service/nvdrv/devices/nvmap.h
+@@ -45,13 +45,6 @@ class nvmap final : public nvdevice {
+         IsSharedMemMapped = 6
+     };
+ 
+-private:
+-    /// Id to use for the next handle that is created.
+-    u32 next_handle = 0;
+-
+-    /// Id to use for the next object that is created.
+-    u32 next_id = 0;
+-
+     struct IocCreateParams {
+         // Input
+         u32_le size{};
+@@ -113,6 +106,13 @@ class nvmap final : public nvdevice {
+     NvResult IocParam(std::span<const u8> input, std::span<u8> output);
+     NvResult IocFree(std::span<const u8> input, std::span<u8> output);
+ 
++private:
++    /// Id to use for the next handle that is created.
++    u32 next_handle = 0;
++
++    /// Id to use for the next object that is created.
++    u32 next_id = 0;
++
+     NvCore::Container& container;
+     NvCore::NvMap& file;
+ };
+diff --git a/src/core/hle/service/nvnflinger/buffer_item.h b/src/core/hle/service/nvnflinger/buffer_item.h
+index 7fd808f5468a..3da8cc3aa1f7 100644
+--- a/src/core/hle/service/nvnflinger/buffer_item.h
++++ b/src/core/hle/service/nvnflinger/buffer_item.h
+@@ -15,7 +15,7 @@
+ 
+ namespace Service::android {
+ 
+-class GraphicBuffer;
++struct GraphicBuffer;
+ 
+ class BufferItem final {
+ public:
+diff --git a/src/core/hle/service/nvnflinger/buffer_slot.h b/src/core/hle/service/nvnflinger/buffer_slot.h
+index d25bca049d22..d8c9dec3b2a9 100644
+--- a/src/core/hle/service/nvnflinger/buffer_slot.h
++++ b/src/core/hle/service/nvnflinger/buffer_slot.h
+@@ -13,7 +13,7 @@
+ 
+ namespace Service::android {
+ 
+-class GraphicBuffer;
++struct GraphicBuffer;
+ 
+ enum class BufferState : u32 {
+     Free = 0,
+diff --git a/src/core/hle/service/nvnflinger/fb_share_buffer_manager.cpp b/src/core/hle/service/nvnflinger/fb_share_buffer_manager.cpp
+new file mode 100644
+index 000000000000..469a532448ce
+--- /dev/null
++++ b/src/core/hle/service/nvnflinger/fb_share_buffer_manager.cpp
+@@ -0,0 +1,351 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <random>
++
++#include "core/core.h"
++#include "core/hle/kernel/k_process.h"
++#include "core/hle/kernel/k_system_resource.h"
++#include "core/hle/service/nvdrv/devices/nvmap.h"
++#include "core/hle/service/nvdrv/nvdrv.h"
++#include "core/hle/service/nvnflinger/buffer_queue_producer.h"
++#include "core/hle/service/nvnflinger/fb_share_buffer_manager.h"
++#include "core/hle/service/nvnflinger/pixel_format.h"
++#include "core/hle/service/nvnflinger/ui/graphic_buffer.h"
++#include "core/hle/service/vi/layer/vi_layer.h"
++#include "core/hle/service/vi/vi_results.h"
++
++namespace Service::Nvnflinger {
++
++namespace {
++
++Result AllocateIoForProcessAddressSpace(Common::ProcessAddress* out_map_address,
++                                        std::unique_ptr<Kernel::KPageGroup>* out_page_group,
++                                        Core::System& system, u32 size) {
++    using Core::Memory::YUZU_PAGESIZE;
++
++    // Allocate memory for the system shared buffer.
++    // FIXME: Because the gmmu can only point to cpu addresses, we need
++    //        to map this in the application space to allow it to be used.
++    // FIXME: Add proper smmu emulation.
++    // FIXME: This memory belongs to vi's .data section.
++    auto& kernel = system.Kernel();
++    auto* process = system.ApplicationProcess();
++    auto& page_table = process->GetPageTable();
++
++    // Hold a temporary page group reference while we try to map it.
++    auto pg = std::make_unique<Kernel::KPageGroup>(
++        kernel, std::addressof(kernel.GetSystemSystemResource().GetBlockInfoManager()));
++
++    // Allocate memory from secure pool.
++    R_TRY(kernel.MemoryManager().AllocateAndOpen(
++        pg.get(), size / YUZU_PAGESIZE,
++        Kernel::KMemoryManager::EncodeOption(Kernel::KMemoryManager::Pool::Secure,
++                                             Kernel::KMemoryManager::Direction::FromBack)));
++
++    // Get bounds of where mapping is possible.
++    const VAddr alias_code_begin = GetInteger(page_table.GetAliasCodeRegionStart());
++    const VAddr alias_code_size = page_table.GetAliasCodeRegionSize() / YUZU_PAGESIZE;
++    const auto state = Kernel::KMemoryState::Io;
++    const auto perm = Kernel::KMemoryPermission::UserReadWrite;
++    std::mt19937_64 rng{process->GetRandomEntropy(0)};
++
++    // Retry up to 64 times to map into alias code range.
++    Result res = ResultSuccess;
++    int i;
++    for (i = 0; i < 64; i++) {
++        *out_map_address = alias_code_begin + ((rng() % alias_code_size) * YUZU_PAGESIZE);
++        res = page_table.MapPageGroup(*out_map_address, *pg, state, perm);
++        if (R_SUCCEEDED(res)) {
++            break;
++        }
++    }
++
++    // Return failure, if necessary
++    R_UNLESS(i < 64, res);
++
++    // Return the mapped page group.
++    *out_page_group = std::move(pg);
++
++    // We succeeded.
++    R_SUCCEED();
++}
++
++template <typename T>
++std::span<u8> SerializeIoc(T& params) {
++    return std::span(reinterpret_cast<u8*>(std::addressof(params)), sizeof(T));
++}
++
++Result CreateNvMapHandle(u32* out_nv_map_handle, Nvidia::Devices::nvmap& nvmap, u32 size) {
++    // Create a handle.
++    Nvidia::Devices::nvmap::IocCreateParams create_in_params{
++        .size = size,
++        .handle = 0,
++    };
++    Nvidia::Devices::nvmap::IocCreateParams create_out_params{};
++    R_UNLESS(nvmap.IocCreate(SerializeIoc(create_in_params), SerializeIoc(create_out_params)) ==
++                 Nvidia::NvResult::Success,
++             VI::ResultOperationFailed);
++
++    // Assign the output handle.
++    *out_nv_map_handle = create_out_params.handle;
++
++    // We succeeded.
++    R_SUCCEED();
++}
++
++Result FreeNvMapHandle(Nvidia::Devices::nvmap& nvmap, u32 handle) {
++    // Free the handle.
++    Nvidia::Devices::nvmap::IocFreeParams free_in_params{
++        .handle = handle,
++    };
++    Nvidia::Devices::nvmap::IocFreeParams free_out_params{};
++    R_UNLESS(nvmap.IocFree(SerializeIoc(free_in_params), SerializeIoc(free_out_params)) ==
++                 Nvidia::NvResult::Success,
++             VI::ResultOperationFailed);
++
++    // We succeeded.
++    R_SUCCEED();
++}
++
++Result AllocNvMapHandle(Nvidia::Devices::nvmap& nvmap, u32 handle, Common::ProcessAddress buffer,
++                        u32 size) {
++    // Assign the allocated memory to the handle.
++    Nvidia::Devices::nvmap::IocAllocParams alloc_in_params{
++        .handle = handle,
++        .heap_mask = 0,
++        .flags = {},
++        .align = 0,
++        .kind = 0,
++        .address = GetInteger(buffer),
++    };
++    Nvidia::Devices::nvmap::IocAllocParams alloc_out_params{};
++    R_UNLESS(nvmap.IocAlloc(SerializeIoc(alloc_in_params), SerializeIoc(alloc_out_params)) ==
++                 Nvidia::NvResult::Success,
++             VI::ResultOperationFailed);
++
++    // We succeeded.
++    R_SUCCEED();
++}
++
++Result AllocateHandleForBuffer(u32* out_handle, Nvidia::Module& nvdrv,
++                               Common::ProcessAddress buffer, u32 size) {
++    // Get the nvmap device.
++    auto nvmap_fd = nvdrv.Open("/dev/nvmap");
++    auto nvmap = nvdrv.GetDevice<Nvidia::Devices::nvmap>(nvmap_fd);
++    ASSERT(nvmap != nullptr);
++
++    // Create a handle.
++    R_TRY(CreateNvMapHandle(out_handle, *nvmap, size));
++
++    // Ensure we maintain a clean state on failure.
++    ON_RESULT_FAILURE {
++        ASSERT(R_SUCCEEDED(FreeNvMapHandle(*nvmap, *out_handle)));
++    };
++
++    // Assign the allocated memory to the handle.
++    R_RETURN(AllocNvMapHandle(*nvmap, *out_handle, buffer, size));
++}
++
++constexpr auto SharedBufferBlockLinearFormat = android::PixelFormat::Rgba8888;
++constexpr u32 SharedBufferBlockLinearBpp = 4;
++
++constexpr u32 SharedBufferBlockLinearWidth = 1280;
++constexpr u32 SharedBufferBlockLinearHeight = 768;
++constexpr u32 SharedBufferBlockLinearStride =
++    SharedBufferBlockLinearWidth * SharedBufferBlockLinearBpp;
++constexpr u32 SharedBufferNumSlots = 7;
++
++constexpr u32 SharedBufferWidth = 1280;
++constexpr u32 SharedBufferHeight = 720;
++constexpr u32 SharedBufferAsync = false;
++
++constexpr u32 SharedBufferSlotSize =
++    SharedBufferBlockLinearWidth * SharedBufferBlockLinearHeight * SharedBufferBlockLinearBpp;
++constexpr u32 SharedBufferSize = SharedBufferSlotSize * SharedBufferNumSlots;
++
++constexpr SharedMemoryPoolLayout SharedBufferPoolLayout = [] {
++    SharedMemoryPoolLayout layout{};
++    layout.num_slots = SharedBufferNumSlots;
++
++    for (u32 i = 0; i < SharedBufferNumSlots; i++) {
++        layout.slots[i].buffer_offset = i * SharedBufferSlotSize;
++        layout.slots[i].size = SharedBufferSlotSize;
++        layout.slots[i].width = SharedBufferWidth;
++        layout.slots[i].height = SharedBufferHeight;
++    }
++
++    return layout;
++}();
++
++void MakeGraphicBuffer(android::BufferQueueProducer& producer, u32 slot, u32 handle) {
++    auto buffer = std::make_shared<android::GraphicBuffer>();
++    buffer->width = SharedBufferWidth;
++    buffer->height = SharedBufferHeight;
++    buffer->stride = SharedBufferBlockLinearStride;
++    buffer->format = SharedBufferBlockLinearFormat;
++    buffer->buffer_id = handle;
++    buffer->offset = slot * SharedBufferSlotSize;
++    ASSERT(producer.SetPreallocatedBuffer(slot, buffer) == android::Status::NoError);
++}
++
++} // namespace
++
++FbShareBufferManager::FbShareBufferManager(Core::System& system, Nvnflinger& flinger,
++                                           std::shared_ptr<Nvidia::Module> nvdrv)
++    : m_system(system), m_flinger(flinger), m_nvdrv(std::move(nvdrv)) {}
++
++FbShareBufferManager::~FbShareBufferManager() = default;
++
++Result FbShareBufferManager::Initialize(u64* out_buffer_id, u64* out_layer_id, u64 display_id) {
++    std::scoped_lock lk{m_guard};
++
++    // Ensure we have not already created a buffer.
++    R_UNLESS(m_buffer_id == 0, VI::ResultOperationFailed);
++
++    // Allocate memory and space for the shared buffer.
++    Common::ProcessAddress map_address;
++    R_TRY(AllocateIoForProcessAddressSpace(std::addressof(map_address),
++                                           std::addressof(m_buffer_page_group), m_system,
++                                           SharedBufferSize));
++
++    // Create an nvmap handle for the buffer and assign the memory to it.
++    R_TRY(AllocateHandleForBuffer(std::addressof(m_buffer_nvmap_handle), *m_nvdrv, map_address,
++                                  SharedBufferSize));
++
++    // Record the display id.
++    m_display_id = display_id;
++
++    // Create a layer for the display.
++    m_layer_id = m_flinger.CreateLayer(m_display_id).value();
++
++    // Set up the buffer.
++    m_buffer_id = m_next_buffer_id++;
++
++    // Get the layer.
++    VI::Layer* layer = m_flinger.FindLayer(m_display_id, m_layer_id);
++    ASSERT(layer != nullptr);
++
++    // Get the producer and set preallocated buffers.
++    auto& producer = layer->GetBufferQueue();
++    MakeGraphicBuffer(producer, 0, m_buffer_nvmap_handle);
++    MakeGraphicBuffer(producer, 1, m_buffer_nvmap_handle);
++
++    // Assign outputs.
++    *out_buffer_id = m_buffer_id;
++    *out_layer_id = m_layer_id;
++
++    // We succeeded.
++    R_SUCCEED();
++}
++
++Result FbShareBufferManager::GetSharedBufferMemoryHandleId(u64* out_buffer_size,
++                                                           s32* out_nvmap_handle,
++                                                           SharedMemoryPoolLayout* out_pool_layout,
++                                                           u64 buffer_id,
++                                                           u64 applet_resource_user_id) {
++    std::scoped_lock lk{m_guard};
++
++    R_UNLESS(m_buffer_id > 0, VI::ResultNotFound);
++    R_UNLESS(buffer_id == m_buffer_id, VI::ResultNotFound);
++
++    *out_pool_layout = SharedBufferPoolLayout;
++    *out_buffer_size = SharedBufferSize;
++    *out_nvmap_handle = m_buffer_nvmap_handle;
++
++    R_SUCCEED();
++}
++
++Result FbShareBufferManager::GetLayerFromId(VI::Layer** out_layer, u64 layer_id) {
++    // Ensure the layer id is valid.
++    R_UNLESS(m_layer_id > 0 && layer_id == m_layer_id, VI::ResultNotFound);
++
++    // Get the layer.
++    VI::Layer* layer = m_flinger.FindLayer(m_display_id, layer_id);
++    R_UNLESS(layer != nullptr, VI::ResultNotFound);
++
++    // We succeeded.
++    *out_layer = layer;
++    R_SUCCEED();
++}
++
++Result FbShareBufferManager::AcquireSharedFrameBuffer(android::Fence* out_fence,
++                                                      std::array<s32, 4>& out_slot_indexes,
++                                                      s64* out_target_slot, u64 layer_id) {
++    std::scoped_lock lk{m_guard};
++
++    // Get the layer.
++    VI::Layer* layer;
++    R_TRY(this->GetLayerFromId(std::addressof(layer), layer_id));
++
++    // Get the producer.
++    auto& producer = layer->GetBufferQueue();
++
++    // Get the next buffer from the producer.
++    s32 slot;
++    R_UNLESS(producer.DequeueBuffer(std::addressof(slot), out_fence, SharedBufferAsync != 0,
++                                    SharedBufferWidth, SharedBufferHeight,
++                                    SharedBufferBlockLinearFormat, 0) == android::Status::NoError,
++             VI::ResultOperationFailed);
++
++    // Assign remaining outputs.
++    *out_target_slot = slot;
++    out_slot_indexes = {0, 1, -1, -1};
++
++    // We succeeded.
++    R_SUCCEED();
++}
++
++Result FbShareBufferManager::PresentSharedFrameBuffer(android::Fence fence,
++                                                      Common::Rectangle<s32> crop_region,
++                                                      u32 transform, s32 swap_interval,
++                                                      u64 layer_id, s64 slot) {
++    std::scoped_lock lk{m_guard};
++
++    // Get the layer.
++    VI::Layer* layer;
++    R_TRY(this->GetLayerFromId(std::addressof(layer), layer_id));
++
++    // Get the producer.
++    auto& producer = layer->GetBufferQueue();
++
++    // Request to queue the buffer.
++    std::shared_ptr<android::GraphicBuffer> buffer;
++    R_UNLESS(producer.RequestBuffer(static_cast<s32>(slot), std::addressof(buffer)) ==
++                 android::Status::NoError,
++             VI::ResultOperationFailed);
++
++    // Queue the buffer to the producer.
++    android::QueueBufferInput input{};
++    android::QueueBufferOutput output{};
++    input.crop = crop_region;
++    input.fence = fence;
++    input.transform = static_cast<android::NativeWindowTransform>(transform);
++    input.swap_interval = swap_interval;
++    R_UNLESS(producer.QueueBuffer(static_cast<s32>(slot), input, std::addressof(output)) ==
++                 android::Status::NoError,
++             VI::ResultOperationFailed);
++
++    // We succeeded.
++    R_SUCCEED();
++}
++
++Result FbShareBufferManager::GetSharedFrameBufferAcquirableEvent(Kernel::KReadableEvent** out_event,
++                                                                 u64 layer_id) {
++    std::scoped_lock lk{m_guard};
++
++    // Get the layer.
++    VI::Layer* layer;
++    R_TRY(this->GetLayerFromId(std::addressof(layer), layer_id));
++
++    // Get the producer.
++    auto& producer = layer->GetBufferQueue();
++
++    // Set the event.
++    *out_event = std::addressof(producer.GetNativeHandle());
++
++    // We succeeded.
++    R_SUCCEED();
++}
++
++} // namespace Service::Nvnflinger
+diff --git a/src/core/hle/service/nvnflinger/fb_share_buffer_manager.h b/src/core/hle/service/nvnflinger/fb_share_buffer_manager.h
+new file mode 100644
+index 000000000000..c809c01b41da
+--- /dev/null
++++ b/src/core/hle/service/nvnflinger/fb_share_buffer_manager.h
+@@ -0,0 +1,65 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "common/math_util.h"
++#include "core/hle/service/nvnflinger/nvnflinger.h"
++#include "core/hle/service/nvnflinger/ui/fence.h"
++
++namespace Kernel {
++class KPageGroup;
++}
++
++namespace Service::Nvnflinger {
++
++struct SharedMemorySlot {
++    u64 buffer_offset;
++    u64 size;
++    s32 width;
++    s32 height;
++};
++static_assert(sizeof(SharedMemorySlot) == 0x18, "SharedMemorySlot has wrong size");
++
++struct SharedMemoryPoolLayout {
++    s32 num_slots;
++    std::array<SharedMemorySlot, 0x10> slots;
++};
++static_assert(sizeof(SharedMemoryPoolLayout) == 0x188, "SharedMemoryPoolLayout has wrong size");
++
++class FbShareBufferManager final {
++public:
++    explicit FbShareBufferManager(Core::System& system, Nvnflinger& flinger,
++                                  std::shared_ptr<Nvidia::Module> nvdrv);
++    ~FbShareBufferManager();
++
++    Result Initialize(u64* out_buffer_id, u64* out_layer_handle, u64 display_id);
++    Result GetSharedBufferMemoryHandleId(u64* out_buffer_size, s32* out_nvmap_handle,
++                                         SharedMemoryPoolLayout* out_pool_layout, u64 buffer_id,
++                                         u64 applet_resource_user_id);
++    Result AcquireSharedFrameBuffer(android::Fence* out_fence, std::array<s32, 4>& out_slots,
++                                    s64* out_target_slot, u64 layer_id);
++    Result PresentSharedFrameBuffer(android::Fence fence, Common::Rectangle<s32> crop_region,
++                                    u32 transform, s32 swap_interval, u64 layer_id, s64 slot);
++    Result GetSharedFrameBufferAcquirableEvent(Kernel::KReadableEvent** out_event, u64 layer_id);
++
++private:
++    Result GetLayerFromId(VI::Layer** out_layer, u64 layer_id);
++
++private:
++    u64 m_next_buffer_id = 1;
++    u64 m_display_id = 0;
++    u64 m_buffer_id = 0;
++    u64 m_layer_id = 0;
++    u32 m_buffer_nvmap_handle = 0;
++    SharedMemoryPoolLayout m_pool_layout = {};
++
++    std::unique_ptr<Kernel::KPageGroup> m_buffer_page_group;
++
++    std::mutex m_guard;
++    Core::System& m_system;
++    Nvnflinger& m_flinger;
++    std::shared_ptr<Nvidia::Module> m_nvdrv;
++};
++
++} // namespace Service::Nvnflinger
+diff --git a/src/core/hle/service/nvnflinger/graphic_buffer_producer.h b/src/core/hle/service/nvnflinger/graphic_buffer_producer.h
+index 21d7b31f339f..5d7cff7d3810 100644
+--- a/src/core/hle/service/nvnflinger/graphic_buffer_producer.h
++++ b/src/core/hle/service/nvnflinger/graphic_buffer_producer.h
+@@ -19,6 +19,7 @@ class InputParcel;
+ #pragma pack(push, 1)
+ struct QueueBufferInput final {
+     explicit QueueBufferInput(InputParcel& parcel);
++    explicit QueueBufferInput() = default;
+ 
+     void Deflate(s64* timestamp_, bool* is_auto_timestamp_, Common::Rectangle<s32>* crop_,
+                  NativeWindowScalingMode* scaling_mode_, NativeWindowTransform* transform_,
+@@ -34,7 +35,6 @@ struct QueueBufferInput final {
+         *fence_ = fence;
+     }
+ 
+-private:
+     s64 timestamp{};
+     s32 is_auto_timestamp{};
+     Common::Rectangle<s32> crop{};
+diff --git a/src/core/hle/service/nvnflinger/nvnflinger.cpp b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+index 21f31f7a030e..a07c621d9f9a 100644
+--- a/src/core/hle/service/nvnflinger/nvnflinger.cpp
++++ b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+@@ -17,6 +17,7 @@
+ #include "core/hle/service/nvdrv/nvdrv.h"
+ #include "core/hle/service/nvnflinger/buffer_item_consumer.h"
+ #include "core/hle/service/nvnflinger/buffer_queue_core.h"
++#include "core/hle/service/nvnflinger/fb_share_buffer_manager.h"
+ #include "core/hle/service/nvnflinger/hos_binder_driver_server.h"
+ #include "core/hle/service/nvnflinger/nvnflinger.h"
+ #include "core/hle/service/nvnflinger/ui/graphic_buffer.h"
+@@ -331,4 +332,14 @@ s64 Nvnflinger::GetNextTicks() const {
+     return static_cast<s64>(speed_scale * (1000000000.f / effective_fps));
+ }
+ 
++FbShareBufferManager& Nvnflinger::GetSystemBufferManager() {
++    const auto lock_guard = Lock();
++
++    if (!system_buffer_manager) {
++        system_buffer_manager = std::make_unique<FbShareBufferManager>(system, *this, nvdrv);
++    }
++
++    return *system_buffer_manager;
++}
++
+ } // namespace Service::Nvnflinger
+diff --git a/src/core/hle/service/nvnflinger/nvnflinger.h b/src/core/hle/service/nvnflinger/nvnflinger.h
+index f478c2bc693f..14c783582e8b 100644
+--- a/src/core/hle/service/nvnflinger/nvnflinger.h
++++ b/src/core/hle/service/nvnflinger/nvnflinger.h
+@@ -45,6 +45,9 @@ class BufferQueueProducer;
+ 
+ namespace Service::Nvnflinger {
+ 
++class FbShareBufferManager;
++class HosBinderDriverServer;
++
+ class Nvnflinger final {
+ public:
+     explicit Nvnflinger(Core::System& system_, HosBinderDriverServer& hos_binder_driver_server_);
+@@ -90,12 +93,16 @@ class Nvnflinger final {
+ 
+     [[nodiscard]] s64 GetNextTicks() const;
+ 
++    FbShareBufferManager& GetSystemBufferManager();
++
+ private:
+     struct Layer {
+         std::unique_ptr<android::BufferQueueCore> core;
+         std::unique_ptr<android::BufferQueueProducer> producer;
+     };
+ 
++    friend class FbShareBufferManager;
++
+ private:
+     [[nodiscard]] std::unique_lock<std::mutex> Lock() const {
+         return std::unique_lock{*guard};
+@@ -140,6 +147,8 @@ class Nvnflinger final {
+     std::shared_ptr<Core::Timing::EventType> multi_composition_event;
+     std::shared_ptr<Core::Timing::EventType> single_composition_event;
+ 
++    std::unique_ptr<FbShareBufferManager> system_buffer_manager;
++
+     std::shared_ptr<std::mutex> guard;
+ 
+     Core::System& system;
+diff --git a/src/core/hle/service/nvnflinger/ui/fence.h b/src/core/hle/service/nvnflinger/ui/fence.h
+index 536e8156d8c8..177aed7580de 100644
+--- a/src/core/hle/service/nvnflinger/ui/fence.h
++++ b/src/core/hle/service/nvnflinger/ui/fence.h
+@@ -20,6 +20,9 @@ class Fence {
+     static constexpr Fence NoFence() {
+         Fence fence;
+         fence.fences[0].id = -1;
++        fence.fences[1].id = -1;
++        fence.fences[2].id = -1;
++        fence.fences[3].id = -1;
+         return fence;
+     }
+ 
+diff --git a/src/core/hle/service/nvnflinger/ui/graphic_buffer.h b/src/core/hle/service/nvnflinger/ui/graphic_buffer.h
+index 75d1705a8e3d..3eac5cedd612 100644
+--- a/src/core/hle/service/nvnflinger/ui/graphic_buffer.h
++++ b/src/core/hle/service/nvnflinger/ui/graphic_buffer.h
+@@ -12,8 +12,7 @@
+ 
+ namespace Service::android {
+ 
+-class GraphicBuffer final {
+-public:
++struct GraphicBuffer final {
+     constexpr GraphicBuffer() = default;
+ 
+     constexpr GraphicBuffer(u32 width_, u32 height_, PixelFormat format_, u32 usage_)
+@@ -77,7 +76,6 @@ class GraphicBuffer final {
+         return false;
+     }
+ 
+-private:
+     u32 magic{};
+     s32 width{};
+     s32 height{};
+diff --git a/src/core/hle/service/vi/vi.cpp b/src/core/hle/service/vi/vi.cpp
+index 2eb978379f17..b1bfb98982e6 100644
+--- a/src/core/hle/service/vi/vi.cpp
++++ b/src/core/hle/service/vi/vi.cpp
+@@ -20,9 +20,12 @@
+ #include "core/hle/kernel/k_readable_event.h"
+ #include "core/hle/kernel/k_thread.h"
+ #include "core/hle/service/ipc_helpers.h"
++#include "core/hle/service/nvdrv/devices/nvmap.h"
+ #include "core/hle/service/nvdrv/nvdata.h"
++#include "core/hle/service/nvdrv/nvdrv.h"
+ #include "core/hle/service/nvnflinger/binder.h"
+ #include "core/hle/service/nvnflinger/buffer_queue_producer.h"
++#include "core/hle/service/nvnflinger/fb_share_buffer_manager.h"
+ #include "core/hle/service/nvnflinger/hos_binder_driver_server.h"
+ #include "core/hle/service/nvnflinger/nvnflinger.h"
+ #include "core/hle/service/nvnflinger/parcel.h"
+@@ -131,8 +134,9 @@ class IHOSBinderDriver final : public ServiceFramework<IHOSBinderDriver> {
+ 
+ class ISystemDisplayService final : public ServiceFramework<ISystemDisplayService> {
+ public:
+-    explicit ISystemDisplayService(Core::System& system_)
+-        : ServiceFramework{system_, "ISystemDisplayService"} {
++    explicit ISystemDisplayService(Core::System& system_, Nvnflinger::Nvnflinger& nvnflinger_)
++        : ServiceFramework{system_, "ISystemDisplayService"}, nvnflinger{nvnflinger_} {
++        // clang-format off
+         static const FunctionInfo functions[] = {
+             {1200, nullptr, "GetZOrderCountMin"},
+             {1202, nullptr, "GetZOrderCountMax"},
+@@ -170,22 +174,126 @@ class ISystemDisplayService final : public ServiceFramework<ISystemDisplayServic
+             {3217, nullptr, "SetDisplayCmuLuma"},
+             {3218, nullptr, "SetDisplayCrcMode"},
+             {6013, nullptr, "GetLayerPresentationSubmissionTimestamps"},
+-            {8225, nullptr, "GetSharedBufferMemoryHandleId"},
+-            {8250, nullptr, "OpenSharedLayer"},
++            {8225, &ISystemDisplayService::GetSharedBufferMemoryHandleId, "GetSharedBufferMemoryHandleId"},
++            {8250, &ISystemDisplayService::OpenSharedLayer, "OpenSharedLayer"},
+             {8251, nullptr, "CloseSharedLayer"},
+-            {8252, nullptr, "ConnectSharedLayer"},
++            {8252, &ISystemDisplayService::ConnectSharedLayer, "ConnectSharedLayer"},
+             {8253, nullptr, "DisconnectSharedLayer"},
+-            {8254, nullptr, "AcquireSharedFrameBuffer"},
+-            {8255, nullptr, "PresentSharedFrameBuffer"},
+-            {8256, nullptr, "GetSharedFrameBufferAcquirableEvent"},
++            {8254, &ISystemDisplayService::AcquireSharedFrameBuffer, "AcquireSharedFrameBuffer"},
++            {8255, &ISystemDisplayService::PresentSharedFrameBuffer, "PresentSharedFrameBuffer"},
++            {8256, &ISystemDisplayService::GetSharedFrameBufferAcquirableEvent, "GetSharedFrameBufferAcquirableEvent"},
+             {8257, nullptr, "FillSharedFrameBufferColor"},
+             {8258, nullptr, "CancelSharedFrameBuffer"},
+             {9000, nullptr, "GetDp2hdmiController"},
+         };
++        // clang-format on
+         RegisterHandlers(functions);
+     }
+ 
+ private:
++    void GetSharedBufferMemoryHandleId(HLERequestContext& ctx) {
++        IPC::RequestParser rp{ctx};
++        const u64 buffer_id = rp.PopRaw<u64>();
++
++        LOG_INFO(Service_VI, "called. buffer_id={:#x}", buffer_id);
++
++        struct OutputParameters {
++            s32 nvmap_handle;
++            u64 size;
++        };
++
++        OutputParameters out{};
++        Nvnflinger::SharedMemoryPoolLayout layout{};
++        const auto result = nvnflinger.GetSystemBufferManager().GetSharedBufferMemoryHandleId(
++            &out.size, &out.nvmap_handle, &layout, buffer_id, 0);
++
++        ctx.WriteBuffer(&layout, sizeof(layout));
++
++        IPC::ResponseBuilder rb{ctx, 6};
++        rb.Push(result);
++        rb.PushRaw(out);
++    }
++
++    void OpenSharedLayer(HLERequestContext& ctx) {
++        IPC::RequestParser rp{ctx};
++        const u64 layer_id = rp.PopRaw<u64>();
++
++        LOG_INFO(Service_VI, "(STUBBED) called. layer_id={:#x}", layer_id);
++
++        IPC::ResponseBuilder rb{ctx, 2};
++        rb.Push(ResultSuccess);
++    }
++
++    void ConnectSharedLayer(HLERequestContext& ctx) {
++        IPC::RequestParser rp{ctx};
++        const u64 layer_id = rp.PopRaw<u64>();
++
++        LOG_INFO(Service_VI, "(STUBBED) called. layer_id={:#x}", layer_id);
++
++        IPC::ResponseBuilder rb{ctx, 2};
++        rb.Push(ResultSuccess);
++    }
++
++    void GetSharedFrameBufferAcquirableEvent(HLERequestContext& ctx) {
++        LOG_DEBUG(Service_VI, "called");
++
++        IPC::RequestParser rp{ctx};
++        const u64 layer_id = rp.PopRaw<u64>();
++
++        Kernel::KReadableEvent* event{};
++        const auto result = nvnflinger.GetSystemBufferManager().GetSharedFrameBufferAcquirableEvent(
++            &event, layer_id);
++
++        IPC::ResponseBuilder rb{ctx, 2, 1};
++        rb.Push(result);
++        rb.PushCopyObjects(event);
++    }
++
++    void AcquireSharedFrameBuffer(HLERequestContext& ctx) {
++        LOG_DEBUG(Service_VI, "called");
++
++        IPC::RequestParser rp{ctx};
++        const u64 layer_id = rp.PopRaw<u64>();
++
++        struct OutputParameters {
++            android::Fence fence;
++            std::array<s32, 4> slots;
++            s64 target_slot;
++        };
++        static_assert(sizeof(OutputParameters) == 0x40, "OutputParameters has wrong size");
++
++        OutputParameters out{};
++        const auto result = nvnflinger.GetSystemBufferManager().AcquireSharedFrameBuffer(
++            &out.fence, out.slots, &out.target_slot, layer_id);
++
++        IPC::ResponseBuilder rb{ctx, 18};
++        rb.Push(result);
++        rb.PushRaw(out);
++    }
++
++    void PresentSharedFrameBuffer(HLERequestContext& ctx) {
++        LOG_DEBUG(Service_VI, "called");
++
++        struct InputParameters {
++            android::Fence fence;
++            Common::Rectangle<s32> crop_region;
++            u32 window_transform;
++            s32 swap_interval;
++            u64 layer_id;
++            s64 surface_id;
++        };
++        static_assert(sizeof(InputParameters) == 0x50, "InputParameters has wrong size");
++
++        IPC::RequestParser rp{ctx};
++        auto input = rp.PopRaw<InputParameters>();
++
++        const auto result = nvnflinger.GetSystemBufferManager().PresentSharedFrameBuffer(
++            input.fence, input.crop_region, input.window_transform, input.swap_interval,
++            input.layer_id, input.surface_id);
++        IPC::ResponseBuilder rb{ctx, 2};
++        rb.Push(result);
++    }
++
+     void SetLayerZ(HLERequestContext& ctx) {
+         IPC::RequestParser rp{ctx};
+         const u64 layer_id = rp.Pop<u64>();
+@@ -228,6 +336,9 @@ class ISystemDisplayService final : public ServiceFramework<ISystemDisplayServic
+         rb.PushRaw<float>(60.0f); // This wouldn't seem to be correct for 30 fps games.
+         rb.Push<u32>(0);
+     }
++
++private:
++    Nvnflinger::Nvnflinger& nvnflinger;
+ };
+ 
+ class IManagerDisplayService final : public ServiceFramework<IManagerDisplayService> {
+@@ -453,7 +564,7 @@ class IApplicationDisplayService final : public ServiceFramework<IApplicationDis
+ 
+         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+         rb.Push(ResultSuccess);
+-        rb.PushIpcInterface<ISystemDisplayService>(system);
++        rb.PushIpcInterface<ISystemDisplayService>(system, nv_flinger);
+     }
+ 
+     void GetManagerDisplayService(HLERequestContext& ctx) {
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index adb7b332f962..805f8d2ec721 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -1551,6 +1551,14 @@ void GMainWindow::ConnectMenuEvents() {
+     // Tools
+     connect_menu(ui->action_Rederive, std::bind(&GMainWindow::OnReinitializeKeys, this,
+                                                 ReinitializeKeyBehavior::Warning));
++    connect_menu(ui->action_Load_Cabinet_Nickname_Owner,
++                 [this]() { OnCabinet(Service::NFP::CabinetMode::StartNicknameAndOwnerSettings); });
++    connect_menu(ui->action_Load_Cabinet_Eraser,
++                 [this]() { OnCabinet(Service::NFP::CabinetMode::StartGameDataEraser); });
++    connect_menu(ui->action_Load_Cabinet_Restorer,
++                 [this]() { OnCabinet(Service::NFP::CabinetMode::StartRestorer); });
++    connect_menu(ui->action_Load_Cabinet_Formatter,
++                 [this]() { OnCabinet(Service::NFP::CabinetMode::StartFormatter); });
+     connect_menu(ui->action_Load_Mii_Edit, &GMainWindow::OnMiiEdit);
+     connect_menu(ui->action_Capture_Screenshot, &GMainWindow::OnCaptureScreenshot);
+ 
+@@ -1568,6 +1576,7 @@ void GMainWindow::ConnectMenuEvents() {
+ 
+ void GMainWindow::UpdateMenuState() {
+     const bool is_paused = emu_thread == nullptr || !emu_thread->IsRunning();
++    const bool is_firmware_available = CheckFirmwarePresence();
+ 
+     const std::array running_actions{
+         ui->action_Stop,
+@@ -1578,10 +1587,22 @@ void GMainWindow::UpdateMenuState() {
+         ui->action_Pause,
+     };
+ 
++    const std::array applet_actions{
++        ui->action_Load_Cabinet_Nickname_Owner,
++        ui->action_Load_Cabinet_Eraser,
++        ui->action_Load_Cabinet_Restorer,
++        ui->action_Load_Cabinet_Formatter,
++        ui->action_Load_Mii_Edit,
++    };
++
+     for (QAction* action : running_actions) {
+         action->setEnabled(emulation_running);
+     }
+ 
++    for (QAction* action : applet_actions) {
++        action->setEnabled(is_firmware_available && !emulation_running);
++    }
++
+     ui->action_Capture_Screenshot->setEnabled(emulation_running && !is_paused);
+ 
+     if (emulation_running && is_paused) {
+@@ -1591,8 +1612,6 @@ void GMainWindow::UpdateMenuState() {
+     }
+ 
+     multiplayer_state->UpdateNotificationStatus();
+-
+-    ui->action_Load_Mii_Edit->setEnabled(CheckFirmwarePresence());
+ }
+ 
+ void GMainWindow::OnDisplayTitleBars(bool show) {
+@@ -2103,6 +2122,8 @@ void GMainWindow::OnEmulationStopped() {
+     OnTasStateChanged();
+     render_window->FinalizeCamera();
+ 
++    system->GetAppletManager().SetCurrentAppletId(Service::AM::Applets::AppletId::None);
++
+     // Enable all controllers
+     system->HIDCore().SetSupportedStyleTag({Core::HID::NpadStyleSet::All});
+ 
+@@ -4134,6 +4155,30 @@ void GMainWindow::OnToggleStatusBar() {
+     statusBar()->setVisible(ui->action_Show_Status_Bar->isChecked());
+ }
+ 
++void GMainWindow::OnCabinet(Service::NFP::CabinetMode mode) {
++    constexpr u64 CabinetId = 0x0100000000001002ull;
++    auto bis_system = system->GetFileSystemController().GetSystemNANDContents();
++    if (!bis_system) {
++        QMessageBox::warning(this, tr("No firmware available"),
++                             tr("Please install the firmware to use the Amiibo applet."));
++        return;
++    }
++
++    auto cabinet_nca = bis_system->GetEntry(CabinetId, FileSys::ContentRecordType::Program);
++    if (!cabinet_nca) {
++        QMessageBox::warning(this, tr("Cabinet Applet"),
++                             tr("Amiibo applet is not available. Please reinstall firmware."));
++        return;
++    }
++
++    system->GetAppletManager().SetCurrentAppletId(Service::AM::Applets::AppletId::Cabinet);
++    system->GetAppletManager().SetCabinetMode(mode);
++
++    const auto filename = QString::fromStdString(cabinet_nca->GetFullPath());
++    UISettings::values.roms_path = QFileInfo(filename).path();
++    BootGame(filename);
++}
++
+ void GMainWindow::OnMiiEdit() {
+     constexpr u64 MiiEditId = 0x0100000000001009ull;
+     auto bis_system = system->GetFileSystemController().GetSystemNANDContents();
+@@ -4150,6 +4195,8 @@ void GMainWindow::OnMiiEdit() {
+         return;
+     }
+ 
++    system->GetAppletManager().SetCurrentAppletId(Service::AM::Applets::AppletId::MiiEdit);
++
+     const auto filename = QString::fromStdString((mii_applet_nca->GetFullPath()));
+     UISettings::values.roms_path = QFileInfo(filename).path();
+     BootGame(filename);
+diff --git a/src/yuzu/main.h b/src/yuzu/main.h
+index ba318eb11ec9..52028234c7bc 100644
+--- a/src/yuzu/main.h
++++ b/src/yuzu/main.h
+@@ -102,6 +102,10 @@ namespace Service::NFC {
+ class NfcDevice;
+ } // namespace Service::NFC
+ 
++namespace Service::NFP {
++enum class CabinetMode : u8;
++} // namespace Service::NFP
++
+ namespace Ui {
+ class MainWindow;
+ }
+@@ -365,6 +369,7 @@ private slots:
+     void ResetWindowSize720();
+     void ResetWindowSize900();
+     void ResetWindowSize1080();
++    void OnCabinet(Service::NFP::CabinetMode mode);
+     void OnMiiEdit();
+     void OnCaptureScreenshot();
+     void OnReinitializeKeys(ReinitializeKeyBehavior behavior);
+diff --git a/src/yuzu/main.ui b/src/yuzu/main.ui
+index 91d6c5ef3f03..31c3de9ef93a 100644
+--- a/src/yuzu/main.ui
++++ b/src/yuzu/main.ui
+@@ -137,6 +137,15 @@
+     <property name="title">
+      <string>&amp;Tools</string>
+     </property>
++    <widget class="QMenu" name="menu_cabinet_applet">
++     <property name="title">
++      <string>&amp;Amiibo</string>
++     </property>
++     <addaction name="action_Load_Cabinet_Nickname_Owner"/>
++     <addaction name="action_Load_Cabinet_Eraser"/>
++     <addaction name="action_Load_Cabinet_Restorer"/>
++     <addaction name="action_Load_Cabinet_Formatter"/>
++    </widget>
+     <widget class="QMenu" name="menuTAS">
+      <property name="title">
+       <string>&amp;TAS</string>
+@@ -150,6 +159,7 @@
+     <addaction name="action_Rederive"/>
+     <addaction name="action_Verify_installed_contents"/>
+     <addaction name="separator"/>
++    <addaction name="menu_cabinet_applet"/>
+     <addaction name="action_Load_Mii_Edit"/>
+     <addaction name="separator"/>
+     <addaction name="action_Capture_Screenshot"/>
+@@ -370,6 +380,26 @@
+     <string>&amp;Capture Screenshot</string>
+    </property>
+   </action>
++  <action name="action_Load_Cabinet_Nickname_Owner">
++   <property name="text">
++    <string>&amp;Set Nickname and Owner</string>
++   </property>
++  </action>
++  <action name="action_Load_Cabinet_Eraser">
++   <property name="text">
++    <string>&amp;Delete Game Data</string>
++   </property>
++  </action>
++  <action name="action_Load_Cabinet_Restorer">
++   <property name="text">
++    <string>&amp;Restore Amiibo</string>
++   </property>
++  </action>
++  <action name="action_Load_Cabinet_Formatter">
++   <property name="text">
++    <string>&amp;Format Amiibo</string>
++   </property>
++  </action>
+   <action name="action_Load_Mii_Edit">
+     <property name="text">
+       <string>Open &amp;Mii Editor</string>

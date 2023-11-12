@@ -1,0 +1,56 @@
+diff --git a/src/shader_recompiler/backend/glsl/emit_glsl.cpp b/src/shader_recompiler/backend/glsl/emit_glsl.cpp
+index d91e044460de..66ecfc9f7467 100644
+--- a/src/shader_recompiler/backend/glsl/emit_glsl.cpp
++++ b/src/shader_recompiler/backend/glsl/emit_glsl.cpp
+@@ -242,6 +242,7 @@ std::string EmitGLSL(const Profile& profile, const RuntimeInfo& runtime_info, IR
+     }
+     if (program.info.uses_subgroup_shuffles) {
+         ctx.header += "bool shfl_in_bounds;";
++        ctx.header += "uint shfl_result;";
+     }
+     ctx.code.insert(0, ctx.header);
+     ctx.code += '}';
+diff --git a/src/shader_recompiler/backend/glsl/emit_glsl_warp.cpp b/src/shader_recompiler/backend/glsl/emit_glsl_warp.cpp
+index 1245c9429fb0..f9be5de1c063 100644
+--- a/src/shader_recompiler/backend/glsl/emit_glsl_warp.cpp
++++ b/src/shader_recompiler/backend/glsl/emit_glsl_warp.cpp
+@@ -141,7 +141,8 @@ void EmitShuffleIndex(EmitContext& ctx, IR::Inst& inst, std::string_view value,
+     const auto src_thread_id{fmt::format("({})|({})", lhs, min_thread_id)};
+     ctx.Add("shfl_in_bounds=int({})<=int({});", src_thread_id, max_thread_id);
+     SetInBoundsFlag(ctx, inst);
+-    ctx.AddU32("{}=shfl_in_bounds?readInvocationARB({},{}):{};", inst, value, src_thread_id, value);
++    ctx.Add("shfl_result=readInvocationARB({},{});", value, src_thread_id);
++    ctx.AddU32("{}=shfl_in_bounds?shfl_result:{};", inst, value);
+ }
+ 
+ void EmitShuffleUp(EmitContext& ctx, IR::Inst& inst, std::string_view value, std::string_view index,
+@@ -158,7 +159,8 @@ void EmitShuffleUp(EmitContext& ctx, IR::Inst& inst, std::string_view value, std
+     const auto src_thread_id{fmt::format("({}-{})", THREAD_ID, index)};
+     ctx.Add("shfl_in_bounds=int({})>=int({});", src_thread_id, max_thread_id);
+     SetInBoundsFlag(ctx, inst);
+-    ctx.AddU32("{}=shfl_in_bounds?readInvocationARB({},{}):{};", inst, value, src_thread_id, value);
++    ctx.Add("shfl_result=readInvocationARB({},{});", value, src_thread_id);
++    ctx.AddU32("{}=shfl_in_bounds?shfl_result:{};", inst, value);
+ }
+ 
+ void EmitShuffleDown(EmitContext& ctx, IR::Inst& inst, std::string_view value,
+@@ -175,7 +177,8 @@ void EmitShuffleDown(EmitContext& ctx, IR::Inst& inst, std::string_view value,
+     const auto src_thread_id{fmt::format("({}+{})", THREAD_ID, index)};
+     ctx.Add("shfl_in_bounds=int({})<=int({});", src_thread_id, max_thread_id);
+     SetInBoundsFlag(ctx, inst);
+-    ctx.AddU32("{}=shfl_in_bounds?readInvocationARB({},{}):{};", inst, value, src_thread_id, value);
++    ctx.Add("shfl_result=readInvocationARB({},{});", value, src_thread_id);
++    ctx.AddU32("{}=shfl_in_bounds?shfl_result:{};", inst, value);
+ }
+ 
+ void EmitShuffleButterfly(EmitContext& ctx, IR::Inst& inst, std::string_view value,
+@@ -193,7 +196,8 @@ void EmitShuffleButterfly(EmitContext& ctx, IR::Inst& inst, std::string_view val
+     const auto src_thread_id{fmt::format("({}^{})", THREAD_ID, index)};
+     ctx.Add("shfl_in_bounds=int({})<=int({});", src_thread_id, max_thread_id);
+     SetInBoundsFlag(ctx, inst);
+-    ctx.AddU32("{}=shfl_in_bounds?readInvocationARB({},{}):{};", inst, value, src_thread_id, value);
++    ctx.Add("shfl_result=readInvocationARB({},{});", value, src_thread_id);
++    ctx.AddU32("{}=shfl_in_bounds?shfl_result:{};", inst, value);
+ }
+ 
+ void EmitFSwizzleAdd(EmitContext& ctx, IR::Inst& inst, std::string_view op_a, std::string_view op_b,

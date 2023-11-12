@@ -1,0 +1,382 @@
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 0ab2e3b761ef..d7e2efbd7e6b 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -116,11 +116,8 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
+             }
+         }
+ 
+-        if (concat.empty()) {
+-            return nullptr;
+-        }
+-
+-        return FileSys::ConcatenatedVfsFile::MakeConcatenatedFile(concat, dir->GetName());
++        return FileSys::ConcatenatedVfsFile::MakeConcatenatedFile(dir->GetName(),
++                                                                  std::move(concat));
+     }
+ 
+     if (Common::FS::IsDir(path)) {
+diff --git a/src/core/file_sys/fsmitm_romfsbuild.cpp b/src/core/file_sys/fsmitm_romfsbuild.cpp
+index e39c7b62b425..f1d3e4129b51 100644
+--- a/src/core/file_sys/fsmitm_romfsbuild.cpp
++++ b/src/core/file_sys/fsmitm_romfsbuild.cpp
+@@ -107,62 +107,56 @@ static u64 romfs_get_hash_table_count(u64 num_entries) {
+ 
+ void RomFSBuildContext::VisitDirectory(VirtualDir romfs_dir, VirtualDir ext_dir,
+                                        std::shared_ptr<RomFSBuildDirectoryContext> parent) {
+-    std::vector<std::shared_ptr<RomFSBuildDirectoryContext>> child_dirs;
++    for (auto& child_romfs_file : romfs_dir->GetFiles()) {
++        const auto name = child_romfs_file->GetName();
++        const auto child = std::make_shared<RomFSBuildFileContext>();
++        // Set child's path.
++        child->cur_path_ofs = parent->path_len + 1;
++        child->path_len = child->cur_path_ofs + static_cast<u32>(name.size());
++        child->path = parent->path + "/" + name;
++
++        if (ext_dir != nullptr && ext_dir->GetFile(name + ".stub") != nullptr) {
++            continue;
++        }
+ 
+-    const auto entries = romfs_dir->GetEntries();
++        // Sanity check on path_len
++        ASSERT(child->path_len < FS_MAX_PATH);
+ 
+-    for (const auto& kv : entries) {
+-        if (kv.second == VfsEntryType::Directory) {
+-            const auto child = std::make_shared<RomFSBuildDirectoryContext>();
+-            // Set child's path.
+-            child->cur_path_ofs = parent->path_len + 1;
+-            child->path_len = child->cur_path_ofs + static_cast<u32>(kv.first.size());
+-            child->path = parent->path + "/" + kv.first;
++        child->source = std::move(child_romfs_file);
+ 
+-            if (ext_dir != nullptr && ext_dir->GetFile(kv.first + ".stub") != nullptr) {
+-                continue;
++        if (ext_dir != nullptr) {
++            if (const auto ips = ext_dir->GetFile(name + ".ips")) {
++                if (auto patched = PatchIPS(child->source, ips)) {
++                    child->source = std::move(patched);
++                }
+             }
++        }
+ 
+-            // Sanity check on path_len
+-            ASSERT(child->path_len < FS_MAX_PATH);
+-
+-            if (AddDirectory(parent, child)) {
+-                child_dirs.push_back(child);
+-            }
+-        } else {
+-            const auto child = std::make_shared<RomFSBuildFileContext>();
+-            // Set child's path.
+-            child->cur_path_ofs = parent->path_len + 1;
+-            child->path_len = child->cur_path_ofs + static_cast<u32>(kv.first.size());
+-            child->path = parent->path + "/" + kv.first;
+-
+-            if (ext_dir != nullptr && ext_dir->GetFile(kv.first + ".stub") != nullptr) {
+-                continue;
+-            }
++        child->size = child->source->GetSize();
+ 
+-            // Sanity check on path_len
+-            ASSERT(child->path_len < FS_MAX_PATH);
++        AddFile(parent, child);
++    }
+ 
+-            child->source = romfs_dir->GetFile(kv.first);
++    for (auto& child_romfs_dir : romfs_dir->GetSubdirectories()) {
++        const auto name = child_romfs_dir->GetName();
++        const auto child = std::make_shared<RomFSBuildDirectoryContext>();
++        // Set child's path.
++        child->cur_path_ofs = parent->path_len + 1;
++        child->path_len = child->cur_path_ofs + static_cast<u32>(name.size());
++        child->path = parent->path + "/" + name;
+ 
+-            if (ext_dir != nullptr) {
+-                if (const auto ips = ext_dir->GetFile(kv.first + ".ips")) {
+-                    if (auto patched = PatchIPS(child->source, ips)) {
+-                        child->source = std::move(patched);
+-                    }
+-                }
+-            }
++        if (ext_dir != nullptr && ext_dir->GetFile(name + ".stub") != nullptr) {
++            continue;
++        }
+ 
+-            child->size = child->source->GetSize();
++        // Sanity check on path_len
++        ASSERT(child->path_len < FS_MAX_PATH);
+ 
+-            AddFile(parent, child);
++        if (!AddDirectory(parent, child)) {
++            continue;
+         }
+-    }
+ 
+-    for (auto& child : child_dirs) {
+-        auto subdir_name = std::string_view(child->path).substr(child->cur_path_ofs);
+-        auto child_romfs_dir = romfs_dir->GetSubdirectory(subdir_name);
+-        auto child_ext_dir = ext_dir != nullptr ? ext_dir->GetSubdirectory(subdir_name) : nullptr;
++        auto child_ext_dir = ext_dir != nullptr ? ext_dir->GetSubdirectory(name) : nullptr;
+         this->VisitDirectory(child_romfs_dir, child_ext_dir, child);
+     }
+ }
+@@ -293,7 +287,7 @@ std::multimap<u64, VirtualFile> RomFSBuildContext::Build() {
+ 
+         cur_entry.name_size = name_size;
+ 
+-        out.emplace(cur_file->offset + ROMFS_FILEPARTITION_OFS, cur_file->source);
++        out.emplace(cur_file->offset + ROMFS_FILEPARTITION_OFS, std::move(cur_file->source));
+         std::memcpy(file_table.data() + cur_file->entry_offset, &cur_entry, sizeof(RomFSFileEntry));
+         std::memset(file_table.data() + cur_file->entry_offset + sizeof(RomFSFileEntry), 0,
+                     Common::AlignUp(cur_entry.name_size, 4));
+diff --git a/src/core/file_sys/patch_manager.cpp b/src/core/file_sys/patch_manager.cpp
+index 8e475f25a31a..0bca055878b6 100644
+--- a/src/core/file_sys/patch_manager.cpp
++++ b/src/core/file_sys/patch_manager.cpp
+@@ -377,16 +377,16 @@ static void ApplyLayeredFS(VirtualFile& romfs, u64 title_id, ContentRecordType t
+ 
+         auto romfs_dir = FindSubdirectoryCaseless(subdir, "romfs");
+         if (romfs_dir != nullptr)
+-            layers.push_back(std::make_shared<CachedVfsDirectory>(romfs_dir));
++            layers.emplace_back(std::make_shared<CachedVfsDirectory>(std::move(romfs_dir)));
+ 
+         auto ext_dir = FindSubdirectoryCaseless(subdir, "romfs_ext");
+         if (ext_dir != nullptr)
+-            layers_ext.push_back(std::make_shared<CachedVfsDirectory>(ext_dir));
++            layers_ext.emplace_back(std::make_shared<CachedVfsDirectory>(std::move(ext_dir)));
+ 
+         if (type == ContentRecordType::HtmlDocument) {
+             auto manual_dir = FindSubdirectoryCaseless(subdir, "manual_html");
+             if (manual_dir != nullptr)
+-                layers.push_back(std::make_shared<CachedVfsDirectory>(manual_dir));
++                layers.emplace_back(std::make_shared<CachedVfsDirectory>(std::move(manual_dir)));
+         }
+     }
+ 
+@@ -400,7 +400,7 @@ static void ApplyLayeredFS(VirtualFile& romfs, u64 title_id, ContentRecordType t
+         return;
+     }
+ 
+-    layers.push_back(std::move(extracted));
++    layers.emplace_back(std::move(extracted));
+ 
+     auto layered = LayeredVfsDirectory::MakeLayeredDirectory(std::move(layers));
+     if (layered == nullptr) {
+diff --git a/src/core/file_sys/registered_cache.cpp b/src/core/file_sys/registered_cache.cpp
+index 04da93d5cd89..1cc77ad14776 100644
+--- a/src/core/file_sys/registered_cache.cpp
++++ b/src/core/file_sys/registered_cache.cpp
+@@ -322,7 +322,8 @@ VirtualFile RegisteredCache::OpenFileOrDirectoryConcat(const VirtualDir& open_di
+         return nullptr;
+     }
+ 
+-    return ConcatenatedVfsFile::MakeConcatenatedFile(concat, concat.front()->GetName());
++    auto name = concat.front()->GetName();
++    return ConcatenatedVfsFile::MakeConcatenatedFile(std::move(name), std::move(concat));
+ }
+ 
+ VirtualFile RegisteredCache::GetFileAtID(NcaID id) const {
+diff --git a/src/core/file_sys/romfs.cpp b/src/core/file_sys/romfs.cpp
+index 614da2130751..1c580de57a52 100644
+--- a/src/core/file_sys/romfs.cpp
++++ b/src/core/file_sys/romfs.cpp
+@@ -133,7 +133,7 @@ VirtualDir ExtractRomFS(VirtualFile file, RomFSExtractionType type) {
+         out = out->GetSubdirectories().front();
+     }
+ 
+-    return std::make_shared<CachedVfsDirectory>(out);
++    return std::make_shared<CachedVfsDirectory>(std::move(out));
+ }
+ 
+ VirtualFile CreateRomFS(VirtualDir dir, VirtualDir ext) {
+@@ -141,8 +141,7 @@ VirtualFile CreateRomFS(VirtualDir dir, VirtualDir ext) {
+         return nullptr;
+ 
+     RomFSBuildContext ctx{dir, ext};
+-    auto file_map = ctx.Build();
+-    return ConcatenatedVfsFile::MakeConcatenatedFile(0, file_map, dir->GetName());
++    return ConcatenatedVfsFile::MakeConcatenatedFile(0, dir->GetName(), ctx.Build());
+ }
+ 
+ } // namespace FileSys
+diff --git a/src/core/file_sys/vfs_cached.cpp b/src/core/file_sys/vfs_cached.cpp
+index c3154ee81910..7ee5300e5802 100644
+--- a/src/core/file_sys/vfs_cached.cpp
++++ b/src/core/file_sys/vfs_cached.cpp
+@@ -6,13 +6,13 @@
+ 
+ namespace FileSys {
+ 
+-CachedVfsDirectory::CachedVfsDirectory(VirtualDir& source_dir)
++CachedVfsDirectory::CachedVfsDirectory(VirtualDir&& source_dir)
+     : name(source_dir->GetName()), parent(source_dir->GetParentDirectory()) {
+     for (auto& dir : source_dir->GetSubdirectories()) {
+-        dirs.emplace(dir->GetName(), std::make_shared<CachedVfsDirectory>(dir));
++        dirs.emplace(dir->GetName(), std::make_shared<CachedVfsDirectory>(std::move(dir)));
+     }
+     for (auto& file : source_dir->GetFiles()) {
+-        files.emplace(file->GetName(), file);
++        files.emplace(file->GetName(), std::move(file));
+     }
+ }
+ 
+diff --git a/src/core/file_sys/vfs_cached.h b/src/core/file_sys/vfs_cached.h
+index 113acac12c65..1e53007842b4 100644
+--- a/src/core/file_sys/vfs_cached.h
++++ b/src/core/file_sys/vfs_cached.h
+@@ -11,7 +11,7 @@ namespace FileSys {
+ 
+ class CachedVfsDirectory : public ReadOnlyVfsDirectory {
+ public:
+-    CachedVfsDirectory(VirtualDir& source_directory);
++    CachedVfsDirectory(VirtualDir&& source_directory);
+ 
+     ~CachedVfsDirectory() override;
+     VirtualFile GetFile(std::string_view file_name) const override;
+diff --git a/src/core/file_sys/vfs_concat.cpp b/src/core/file_sys/vfs_concat.cpp
+index 311a59e5fe5e..168b9cbec9c2 100644
+--- a/src/core/file_sys/vfs_concat.cpp
++++ b/src/core/file_sys/vfs_concat.cpp
+@@ -10,7 +10,7 @@
+ 
+ namespace FileSys {
+ 
+-ConcatenatedVfsFile::ConcatenatedVfsFile(ConcatenationMap&& concatenation_map_, std::string&& name_)
++ConcatenatedVfsFile::ConcatenatedVfsFile(std::string&& name_, ConcatenationMap&& concatenation_map_)
+     : concatenation_map(std::move(concatenation_map_)), name(std::move(name_)) {
+     DEBUG_ASSERT(this->VerifyContinuity());
+ }
+@@ -30,8 +30,8 @@ bool ConcatenatedVfsFile::VerifyContinuity() const {
+ 
+ ConcatenatedVfsFile::~ConcatenatedVfsFile() = default;
+ 
+-VirtualFile ConcatenatedVfsFile::MakeConcatenatedFile(const std::vector<VirtualFile>& files,
+-                                                      std::string&& name) {
++VirtualFile ConcatenatedVfsFile::MakeConcatenatedFile(std::string&& name,
++                                                      std::vector<VirtualFile>&& files) {
+     // Fold trivial cases.
+     if (files.empty()) {
+         return nullptr;
+@@ -46,20 +46,21 @@ VirtualFile ConcatenatedVfsFile::MakeConcatenatedFile(const std::vector<VirtualF
+     u64 last_offset = 0;
+ 
+     for (auto& file : files) {
++        const auto size = file->GetSize();
++
+         concatenation_map.emplace_back(ConcatenationEntry{
+             .offset = last_offset,
+-            .file = file,
++            .file = std::move(file),
+         });
+ 
+-        last_offset += file->GetSize();
++        last_offset += size;
+     }
+ 
+-    return VirtualFile(new ConcatenatedVfsFile(std::move(concatenation_map), std::move(name)));
++    return VirtualFile(new ConcatenatedVfsFile(std::move(name), std::move(concatenation_map)));
+ }
+ 
+-VirtualFile ConcatenatedVfsFile::MakeConcatenatedFile(u8 filler_byte,
+-                                                      const std::multimap<u64, VirtualFile>& files,
+-                                                      std::string&& name) {
++VirtualFile ConcatenatedVfsFile::MakeConcatenatedFile(u8 filler_byte, std::string&& name,
++                                                      std::multimap<u64, VirtualFile>&& files) {
+     // Fold trivial cases.
+     if (files.empty()) {
+         return nullptr;
+@@ -76,6 +77,8 @@ VirtualFile ConcatenatedVfsFile::MakeConcatenatedFile(u8 filler_byte,
+ 
+     // Iteration of a multimap is ordered, so offset will be strictly non-decreasing.
+     for (auto& [offset, file] : files) {
++        const auto size = file->GetSize();
++
+         if (offset > last_offset) {
+             concatenation_map.emplace_back(ConcatenationEntry{
+                 .offset = last_offset,
+@@ -85,13 +88,13 @@ VirtualFile ConcatenatedVfsFile::MakeConcatenatedFile(u8 filler_byte,
+ 
+         concatenation_map.emplace_back(ConcatenationEntry{
+             .offset = offset,
+-            .file = file,
++            .file = std::move(file),
+         });
+ 
+-        last_offset = offset + file->GetSize();
++        last_offset = offset + size;
+     }
+ 
+-    return VirtualFile(new ConcatenatedVfsFile(std::move(concatenation_map), std::move(name)));
++    return VirtualFile(new ConcatenatedVfsFile(std::move(name), std::move(concatenation_map)));
+ }
+ 
+ std::string ConcatenatedVfsFile::GetName() const {
+diff --git a/src/core/file_sys/vfs_concat.h b/src/core/file_sys/vfs_concat.h
+index 6b329d5455c6..cbddd12bdd72 100644
+--- a/src/core/file_sys/vfs_concat.h
++++ b/src/core/file_sys/vfs_concat.h
+@@ -24,22 +24,20 @@ class ConcatenatedVfsFile : public VfsFile {
+     };
+     using ConcatenationMap = std::vector<ConcatenationEntry>;
+ 
+-    explicit ConcatenatedVfsFile(std::vector<ConcatenationEntry>&& concatenation_map,
+-                                 std::string&& name);
++    explicit ConcatenatedVfsFile(std::string&& name,
++                                 std::vector<ConcatenationEntry>&& concatenation_map);
+     bool VerifyContinuity() const;
+ 
+ public:
+     ~ConcatenatedVfsFile() override;
+ 
+     /// Wrapper function to allow for more efficient handling of files.size() == 0, 1 cases.
+-    static VirtualFile MakeConcatenatedFile(const std::vector<VirtualFile>& files,
+-                                            std::string&& name);
++    static VirtualFile MakeConcatenatedFile(std::string&& name, std::vector<VirtualFile>&& files);
+ 
+     /// Convenience function that turns a map of offsets to files into a concatenated file, filling
+     /// gaps with a given filler byte.
+-    static VirtualFile MakeConcatenatedFile(u8 filler_byte,
+-                                            const std::multimap<u64, VirtualFile>& files,
+-                                            std::string&& name);
++    static VirtualFile MakeConcatenatedFile(u8 filler_byte, std::string&& name,
++                                            std::multimap<u64, VirtualFile>&& files);
+ 
+     std::string GetName() const override;
+     std::size_t GetSize() const override;
+diff --git a/src/core/file_sys/vfs_layered.cpp b/src/core/file_sys/vfs_layered.cpp
+index 3e6426afc878..08daca397f4b 100644
+--- a/src/core/file_sys/vfs_layered.cpp
++++ b/src/core/file_sys/vfs_layered.cpp
+@@ -38,7 +38,7 @@ VirtualDir LayeredVfsDirectory::GetDirectoryRelative(std::string_view path) cons
+     for (const auto& layer : dirs) {
+         auto dir = layer->GetDirectoryRelative(path);
+         if (dir != nullptr) {
+-            out.push_back(std::move(dir));
++            out.emplace_back(std::move(dir));
+         }
+     }
+ 
+@@ -62,11 +62,11 @@ std::vector<VirtualFile> LayeredVfsDirectory::GetFiles() const {
+     std::set<std::string, std::less<>> out_names;
+ 
+     for (const auto& layer : dirs) {
+-        for (const auto& file : layer->GetFiles()) {
++        for (auto& file : layer->GetFiles()) {
+             auto file_name = file->GetName();
+             if (!out_names.contains(file_name)) {
+                 out_names.emplace(std::move(file_name));
+-                out.push_back(file);
++                out.emplace_back(std::move(file));
+             }
+         }
+     }
+@@ -86,7 +86,7 @@ std::vector<VirtualDir> LayeredVfsDirectory::GetSubdirectories() const {
+     std::vector<VirtualDir> out;
+     out.reserve(names.size());
+     for (const auto& subdir : names)
+-        out.push_back(GetSubdirectory(subdir));
++        out.emplace_back(GetSubdirectory(subdir));
+ 
+     return out;
+ }

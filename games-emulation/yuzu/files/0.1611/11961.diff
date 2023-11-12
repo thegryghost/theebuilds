@@ -1,0 +1,78 @@
+diff --git a/src/core/hle/service/am/applets/applets.h b/src/core/hle/service/am/applets/applets.h
+index f02bbc450119..124c2ed17b30 100644
+--- a/src/core/hle/service/am/applets/applets.h
++++ b/src/core/hle/service/am/applets/applets.h
+@@ -69,6 +69,30 @@ enum class AppletId : u32 {
+     MyPage = 0x1A,
+ };
+ 
++enum class AppletTitleId : u64 {
++    QLaunch = 0x0100000000001000ull,
++    Auth = 0x0100000000001001ull,
++    Cabinet = 0x0100000000001002ull,
++    Controller = 0x0100000000001003ull,
++    DataErase = 0x0100000000001004ull,
++    Error = 0x0100000000001005ull,
++    NetConnect = 0x0100000000001006ull,
++    ProfileSelect = 0x0100000000001007ull,
++    SoftwareKeyboard = 0x0100000000001008ull,
++    MiiEdit = 0x0100000000001009ull,
++    Web = 0x010000000000100Aull,
++    Shop = 0x010000000000100Bull,
++    OverlayDisplay = 0x01000000000100Cull,
++    PhotoViewer = 0x01000000000100Dull,
++    Settings = 0x010000000000100Eull,
++    OfflineWeb = 0x010000000000100Full,
++    LoginShare = 0x0100000000001010ull,
++    WebAuth = 0x0100000000001011ull,
++    Starter = 0x0100000000001012ull,
++    MyPage = 0x0100000000001013ull,
++    MaxTitleId = 0x0100000000001FFFull,
++};
++
+ enum class LibraryAppletMode : u32 {
+     AllForeground = 0,
+     Background = 1,
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index db9da6dc8d31..6fcc309ac827 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -1908,7 +1908,10 @@ void GMainWindow::ConfigureFilesystemProvider(const std::string& filepath) {
+ void GMainWindow::BootGame(const QString& filename, u64 program_id, std::size_t program_index,
+                            StartGameType type, AmLaunchType launch_type) {
+     LOG_INFO(Frontend, "yuzu starting...");
+-    StoreRecentFile(filename); // Put the filename on top of the list
++
++    if (program_id > static_cast<u64>(Service::AM::Applets::AppletTitleId::MaxTitleId)) {
++        StoreRecentFile(filename); // Put the filename on top of the list
++    }
+ 
+     // Save configurations
+     UpdateUISettings();
+@@ -4272,7 +4275,7 @@ void GMainWindow::OnToggleStatusBar() {
+ }
+ 
+ void GMainWindow::OnAlbum() {
+-    constexpr u64 AlbumId = 0x010000000000100Dull;
++    constexpr u64 AlbumId = static_cast<u64>(Service::AM::Applets::AppletTitleId::PhotoViewer);
+     auto bis_system = system->GetFileSystemController().GetSystemNANDContents();
+     if (!bis_system) {
+         QMessageBox::warning(this, tr("No firmware available"),
+@@ -4295,7 +4298,7 @@ void GMainWindow::OnAlbum() {
+ }
+ 
+ void GMainWindow::OnCabinet(Service::NFP::CabinetMode mode) {
+-    constexpr u64 CabinetId = 0x0100000000001002ull;
++    constexpr u64 CabinetId = static_cast<u64>(Service::AM::Applets::AppletTitleId::Cabinet);
+     auto bis_system = system->GetFileSystemController().GetSystemNANDContents();
+     if (!bis_system) {
+         QMessageBox::warning(this, tr("No firmware available"),
+@@ -4319,7 +4322,7 @@ void GMainWindow::OnCabinet(Service::NFP::CabinetMode mode) {
+ }
+ 
+ void GMainWindow::OnMiiEdit() {
+-    constexpr u64 MiiEditId = 0x0100000000001009ull;
++    constexpr u64 MiiEditId = static_cast<u64>(Service::AM::Applets::AppletTitleId::MiiEdit);
+     auto bis_system = system->GetFileSystemController().GetSystemNANDContents();
+     if (!bis_system) {
+         QMessageBox::warning(this, tr("No firmware available"),

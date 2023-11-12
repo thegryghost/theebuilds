@@ -1,0 +1,332 @@
+diff --git a/src/yuzu/game_list.cpp b/src/yuzu/game_list.cpp
+index 2bb1a0239be6..7e7d8e25239f 100644
+--- a/src/yuzu/game_list.cpp
++++ b/src/yuzu/game_list.cpp
+@@ -380,7 +380,6 @@ void GameList::UnloadController() {
+ 
+ GameList::~GameList() {
+     UnloadController();
+-    emit ShouldCancelWorker();
+ }
+ 
+ void GameList::SetFilterFocus() {
+@@ -397,6 +396,10 @@ void GameList::ClearFilter() {
+     search_field->clear();
+ }
+ 
++void GameList::WorkerEvent() {
++    current_worker->ProcessEvents(this);
++}
++
+ void GameList::AddDirEntry(GameListDir* entry_items) {
+     item_model->invisibleRootItem()->appendRow(entry_items);
+     tree_view->setExpanded(
+@@ -826,28 +829,21 @@ void GameList::PopulateAsync(QVector<UISettings::GameDir>& game_dirs) {
+     tree_view->setColumnHidden(COLUMN_SIZE, !UISettings::values.show_size);
+     tree_view->setColumnHidden(COLUMN_PLAY_TIME, !UISettings::values.show_play_time);
+ 
+-    // Before deleting rows, cancel the worker so that it is not using them
+-    emit ShouldCancelWorker();
++    // Cancel any existing worker.
++    current_worker.reset();
+ 
+     // Delete any rows that might already exist if we're repopulating
+     item_model->removeRows(0, item_model->rowCount());
+     search_field->clear();
+ 
+-    GameListWorker* worker =
+-        new GameListWorker(vfs, provider, game_dirs, compatibility_list, play_time_manager, system);
++    current_worker = std::make_unique<GameListWorker>(vfs, provider, game_dirs, compatibility_list,
++                                                      play_time_manager, system);
+ 
+-    connect(worker, &GameListWorker::EntryReady, this, &GameList::AddEntry, Qt::QueuedConnection);
+-    connect(worker, &GameListWorker::DirEntryReady, this, &GameList::AddDirEntry,
+-            Qt::QueuedConnection);
+-    connect(worker, &GameListWorker::Finished, this, &GameList::DonePopulating,
++    // Get events from the worker as data becomes available
++    connect(current_worker.get(), &GameListWorker::DataAvailable, this, &GameList::WorkerEvent,
+             Qt::QueuedConnection);
+-    // Use DirectConnection here because worker->Cancel() is thread-safe and we want it to
+-    // cancel without delay.
+-    connect(this, &GameList::ShouldCancelWorker, worker, &GameListWorker::Cancel,
+-            Qt::DirectConnection);
+ 
+-    QThreadPool::globalInstance()->start(worker);
+-    current_worker = std::move(worker);
++    QThreadPool::globalInstance()->start(current_worker.get());
+ }
+ 
+ void GameList::SaveInterfaceLayout() {
+diff --git a/src/yuzu/game_list.h b/src/yuzu/game_list.h
+index 712570cea00c..563a3a35b266 100644
+--- a/src/yuzu/game_list.h
++++ b/src/yuzu/game_list.h
+@@ -109,7 +109,6 @@ class GameList : public QWidget {
+     void BootGame(const QString& game_path, u64 program_id, std::size_t program_index,
+                   StartGameType type, AmLaunchType launch_type);
+     void GameChosen(const QString& game_path, const u64 title_id = 0);
+-    void ShouldCancelWorker();
+     void OpenFolderRequested(u64 program_id, GameListOpenTarget target,
+                              const std::string& game_path);
+     void OpenTransferableShaderCacheRequested(u64 program_id);
+@@ -138,11 +137,16 @@ private slots:
+     void OnUpdateThemedIcons();
+ 
+ private:
++    friend class GameListWorker;
++    void WorkerEvent();
++
+     void AddDirEntry(GameListDir* entry_items);
+     void AddEntry(const QList<QStandardItem*>& entry_items, GameListDir* parent);
+-    void ValidateEntry(const QModelIndex& item);
+     void DonePopulating(const QStringList& watch_list);
+ 
++private:
++    void ValidateEntry(const QModelIndex& item);
++
+     void RefreshGameDirectory();
+ 
+     void ToggleFavorite(u64 program_id);
+@@ -165,7 +169,7 @@ private slots:
+     QVBoxLayout* layout = nullptr;
+     QTreeView* tree_view = nullptr;
+     QStandardItemModel* item_model = nullptr;
+-    GameListWorker* current_worker = nullptr;
++    std::unique_ptr<GameListWorker> current_worker;
+     QFileSystemWatcher* watcher = nullptr;
+     ControllerNavigation* controller_navigation = nullptr;
+     CompatibilityList compatibility_list;
+diff --git a/src/yuzu/game_list_worker.cpp b/src/yuzu/game_list_worker.cpp
+index 077ced12b683..69be21027753 100644
+--- a/src/yuzu/game_list_worker.cpp
++++ b/src/yuzu/game_list_worker.cpp
+@@ -233,10 +233,53 @@ GameListWorker::GameListWorker(FileSys::VirtualFilesystem vfs_,
+                                const PlayTime::PlayTimeManager& play_time_manager_,
+                                Core::System& system_)
+     : vfs{std::move(vfs_)}, provider{provider_}, game_dirs{game_dirs_},
+-      compatibility_list{compatibility_list_},
+-      play_time_manager{play_time_manager_}, system{system_} {}
++      compatibility_list{compatibility_list_}, play_time_manager{play_time_manager_}, system{
++                                                                                          system_} {
++    // We want the game list to manage our lifetime.
++    setAutoDelete(false);
++}
++
++GameListWorker::~GameListWorker() {
++    this->disconnect();
++    stop_requested.store(true);
++    processing_completed.Wait();
++}
++
++void GameListWorker::ProcessEvents(GameList* game_list) {
++    while (true) {
++        std::function<void(GameList*)> func;
++        {
++            // Lock queue to protect concurrent modification.
++            std::scoped_lock lk(lock);
++
++            // If we can't pop a function, return.
++            if (queued_events.empty()) {
++                return;
++            }
++
++            // Pop a function.
++            func = std::move(queued_events.back());
++            queued_events.pop_back();
++        }
++
++        // Run the function.
++        func(game_list);
++    }
++}
++
++template <typename F>
++void GameListWorker::RecordEvent(F&& func) {
++    {
++        // Lock queue to protect concurrent modification.
++        std::scoped_lock lk(lock);
+ 
+-GameListWorker::~GameListWorker() = default;
++        // Add the function into the front of the queue.
++        queued_events.emplace_front(std::move(func));
++    }
++
++    // Data now available.
++    emit DataAvailable();
++}
+ 
+ void GameListWorker::AddTitlesToGameList(GameListDir* parent_dir) {
+     using namespace FileSys;
+@@ -284,9 +327,9 @@ void GameListWorker::AddTitlesToGameList(GameListDir* parent_dir) {
+             GetMetadataFromControlNCA(patch, *control, icon, name);
+         }
+ 
+-        emit EntryReady(MakeGameListEntry(file->GetFullPath(), name, file->GetSize(), icon, *loader,
+-                                          program_id, compatibility_list, play_time_manager, patch),
+-                        parent_dir);
++        auto entry = MakeGameListEntry(file->GetFullPath(), name, file->GetSize(), icon, *loader,
++                                       program_id, compatibility_list, play_time_manager, patch);
++        RecordEvent([=](GameList* game_list) { game_list->AddEntry(entry, parent_dir); });
+     }
+ }
+ 
+@@ -360,11 +403,12 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
+                         const FileSys::PatchManager patch{id, system.GetFileSystemController(),
+                                                           system.GetContentProvider()};
+ 
+-                        emit EntryReady(MakeGameListEntry(physical_name, name,
+-                                                          Common::FS::GetSize(physical_name), icon,
+-                                                          *loader, id, compatibility_list,
+-                                                          play_time_manager, patch),
+-                                        parent_dir);
++                        auto entry = MakeGameListEntry(
++                            physical_name, name, Common::FS::GetSize(physical_name), icon, *loader,
++                            id, compatibility_list, play_time_manager, patch);
++
++                        RecordEvent(
++                            [=](GameList* game_list) { game_list->AddEntry(entry, parent_dir); });
+                     }
+                 } else {
+                     std::vector<u8> icon;
+@@ -376,11 +420,12 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
+                     const FileSys::PatchManager patch{program_id, system.GetFileSystemController(),
+                                                       system.GetContentProvider()};
+ 
+-                    emit EntryReady(MakeGameListEntry(physical_name, name,
+-                                                      Common::FS::GetSize(physical_name), icon,
+-                                                      *loader, program_id, compatibility_list,
+-                                                      play_time_manager, patch),
+-                                    parent_dir);
++                    auto entry = MakeGameListEntry(
++                        physical_name, name, Common::FS::GetSize(physical_name), icon, *loader,
++                        program_id, compatibility_list, play_time_manager, patch);
++
++                    RecordEvent(
++                        [=](GameList* game_list) { game_list->AddEntry(entry, parent_dir); });
+                 }
+             }
+         } else if (is_dir) {
+@@ -399,25 +444,34 @@ void GameListWorker::ScanFileSystem(ScanTarget target, const std::string& dir_pa
+ }
+ 
+ void GameListWorker::run() {
++    watch_list.clear();
+     provider->ClearAllEntries();
+ 
++    const auto DirEntryReady = [&](GameListDir* game_list_dir) {
++        RecordEvent([=](GameList* game_list) { game_list->AddDirEntry(game_list_dir); });
++    };
++
+     for (UISettings::GameDir& game_dir : game_dirs) {
++        if (stop_requested) {
++            break;
++        }
++
+         if (game_dir.path == QStringLiteral("SDMC")) {
+             auto* const game_list_dir = new GameListDir(game_dir, GameListItemType::SdmcDir);
+-            emit DirEntryReady(game_list_dir);
++            DirEntryReady(game_list_dir);
+             AddTitlesToGameList(game_list_dir);
+         } else if (game_dir.path == QStringLiteral("UserNAND")) {
+             auto* const game_list_dir = new GameListDir(game_dir, GameListItemType::UserNandDir);
+-            emit DirEntryReady(game_list_dir);
++            DirEntryReady(game_list_dir);
+             AddTitlesToGameList(game_list_dir);
+         } else if (game_dir.path == QStringLiteral("SysNAND")) {
+             auto* const game_list_dir = new GameListDir(game_dir, GameListItemType::SysNandDir);
+-            emit DirEntryReady(game_list_dir);
++            DirEntryReady(game_list_dir);
+             AddTitlesToGameList(game_list_dir);
+         } else {
+             watch_list.append(game_dir.path);
+             auto* const game_list_dir = new GameListDir(game_dir);
+-            emit DirEntryReady(game_list_dir);
++            DirEntryReady(game_list_dir);
+             ScanFileSystem(ScanTarget::FillManualContentProvider, game_dir.path.toStdString(),
+                            game_dir.deep_scan, game_list_dir);
+             ScanFileSystem(ScanTarget::PopulateGameList, game_dir.path.toStdString(),
+@@ -425,12 +479,6 @@ void GameListWorker::run() {
+         }
+     }
+ 
+-    emit Finished(watch_list);
++    RecordEvent([=](GameList* game_list) { game_list->DonePopulating(watch_list); });
+     processing_completed.Set();
+ }
+-
+-void GameListWorker::Cancel() {
+-    this->disconnect();
+-    stop_requested.store(true);
+-    processing_completed.Wait();
+-}
+diff --git a/src/yuzu/game_list_worker.h b/src/yuzu/game_list_worker.h
+index 54dc05e308a5..d5990fcde81b 100644
+--- a/src/yuzu/game_list_worker.h
++++ b/src/yuzu/game_list_worker.h
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <deque>
+ #include <memory>
+ #include <string>
+ 
+@@ -20,6 +21,7 @@ namespace Core {
+ class System;
+ }
+ 
++class GameList;
+ class QStandardItem;
+ 
+ namespace FileSys {
+@@ -46,24 +48,22 @@ class GameListWorker : public QObject, public QRunnable {
+     /// Starts the processing of directory tree information.
+     void run() override;
+ 
+-    /// Tells the worker that it should no longer continue processing. Thread-safe.
+-    void Cancel();
+-
+-signals:
++public:
+     /**
+-     * The `EntryReady` signal is emitted once an entry has been prepared and is ready
+-     * to be added to the game list.
+-     * @param entry_items a list with `QStandardItem`s that make up the columns of the new
+-     * entry.
++     * Synchronously processes any events queued by the worker.
++     *
++     * AddDirEntry is called on the game list for every discovered directory.
++     * AddEntry is called on the game list for every discovered program.
++     * DonePopulating is called on the game list when processing completes.
+      */
+-    void DirEntryReady(GameListDir* entry_items);
+-    void EntryReady(QList<QStandardItem*> entry_items, GameListDir* parent_dir);
++    void ProcessEvents(GameList* game_list);
+ 
+-    /**
+-     * After the worker has traversed the game directory looking for entries, this signal is
+-     * emitted with a list of folders that should be watched for changes as well.
+-     */
+-    void Finished(QStringList watch_list);
++signals:
++    void DataAvailable();
++
++private:
++    template <typename F>
++    void RecordEvent(F&& func);
+ 
+ private:
+     void AddTitlesToGameList(GameListDir* parent_dir);
+@@ -84,8 +84,11 @@ class GameListWorker : public QObject, public QRunnable {
+ 
+     QStringList watch_list;
+ 
+-    Common::Event processing_completed;
++    std::mutex lock;
++    std::condition_variable cv;
++    std::deque<std::function<void(GameList*)>> queued_events;
+     std::atomic_bool stop_requested = false;
++    Common::Event processing_completed;
+ 
+     Core::System& system;
+ };

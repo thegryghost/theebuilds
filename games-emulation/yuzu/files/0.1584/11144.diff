@@ -1,0 +1,233 @@
+diff --git a/dist/qt_themes/default/style.qss b/dist/qt_themes/default/style.qss
+index 12e681648dd2..6a9cc555fc39 100644
+--- a/dist/qt_themes/default/style.qss
++++ b/dist/qt_themes/default/style.qss
+@@ -115,6 +115,10 @@ QWidget#connectedControllers {
+     background: transparent;
+ }
+ 
++QWidget#closeButtons {
++    background: transparent;
++}
++
+ QWidget#playersSupported,
+ QWidget#controllersSupported,
+ QWidget#controllerSupported1,
+diff --git a/dist/qt_themes/qdarkstyle/style.qss b/dist/qt_themes/qdarkstyle/style.qss
+index 63a636ae658a..328ac942fc0f 100644
+--- a/dist/qt_themes/qdarkstyle/style.qss
++++ b/dist/qt_themes/qdarkstyle/style.qss
+@@ -1380,6 +1380,10 @@ QWidget#connectedControllers {
+     background: transparent;
+ }
+ 
++QWidget#closeButtons {
++    background: transparent;
++}
++
+ QWidget#playersSupported,
+ QWidget#controllersSupported,
+ QWidget#controllerSupported1,
+diff --git a/dist/qt_themes/qdarkstyle_midnight_blue/style.qss b/dist/qt_themes/qdarkstyle_midnight_blue/style.qss
+index 49b05c8baf81..8892c32d6643 100644
+--- a/dist/qt_themes/qdarkstyle_midnight_blue/style.qss
++++ b/dist/qt_themes/qdarkstyle_midnight_blue/style.qss
+@@ -2301,6 +2301,10 @@ QWidget#connectedControllers {
+   background: transparent;
+ }
+ 
++QWidget#closeButtons {
++    background: transparent;
++}
++
+ QWidget#playersSupported,
+ QWidget#controllersSupported,
+ QWidget#controllerSupported1,
+diff --git a/src/yuzu/applets/qt_controller.cpp b/src/yuzu/applets/qt_controller.cpp
+index 00aafb8f8f3a..3b8317598ae8 100644
+--- a/src/yuzu/applets/qt_controller.cpp
++++ b/src/yuzu/applets/qt_controller.cpp
+@@ -21,6 +21,7 @@
+ #include "yuzu/configuration/configure_vibration.h"
+ #include "yuzu/configuration/input_profiles.h"
+ #include "yuzu/main.h"
++#include "yuzu/util/controller_navigation.h"
+ 
+ namespace {
+ 
+@@ -130,6 +131,8 @@ QtControllerSelectorDialog::QtControllerSelectorDialog(
+         ui->checkboxPlayer7Connected, ui->checkboxPlayer8Connected,
+     };
+ 
++    ui->labelError->setVisible(false);
++
+     // Setup/load everything prior to setting up connections.
+     // This avoids unintentionally changing the states of elements while loading them in.
+     SetSupportedControllers();
+@@ -141,6 +144,8 @@ QtControllerSelectorDialog::QtControllerSelectorDialog(
+ 
+     LoadConfiguration();
+ 
++    controller_navigation = new ControllerNavigation(system.HIDCore(), this);
++
+     for (std::size_t i = 0; i < NUM_PLAYERS; ++i) {
+         SetExplainText(i);
+         UpdateControllerIcon(i);
+@@ -149,6 +154,8 @@ QtControllerSelectorDialog::QtControllerSelectorDialog(
+ 
+         connect(player_groupboxes[i], &QGroupBox::toggled, [this, i](bool checked) {
+             if (checked) {
++                // Hide eventual error message about number of controllers
++                ui->labelError->setVisible(false);
+                 for (std::size_t index = 0; index <= i; ++index) {
+                     connected_controller_checkboxes[index]->setChecked(checked);
+                 }
+@@ -197,6 +204,12 @@ QtControllerSelectorDialog::QtControllerSelectorDialog(
+     connect(ui->buttonBox, &QDialogButtonBox::accepted, this,
+             &QtControllerSelectorDialog::ApplyConfiguration);
+ 
++    connect(controller_navigation, &ControllerNavigation::TriggerKeyboardEvent,
++            [this](Qt::Key key) {
++                QKeyEvent* event = new QKeyEvent(QEvent::KeyPress, key, Qt::NoModifier);
++                QCoreApplication::postEvent(this, event);
++            });
++
+     // Enhancement: Check if the parameters have already been met before disconnecting controllers.
+     // If all the parameters are met AND only allows a single player,
+     // stop the constructor here as we do not need to continue.
+@@ -215,6 +228,7 @@ QtControllerSelectorDialog::QtControllerSelectorDialog(
+ }
+ 
+ QtControllerSelectorDialog::~QtControllerSelectorDialog() {
++    controller_navigation->UnloadController();
+     system.HIDCore().DisableAllControllerConfiguration();
+ }
+ 
+@@ -287,6 +301,31 @@ void QtControllerSelectorDialog::CallConfigureInputProfileDialog() {
+     dialog.exec();
+ }
+ 
++void QtControllerSelectorDialog::keyPressEvent(QKeyEvent* evt) {
++    const auto num_connected_players = static_cast<int>(
++        std::count_if(player_groupboxes.begin(), player_groupboxes.end(),
++                      [](const QGroupBox* player) { return player->isChecked(); }));
++
++    const auto min_supported_players = parameters.enable_single_mode ? 1 : parameters.min_players;
++    const auto max_supported_players = parameters.enable_single_mode ? 1 : parameters.max_players;
++
++    if ((evt->key() == Qt::Key_Enter || evt->key() == Qt::Key_Return) && !parameters_met) {
++        // Display error message when trying to validate using "Enter" and "OK" button is disabled
++        ui->labelError->setVisible(true);
++        return;
++    } else if (evt->key() == Qt::Key_Left && num_connected_players > min_supported_players) {
++        // Remove a player if possible
++        connected_controller_checkboxes[num_connected_players - 1]->setChecked(false);
++        return;
++    } else if (evt->key() == Qt::Key_Right && num_connected_players < max_supported_players) {
++        // Add a player, if possible
++        ui->labelError->setVisible(false);
++        connected_controller_checkboxes[num_connected_players]->setChecked(true);
++        return;
++    }
++    QDialog::keyPressEvent(evt);
++}
++
+ bool QtControllerSelectorDialog::CheckIfParametersMet() {
+     // Here, we check and validate the current configuration against all applicable parameters.
+     const auto num_connected_players = static_cast<int>(
+diff --git a/src/yuzu/applets/qt_controller.h b/src/yuzu/applets/qt_controller.h
+index 2fdc358579e4..7f0673d06344 100644
+--- a/src/yuzu/applets/qt_controller.h
++++ b/src/yuzu/applets/qt_controller.h
+@@ -34,6 +34,8 @@ class HIDCore;
+ enum class NpadStyleIndex : u8;
+ } // namespace Core::HID
+ 
++class ControllerNavigation;
++
+ class QtControllerSelectorDialog final : public QDialog {
+     Q_OBJECT
+ 
+@@ -46,6 +48,8 @@ class QtControllerSelectorDialog final : public QDialog {
+ 
+     int exec() override;
+ 
++    void keyPressEvent(QKeyEvent* evt) override;
++
+ private:
+     // Applies the current configuration.
+     void ApplyConfiguration();
+@@ -110,6 +114,8 @@ class QtControllerSelectorDialog final : public QDialog {
+ 
+     Core::System& system;
+ 
++    ControllerNavigation* controller_navigation = nullptr;
++
+     // This is true if and only if all parameters are met. Otherwise, this is false.
+     // This determines whether the "OK" button can be clicked to exit the applet.
+     bool parameters_met{false};
+diff --git a/src/yuzu/applets/qt_controller.ui b/src/yuzu/applets/qt_controller.ui
+index 729e921ee7c5..6f7cb3c13547 100644
+--- a/src/yuzu/applets/qt_controller.ui
++++ b/src/yuzu/applets/qt_controller.ui
+@@ -2624,13 +2624,53 @@
+           </spacer>
+          </item>
+          <item alignment="Qt::AlignBottom">
+-          <widget class="QDialogButtonBox" name="buttonBox">
+-           <property name="enabled">
+-            <bool>true</bool>
+-           </property>
+-           <property name="standardButtons">
+-            <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+-           </property>
++          <widget class="QWidget" name="closeButtons" native="true">
++           <layout class="QVBoxLayout" name="verticalLayout_46">
++            <property name="spacing">
++             <number>7</number>
++            </property>
++            <property name="leftMargin">
++             <number>0</number>
++            </property>
++            <property name="topMargin">
++             <number>0</number>
++            </property>
++            <property name="rightMargin">
++             <number>0</number>
++            </property>
++            <property name="bottomMargin">
++             <number>0</number>
++            </property>
++            <item>
++             <widget class="QLabel" name="labelError">
++              <property name="enabled">
++               <bool>true</bool>
++              </property>
++              <property name="styleSheet">
++               <string notr="true">QLabel { color : red; }</string>
++              </property>
++              <property name="text">
++               <string>Not enough controllers</string>
++              </property>
++              <property name="alignment">
++               <set>Qt::AlignCenter</set>
++              </property>
++              <property name="margin">
++               <number>0</number>
++              </property>
++             </widget>
++            </item>
++            <item>
++             <widget class="QDialogButtonBox" name="buttonBox">
++              <property name="enabled">
++               <bool>true</bool>
++              </property>
++              <property name="standardButtons">
++               <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
++              </property>
++             </widget>
++            </item>
++           </layout>
+           </widget>
+          </item>
+         </layout>

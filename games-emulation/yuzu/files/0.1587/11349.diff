@@ -1,0 +1,90 @@
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 0b7135d49385..fdc26688d1be 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -62,7 +62,11 @@ using BufferId = SlotId;
+ using VideoCore::Surface::PixelFormat;
+ using namespace Common::Literals;
+ 
++#ifdef __APPLE__
++constexpr u32 NUM_VERTEX_BUFFERS = 16;
++#else
+ constexpr u32 NUM_VERTEX_BUFFERS = 32;
++#endif
+ constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
+ constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
+ constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
+diff --git a/src/video_core/host_shaders/convert_d24s8_to_abgr8.frag b/src/video_core/host_shaders/convert_d24s8_to_abgr8.frag
+index d33131d7c8da..b81a54056159 100644
+--- a/src/video_core/host_shaders/convert_d24s8_to_abgr8.frag
++++ b/src/video_core/host_shaders/convert_d24s8_to_abgr8.frag
+@@ -3,16 +3,16 @@
+ 
+ #version 450
+ 
++precision mediump int;
++precision highp float;
++
+ layout(binding = 0) uniform sampler2D depth_tex;
+-layout(binding = 1) uniform isampler2D stencil_tex;
++layout(binding = 1) uniform usampler2D stencil_tex;
+ 
+ layout(location = 0) out vec4 color;
+ 
+ void main() {
+     ivec2 coord = ivec2(gl_FragCoord.xy);
+-    uint depth = uint(textureLod(depth_tex, coord, 0).r * (exp2(24.0) - 1.0f));
+-    uint stencil = uint(textureLod(stencil_tex, coord, 0).r);
+-
+     highp uint depth_val =
+         uint(textureLod(depth_tex, coord, 0).r * (exp2(32.0) - 1.0));
+     lowp uint stencil_val = textureLod(stencil_tex, coord, 0).r;
+diff --git a/src/video_core/host_shaders/convert_s8d24_to_abgr8.frag b/src/video_core/host_shaders/convert_s8d24_to_abgr8.frag
+index 31db7d426290..6a457981d132 100644
+--- a/src/video_core/host_shaders/convert_s8d24_to_abgr8.frag
++++ b/src/video_core/host_shaders/convert_s8d24_to_abgr8.frag
+@@ -3,16 +3,16 @@
+ 
+ #version 450
+ 
++precision mediump int;
++precision highp float;
++
+ layout(binding = 0) uniform sampler2D depth_tex;
+-layout(binding = 1) uniform isampler2D stencil_tex;
++layout(binding = 1) uniform usampler2D stencil_tex;
+ 
+ layout(location = 0) out vec4 color;
+ 
+ void main() {
+     ivec2 coord = ivec2(gl_FragCoord.xy);
+-    uint depth = uint(textureLod(depth_tex, coord, 0).r * (exp2(24.0) - 1.0f));
+-    uint stencil = uint(textureLod(stencil_tex, coord, 0).r);
+-
+     highp uint depth_val =
+         uint(textureLod(depth_tex, coord, 0).r * (exp2(32.0) - 1.0));
+     lowp uint stencil_val = textureLod(stencil_tex, coord, 0).r;
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 032f694bc2dc..3e04b758312d 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -989,6 +989,19 @@ void RasterizerVulkan::UpdateScissorsState(Tegra::Engines::Maxwell3D::Regs& regs
+     if (!state_tracker.TouchScissors()) {
+         return;
+     }
++    if (!regs.viewport_scale_offset_enabled) {
++        const auto x = static_cast<float>(regs.surface_clip.x);
++        const auto y = static_cast<float>(regs.surface_clip.y);
++        const auto width = static_cast<float>(regs.surface_clip.width);
++        const auto height = static_cast<float>(regs.surface_clip.height);
++        VkRect2D scissor;
++        scissor.offset.x = static_cast<u32>(x);
++        scissor.offset.y = static_cast<u32>(y);
++        scissor.extent.width = static_cast<u32>(width != 0.0f ? width : 1.0f);
++        scissor.extent.height = static_cast<u32>(height != 0.0f ? height : 1.0f);
++        scheduler.Record([scissor](vk::CommandBuffer cmdbuf) { cmdbuf.SetScissor(0, scissor); });
++        return;
++    }
+     u32 up_scale = 1;
+     u32 down_shift = 0;
+     if (texture_cache.IsRescaling()) {

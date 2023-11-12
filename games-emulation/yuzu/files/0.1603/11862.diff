@@ -1,0 +1,13 @@
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 804b95989a7d..22bf8cc7782a 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -358,7 +358,7 @@ PipelineCache::PipelineCache(RasterizerVulkan& rasterizer_, const Device& device
+         .has_broken_spirv_subgroup_mask_vector_extract_dynamic =
+             driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY,
+         .has_broken_robust =
+-            device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Maxwell,
++            device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Pascal,
+     };
+ 
+     host_info = Shader::HostTranslateInfo{

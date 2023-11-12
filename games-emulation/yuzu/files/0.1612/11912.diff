@@ -1,0 +1,331 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index e4f499135a17..873839ecd7eb 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -715,6 +715,7 @@ add_library(core STATIC
+     hle/service/nvnflinger/producer_listener.h
+     hle/service/nvnflinger/status.h
+     hle/service/nvnflinger/ui/fence.h
++    hle/service/nvnflinger/ui/graphic_buffer.cpp
+     hle/service/nvnflinger/ui/graphic_buffer.h
+     hle/service/nvnflinger/window.h
+     hle/service/olsc/olsc.cpp
+diff --git a/src/core/hle/service/nvnflinger/buffer_item.h b/src/core/hle/service/nvnflinger/buffer_item.h
+index 3da8cc3aa1f7..7fd808f5468a 100644
+--- a/src/core/hle/service/nvnflinger/buffer_item.h
++++ b/src/core/hle/service/nvnflinger/buffer_item.h
+@@ -15,7 +15,7 @@
+ 
+ namespace Service::android {
+ 
+-struct GraphicBuffer;
++class GraphicBuffer;
+ 
+ class BufferItem final {
+ public:
+diff --git a/src/core/hle/service/nvnflinger/buffer_queue_consumer.cpp b/src/core/hle/service/nvnflinger/buffer_queue_consumer.cpp
+index 51291539d980..1179ab6a6f69 100644
+--- a/src/core/hle/service/nvnflinger/buffer_queue_consumer.cpp
++++ b/src/core/hle/service/nvnflinger/buffer_queue_consumer.cpp
+@@ -5,7 +5,6 @@
+ // https://cs.android.com/android/platform/superproject/+/android-5.1.1_r38:frameworks/native/libs/gui/BufferQueueConsumer.cpp
+ 
+ #include "common/logging/log.h"
+-#include "core/hle/service/nvdrv/core/nvmap.h"
+ #include "core/hle/service/nvnflinger/buffer_item.h"
+ #include "core/hle/service/nvnflinger/buffer_queue_consumer.h"
+ #include "core/hle/service/nvnflinger/buffer_queue_core.h"
+@@ -14,9 +13,8 @@
+ 
+ namespace Service::android {
+ 
+-BufferQueueConsumer::BufferQueueConsumer(std::shared_ptr<BufferQueueCore> core_,
+-                                         Service::Nvidia::NvCore::NvMap& nvmap_)
+-    : core{std::move(core_)}, slots{core->slots}, nvmap(nvmap_) {}
++BufferQueueConsumer::BufferQueueConsumer(std::shared_ptr<BufferQueueCore> core_)
++    : core{std::move(core_)}, slots{core->slots} {}
+ 
+ BufferQueueConsumer::~BufferQueueConsumer() = default;
+ 
+@@ -136,8 +134,6 @@ Status BufferQueueConsumer::ReleaseBuffer(s32 slot, u64 frame_number, const Fenc
+ 
+         slots[slot].buffer_state = BufferState::Free;
+ 
+-        nvmap.FreeHandle(slots[slot].graphic_buffer->BufferId(), true);
+-
+         listener = core->connected_producer_listener;
+ 
+         LOG_DEBUG(Service_Nvnflinger, "releasing slot {}", slot);
+diff --git a/src/core/hle/service/nvnflinger/buffer_queue_consumer.h b/src/core/hle/service/nvnflinger/buffer_queue_consumer.h
+index 50ed0bb5fbba..b90f70c9a171 100644
+--- a/src/core/hle/service/nvnflinger/buffer_queue_consumer.h
++++ b/src/core/hle/service/nvnflinger/buffer_queue_consumer.h
+@@ -13,10 +13,6 @@
+ #include "core/hle/service/nvnflinger/buffer_queue_defs.h"
+ #include "core/hle/service/nvnflinger/status.h"
+ 
+-namespace Service::Nvidia::NvCore {
+-class NvMap;
+-} // namespace Service::Nvidia::NvCore
+-
+ namespace Service::android {
+ 
+ class BufferItem;
+@@ -25,8 +21,7 @@ class IConsumerListener;
+ 
+ class BufferQueueConsumer final {
+ public:
+-    explicit BufferQueueConsumer(std::shared_ptr<BufferQueueCore> core_,
+-                                 Service::Nvidia::NvCore::NvMap& nvmap_);
++    explicit BufferQueueConsumer(std::shared_ptr<BufferQueueCore> core_);
+     ~BufferQueueConsumer();
+ 
+     Status AcquireBuffer(BufferItem* out_buffer, std::chrono::nanoseconds expected_present);
+@@ -37,7 +32,6 @@ class BufferQueueConsumer final {
+ private:
+     std::shared_ptr<BufferQueueCore> core;
+     BufferQueueDefs::SlotsType& slots;
+-    Service::Nvidia::NvCore::NvMap& nvmap;
+ };
+ 
+ } // namespace Service::android
+diff --git a/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp b/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp
+index 6e7a49658943..5d8762d253b2 100644
+--- a/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp
++++ b/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp
+@@ -13,7 +13,6 @@
+ #include "core/hle/kernel/kernel.h"
+ #include "core/hle/service/hle_ipc.h"
+ #include "core/hle/service/kernel_helpers.h"
+-#include "core/hle/service/nvdrv/core/nvmap.h"
+ #include "core/hle/service/nvnflinger/buffer_queue_core.h"
+ #include "core/hle/service/nvnflinger/buffer_queue_producer.h"
+ #include "core/hle/service/nvnflinger/consumer_listener.h"
+@@ -533,8 +532,6 @@ Status BufferQueueProducer::QueueBuffer(s32 slot, const QueueBufferInput& input,
+         item.is_droppable = core->dequeue_buffer_cannot_block || async;
+         item.swap_interval = swap_interval;
+ 
+-        nvmap.DuplicateHandle(item.graphic_buffer->BufferId(), true);
+-
+         sticky_transform = sticky_transform_;
+ 
+         if (core->queue.empty()) {
+@@ -744,19 +741,13 @@ Status BufferQueueProducer::Disconnect(NativeWindowApi api) {
+             return Status::NoError;
+         }
+ 
+-        // HACK: We are not Android. Remove handle for items in queue, and clear queue.
+-        // Allows synchronous destruction of nvmap handles.
+-        for (auto& item : core->queue) {
+-            nvmap.FreeHandle(item.graphic_buffer->BufferId(), true);
+-        }
+-        core->queue.clear();
+-
+         switch (api) {
+         case NativeWindowApi::Egl:
+         case NativeWindowApi::Cpu:
+         case NativeWindowApi::Media:
+         case NativeWindowApi::Camera:
+             if (core->connected_api == api) {
++                core->queue.clear();
+                 core->FreeAllBuffersLocked();
+                 core->connected_producer_listener = nullptr;
+                 core->connected_api = NativeWindowApi::NoConnectedApi;
+@@ -785,7 +776,7 @@ Status BufferQueueProducer::Disconnect(NativeWindowApi api) {
+ }
+ 
+ Status BufferQueueProducer::SetPreallocatedBuffer(s32 slot,
+-                                                  const std::shared_ptr<GraphicBuffer>& buffer) {
++                                                  const std::shared_ptr<NvGraphicBuffer>& buffer) {
+     LOG_DEBUG(Service_Nvnflinger, "slot {}", slot);
+ 
+     if (slot < 0 || slot >= BufferQueueDefs::NUM_BUFFER_SLOTS) {
+@@ -796,7 +787,7 @@ Status BufferQueueProducer::SetPreallocatedBuffer(s32 slot,
+ 
+     slots[slot] = {};
+     slots[slot].fence = Fence::NoFence();
+-    slots[slot].graphic_buffer = buffer;
++    slots[slot].graphic_buffer = std::make_shared<GraphicBuffer>(nvmap, buffer);
+     slots[slot].frame_number = 0;
+ 
+     // Most games preallocate a buffer and pass a valid buffer here. However, it is possible for
+@@ -839,7 +830,7 @@ void BufferQueueProducer::Transact(HLERequestContext& ctx, TransactionId code, u
+     }
+     case TransactionId::SetPreallocatedBuffer: {
+         const auto slot = parcel_in.Read<s32>();
+-        const auto buffer = parcel_in.ReadObject<GraphicBuffer>();
++        const auto buffer = parcel_in.ReadObject<NvGraphicBuffer>();
+ 
+         status = SetPreallocatedBuffer(slot, buffer);
+         break;
+@@ -867,7 +858,7 @@ void BufferQueueProducer::Transact(HLERequestContext& ctx, TransactionId code, u
+ 
+         status = RequestBuffer(slot, &buf);
+ 
+-        parcel_out.WriteFlattenedObject(buf);
++        parcel_out.WriteFlattenedObject<NvGraphicBuffer>(buf.get());
+         break;
+     }
+     case TransactionId::QueueBuffer: {
+diff --git a/src/core/hle/service/nvnflinger/buffer_queue_producer.h b/src/core/hle/service/nvnflinger/buffer_queue_producer.h
+index d4201c104645..64c17d56c9cd 100644
+--- a/src/core/hle/service/nvnflinger/buffer_queue_producer.h
++++ b/src/core/hle/service/nvnflinger/buffer_queue_producer.h
+@@ -38,6 +38,7 @@ namespace Service::android {
+ 
+ class BufferQueueCore;
+ class IProducerListener;
++struct NvGraphicBuffer;
+ 
+ class BufferQueueProducer final : public IBinder {
+ public:
+@@ -65,7 +66,7 @@ class BufferQueueProducer final : public IBinder {
+                    bool producer_controlled_by_app, QueueBufferOutput* output);
+ 
+     Status Disconnect(NativeWindowApi api);
+-    Status SetPreallocatedBuffer(s32 slot, const std::shared_ptr<GraphicBuffer>& buffer);
++    Status SetPreallocatedBuffer(s32 slot, const std::shared_ptr<NvGraphicBuffer>& buffer);
+ 
+ private:
+     BufferQueueProducer(const BufferQueueProducer&) = delete;
+diff --git a/src/core/hle/service/nvnflinger/buffer_slot.h b/src/core/hle/service/nvnflinger/buffer_slot.h
+index d8c9dec3b2a9..d25bca049d22 100644
+--- a/src/core/hle/service/nvnflinger/buffer_slot.h
++++ b/src/core/hle/service/nvnflinger/buffer_slot.h
+@@ -13,7 +13,7 @@
+ 
+ namespace Service::android {
+ 
+-struct GraphicBuffer;
++class GraphicBuffer;
+ 
+ enum class BufferState : u32 {
+     Free = 0,
+diff --git a/src/core/hle/service/nvnflinger/fb_share_buffer_manager.cpp b/src/core/hle/service/nvnflinger/fb_share_buffer_manager.cpp
+index 2e29bc8487db..f260c94b6f8d 100644
+--- a/src/core/hle/service/nvnflinger/fb_share_buffer_manager.cpp
++++ b/src/core/hle/service/nvnflinger/fb_share_buffer_manager.cpp
+@@ -179,7 +179,7 @@ constexpr SharedMemoryPoolLayout SharedBufferPoolLayout = [] {
+ }();
+ 
+ void MakeGraphicBuffer(android::BufferQueueProducer& producer, u32 slot, u32 handle) {
+-    auto buffer = std::make_shared<android::GraphicBuffer>();
++    auto buffer = std::make_shared<android::NvGraphicBuffer>();
+     buffer->width = SharedBufferWidth;
+     buffer->height = SharedBufferHeight;
+     buffer->stride = SharedBufferBlockLinearStride;
+diff --git a/src/core/hle/service/nvnflinger/status.h b/src/core/hle/service/nvnflinger/status.h
+index 7af166c40737..3fa0fe15b9be 100644
+--- a/src/core/hle/service/nvnflinger/status.h
++++ b/src/core/hle/service/nvnflinger/status.h
+@@ -19,7 +19,7 @@ enum class Status : s32 {
+     Busy = -16,
+     NoInit = -19,
+     BadValue = -22,
+-    InvalidOperation = -37,
++    InvalidOperation = -38,
+     BufferNeedsReallocation = 1,
+     ReleaseAllBuffers = 2,
+ };
+diff --git a/src/core/hle/service/nvnflinger/ui/graphic_buffer.cpp b/src/core/hle/service/nvnflinger/ui/graphic_buffer.cpp
+new file mode 100644
+index 000000000000..ce70946ec124
+--- /dev/null
++++ b/src/core/hle/service/nvnflinger/ui/graphic_buffer.cpp
+@@ -0,0 +1,34 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/nvdrv/core/nvmap.h"
++#include "core/hle/service/nvnflinger/ui/graphic_buffer.h"
++
++namespace Service::android {
++
++static NvGraphicBuffer GetBuffer(std::shared_ptr<NvGraphicBuffer>& buffer) {
++    if (buffer) {
++        return *buffer;
++    } else {
++        return {};
++    }
++}
++
++GraphicBuffer::GraphicBuffer(u32 width_, u32 height_, PixelFormat format_, u32 usage_)
++    : NvGraphicBuffer(width_, height_, format_, usage_), m_nvmap(nullptr) {}
++
++GraphicBuffer::GraphicBuffer(Service::Nvidia::NvCore::NvMap& nvmap,
++                             std::shared_ptr<NvGraphicBuffer> buffer)
++    : NvGraphicBuffer(GetBuffer(buffer)), m_nvmap(std::addressof(nvmap)) {
++    if (this->BufferId() > 0) {
++        m_nvmap->DuplicateHandle(this->BufferId(), true);
++    }
++}
++
++GraphicBuffer::~GraphicBuffer() {
++    if (m_nvmap != nullptr && this->BufferId() > 0) {
++        m_nvmap->FreeHandle(this->BufferId(), true);
++    }
++}
++
++} // namespace Service::android
+diff --git a/src/core/hle/service/nvnflinger/ui/graphic_buffer.h b/src/core/hle/service/nvnflinger/ui/graphic_buffer.h
+index 3eac5cedd612..da430aa75226 100644
+--- a/src/core/hle/service/nvnflinger/ui/graphic_buffer.h
++++ b/src/core/hle/service/nvnflinger/ui/graphic_buffer.h
+@@ -6,16 +6,22 @@
+ 
+ #pragma once
+ 
++#include <memory>
++
+ #include "common/common_funcs.h"
+ #include "common/common_types.h"
+ #include "core/hle/service/nvnflinger/pixel_format.h"
+ 
++namespace Service::Nvidia::NvCore {
++class NvMap;
++} // namespace Service::Nvidia::NvCore
++
+ namespace Service::android {
+ 
+-struct GraphicBuffer final {
+-    constexpr GraphicBuffer() = default;
++struct NvGraphicBuffer {
++    constexpr NvGraphicBuffer() = default;
+ 
+-    constexpr GraphicBuffer(u32 width_, u32 height_, PixelFormat format_, u32 usage_)
++    constexpr NvGraphicBuffer(u32 width_, u32 height_, PixelFormat format_, u32 usage_)
+         : width{static_cast<s32>(width_)}, height{static_cast<s32>(height_)}, format{format_},
+           usage{static_cast<s32>(usage_)} {}
+ 
+@@ -93,6 +99,17 @@ struct GraphicBuffer final {
+     u32 offset{};
+     INSERT_PADDING_WORDS(60);
+ };
+-static_assert(sizeof(GraphicBuffer) == 0x16C, "GraphicBuffer has wrong size");
++static_assert(sizeof(NvGraphicBuffer) == 0x16C, "NvGraphicBuffer has wrong size");
++
++class GraphicBuffer final : public NvGraphicBuffer {
++public:
++    explicit GraphicBuffer(u32 width, u32 height, PixelFormat format, u32 usage);
++    explicit GraphicBuffer(Service::Nvidia::NvCore::NvMap& nvmap,
++                           std::shared_ptr<NvGraphicBuffer> buffer);
++    ~GraphicBuffer();
++
++private:
++    Service::Nvidia::NvCore::NvMap* m_nvmap{};
++};
+ 
+ } // namespace Service::android
+diff --git a/src/core/hle/service/vi/display/vi_display.cpp b/src/core/hle/service/vi/display/vi_display.cpp
+index f0b5eff8afe0..d30f49877ad2 100644
+--- a/src/core/hle/service/vi/display/vi_display.cpp
++++ b/src/core/hle/service/vi/display/vi_display.cpp
+@@ -35,7 +35,7 @@ static BufferQueue CreateBufferQueue(KernelHelpers::ServiceContext& service_cont
+     return {
+         buffer_queue_core,
+         std::make_unique<android::BufferQueueProducer>(service_context, buffer_queue_core, nvmap),
+-        std::make_unique<android::BufferQueueConsumer>(buffer_queue_core, nvmap)};
++        std::make_unique<android::BufferQueueConsumer>(buffer_queue_core)};
+ }
+ 
+ Display::Display(u64 id, std::string name_,

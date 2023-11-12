@@ -1,0 +1,64 @@
+diff --git a/src/input_common/helpers/joycon_driver.cpp b/src/input_common/helpers/joycon_driver.cpp
+index cf51f3481b78..c9f903213eb7 100644
+--- a/src/input_common/helpers/joycon_driver.cpp
++++ b/src/input_common/helpers/joycon_driver.cpp
+@@ -139,7 +139,7 @@ void JoyconDriver::InputThread(std::stop_token stop_token) {
+     input_thread_running = true;
+ 
+     // Max update rate is 5ms, ensure we are always able to read a bit faster
+-    constexpr int ThreadDelay = 2;
++    constexpr int ThreadDelay = 3;
+     std::vector<u8> buffer(MaxBufferSize);
+ 
+     while (!stop_token.stop_requested()) {
+@@ -163,6 +163,17 @@ void JoyconDriver::InputThread(std::stop_token stop_token) {
+             OnNewData(buffer);
+         }
+ 
++        if (!vibration_queue.Empty()) {
++            VibrationValue vibration_value;
++            vibration_queue.Pop(vibration_value);
++            last_vibration_result = rumble_protocol->SendVibration(vibration_value);
++        }
++
++        // We can't keep up with vibrations. Start skipping.
++        while (vibration_queue.Size() > 6) {
++            vibration_queue.Pop();
++        }
++
+         std::this_thread::yield();
+     }
+ 
+@@ -402,7 +413,8 @@ Common::Input::DriverResult JoyconDriver::SetVibration(const VibrationValue& vib
+     if (disable_input_thread) {
+         return Common::Input::DriverResult::HandleInUse;
+     }
+-    return rumble_protocol->SendVibration(vibration);
++    vibration_queue.Push(vibration);
++    return last_vibration_result;
+ }
+ 
+ Common::Input::DriverResult JoyconDriver::SetLedConfig(u8 led_pattern) {
+diff --git a/src/input_common/helpers/joycon_driver.h b/src/input_common/helpers/joycon_driver.h
+index 335e12cc319f..5355780fbb70 100644
+--- a/src/input_common/helpers/joycon_driver.h
++++ b/src/input_common/helpers/joycon_driver.h
+@@ -9,6 +9,7 @@
+ #include <span>
+ #include <thread>
+ 
++#include "common/threadsafe_queue.h"
+ #include "input_common/helpers/joycon_protocol/joycon_types.h"
+ 
+ namespace Common::Input {
+@@ -152,6 +153,10 @@ class JoyconDriver final {
+     SerialNumber handle_serial_number{}; // Serial number type reported by hidapi
+     SupportedFeatures supported_features{};
+ 
++    /// Queue of vibration request to controllers
++    Common::Input::DriverResult last_vibration_result{Common::Input::DriverResult::Success};
++    Common::SPSCQueue<VibrationValue> vibration_queue;
++
+     // Thread related
+     mutable std::mutex mutex;
+     std::jthread input_thread;

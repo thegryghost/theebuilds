@@ -1,0 +1,275 @@
+diff --git a/src/core/hle/kernel/k_page_table.cpp b/src/core/hle/kernel/k_page_table.cpp
+index 5b51edf30bf9..1fbfbf31f3fb 100644
+--- a/src/core/hle/kernel/k_page_table.cpp
++++ b/src/core/hle/kernel/k_page_table.cpp
+@@ -2949,6 +2949,23 @@ Result KPageTable::UnlockForIpcUserBuffer(KProcessAddress address, size_t size)
+                                 KMemoryAttribute::Locked, nullptr));
+ }
+ 
++Result KPageTable::LockForTransferMemory(KPageGroup* out, KProcessAddress address, size_t size,
++                                         KMemoryPermission perm) {
++    R_RETURN(this->LockMemoryAndOpen(out, nullptr, address, size, KMemoryState::FlagCanTransfer,
++                                     KMemoryState::FlagCanTransfer, KMemoryPermission::All,
++                                     KMemoryPermission::UserReadWrite, KMemoryAttribute::All,
++                                     KMemoryAttribute::None, perm, KMemoryAttribute::Locked));
++}
++
++Result KPageTable::UnlockForTransferMemory(KProcessAddress address, size_t size,
++                                           const KPageGroup& pg) {
++    R_RETURN(this->UnlockMemory(address, size, KMemoryState::FlagCanTransfer,
++                                KMemoryState::FlagCanTransfer, KMemoryPermission::None,
++                                KMemoryPermission::None, KMemoryAttribute::All,
++                                KMemoryAttribute::Locked, KMemoryPermission::UserReadWrite,
++                                KMemoryAttribute::Locked, std::addressof(pg)));
++}
++
+ Result KPageTable::LockForCodeMemory(KPageGroup* out, KProcessAddress addr, size_t size) {
+     R_RETURN(this->LockMemoryAndOpen(
+         out, nullptr, addr, size, KMemoryState::FlagCanCodeMemory, KMemoryState::FlagCanCodeMemory,
+diff --git a/src/core/hle/kernel/k_page_table.h b/src/core/hle/kernel/k_page_table.h
+index b9e8c60421a7..7da675f2781a 100644
+--- a/src/core/hle/kernel/k_page_table.h
++++ b/src/core/hle/kernel/k_page_table.h
+@@ -104,6 +104,9 @@ class KPageTable final {
+     Result CleanupForIpcServer(KProcessAddress address, size_t size, KMemoryState dst_state);
+     Result CleanupForIpcClient(KProcessAddress address, size_t size, KMemoryState dst_state);
+ 
++    Result LockForTransferMemory(KPageGroup* out, KProcessAddress address, size_t size,
++                                 KMemoryPermission perm);
++    Result UnlockForTransferMemory(KProcessAddress address, size_t size, const KPageGroup& pg);
+     Result LockForCodeMemory(KPageGroup* out, KProcessAddress addr, size_t size);
+     Result UnlockForCodeMemory(KProcessAddress addr, size_t size, const KPageGroup& pg);
+     Result MakeAndOpenPageGroup(KPageGroup* out, KProcessAddress address, size_t num_pages,
+diff --git a/src/core/hle/kernel/k_transfer_memory.cpp b/src/core/hle/kernel/k_transfer_memory.cpp
+index 13d34125cd99..0e2e11743b00 100644
+--- a/src/core/hle/kernel/k_transfer_memory.cpp
++++ b/src/core/hle/kernel/k_transfer_memory.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "common/scope_exit.h"
+ #include "core/hle/kernel/k_process.h"
+ #include "core/hle/kernel/k_resource_limit.h"
+ #include "core/hle/kernel/k_transfer_memory.h"
+@@ -9,28 +10,50 @@
+ namespace Kernel {
+ 
+ KTransferMemory::KTransferMemory(KernelCore& kernel)
+-    : KAutoObjectWithSlabHeapAndContainer{kernel} {}
++    : KAutoObjectWithSlabHeapAndContainer{kernel}, m_lock{kernel} {}
+ 
+ KTransferMemory::~KTransferMemory() = default;
+ 
+-Result KTransferMemory::Initialize(KProcessAddress address, std::size_t size,
+-                                   Svc::MemoryPermission owner_perm) {
++Result KTransferMemory::Initialize(KProcessAddress addr, std::size_t size,
++                                   Svc::MemoryPermission own_perm) {
+     // Set members.
+     m_owner = GetCurrentProcessPointer(m_kernel);
+ 
+-    // TODO(bunnei): Lock for transfer memory
++    // Get the owner page table.
++    auto& page_table = m_owner->GetPageTable();
++
++    // Construct the page group, guarding to make sure our state is valid on exit.
++    m_page_group.emplace(m_kernel, page_table.GetBlockInfoManager());
++    auto pg_guard = SCOPE_GUARD({ m_page_group.reset(); });
++
++    // Lock the memory.
++    R_TRY(page_table.LockForTransferMemory(std::addressof(*m_page_group), addr, size,
++                                           ConvertToKMemoryPermission(own_perm)));
+ 
+     // Set remaining tracking members.
+     m_owner->Open();
+-    m_owner_perm = owner_perm;
+-    m_address = address;
+-    m_size = size;
++    m_owner_perm = own_perm;
++    m_address = addr;
+     m_is_initialized = true;
++    m_is_mapped = false;
+ 
++    // We succeeded.
++    pg_guard.Cancel();
+     R_SUCCEED();
+ }
+ 
+-void KTransferMemory::Finalize() {}
++void KTransferMemory::Finalize() {
++    // Unlock.
++    if (!m_is_mapped) {
++        const size_t size = m_page_group->GetNumPages() * PageSize;
++        ASSERT(R_SUCCEEDED(
++            m_owner->GetPageTable().UnlockForTransferMemory(m_address, size, *m_page_group)));
++    }
++
++    // Close the page group.
++    m_page_group->Close();
++    m_page_group->Finalize();
++}
+ 
+ void KTransferMemory::PostDestroy(uintptr_t arg) {
+     KProcess* owner = reinterpret_cast<KProcess*>(arg);
+@@ -38,4 +61,54 @@ void KTransferMemory::PostDestroy(uintptr_t arg) {
+     owner->Close();
+ }
+ 
++Result KTransferMemory::Map(KProcessAddress address, size_t size, Svc::MemoryPermission map_perm) {
++    // Validate the size.
++    R_UNLESS(m_page_group->GetNumPages() == Common::DivideUp(size, PageSize), ResultInvalidSize);
++
++    // Validate the permission.
++    R_UNLESS(m_owner_perm == map_perm, ResultInvalidState);
++
++    // Lock ourselves.
++    KScopedLightLock lk(m_lock);
++
++    // Ensure we're not already mapped.
++    R_UNLESS(!m_is_mapped, ResultInvalidState);
++
++    // Map the memory.
++    const KMemoryState state = (m_owner_perm == Svc::MemoryPermission::None)
++                                   ? KMemoryState::Transfered
++                                   : KMemoryState::SharedTransfered;
++    R_TRY(GetCurrentProcess(m_kernel).GetPageTable().MapPageGroup(
++        address, *m_page_group, state, KMemoryPermission::UserReadWrite));
++
++    // Mark ourselves as mapped.
++    m_is_mapped = true;
++
++    R_SUCCEED();
++}
++
++Result KTransferMemory::Unmap(KProcessAddress address, size_t size) {
++    // Validate the size.
++    R_UNLESS(m_page_group->GetNumPages() == Common::DivideUp(size, PageSize), ResultInvalidSize);
++
++    // Lock ourselves.
++    KScopedLightLock lk(m_lock);
++
++    // Unmap the memory.
++    const KMemoryState state = (m_owner_perm == Svc::MemoryPermission::None)
++                                   ? KMemoryState::Transfered
++                                   : KMemoryState::SharedTransfered;
++    R_TRY(GetCurrentProcess(m_kernel).GetPageTable().UnmapPageGroup(address, *m_page_group, state));
++
++    // Mark ourselves as unmapped.
++    ASSERT(m_is_mapped);
++    m_is_mapped = false;
++
++    R_SUCCEED();
++}
++
++size_t KTransferMemory::GetSize() const {
++    return m_is_initialized ? m_page_group->GetNumPages() * PageSize : 0;
++}
++
+ } // namespace Kernel
+diff --git a/src/core/hle/kernel/k_transfer_memory.h b/src/core/hle/kernel/k_transfer_memory.h
+index 54f97ccb4c0d..8a0b08761c91 100644
+--- a/src/core/hle/kernel/k_transfer_memory.h
++++ b/src/core/hle/kernel/k_transfer_memory.h
+@@ -3,6 +3,9 @@
+ 
+ #pragma once
+ 
++#include <optional>
++
++#include "core/hle/kernel/k_page_group.h"
+ #include "core/hle/kernel/slab_helpers.h"
+ #include "core/hle/kernel/svc_types.h"
+ #include "core/hle/result.h"
+@@ -48,16 +51,19 @@ class KTransferMemory final
+         return m_address;
+     }
+ 
+-    size_t GetSize() const {
+-        return m_is_initialized ? m_size : 0;
+-    }
++    size_t GetSize() const;
++
++    Result Map(KProcessAddress address, size_t size, Svc::MemoryPermission map_perm);
++    Result Unmap(KProcessAddress address, size_t size);
+ 
+ private:
++    std::optional<KPageGroup> m_page_group{};
+     KProcess* m_owner{};
+     KProcessAddress m_address{};
++    KLightLock m_lock;
+     Svc::MemoryPermission m_owner_perm{};
+-    size_t m_size{};
+     bool m_is_initialized{};
++    bool m_is_mapped{};
+ };
+ 
+ } // namespace Kernel
+diff --git a/src/core/hle/kernel/svc/svc_transfer_memory.cpp b/src/core/hle/kernel/svc/svc_transfer_memory.cpp
+index 7d94e7f09ff8..1f97121b32a7 100644
+--- a/src/core/hle/kernel/svc/svc_transfer_memory.cpp
++++ b/src/core/hle/kernel/svc/svc_transfer_memory.cpp
+@@ -71,15 +71,59 @@ Result CreateTransferMemory(Core::System& system, Handle* out, u64 address, u64
+ }
+ 
+ Result MapTransferMemory(Core::System& system, Handle trmem_handle, uint64_t address, uint64_t size,
+-                         MemoryPermission owner_perm) {
+-    UNIMPLEMENTED();
+-    R_THROW(ResultNotImplemented);
++                         MemoryPermission map_perm) {
++    // Validate the address/size.
++    R_UNLESS(Common::IsAligned(address, PageSize), ResultInvalidAddress);
++    R_UNLESS(Common::IsAligned(size, PageSize), ResultInvalidSize);
++    R_UNLESS(size > 0, ResultInvalidSize);
++    R_UNLESS((address < address + size), ResultInvalidCurrentMemory);
++
++    // Validate the permission.
++    R_UNLESS(IsValidTransferMemoryPermission(map_perm), ResultInvalidState);
++
++    // Get the transfer memory.
++    KScopedAutoObject trmem = GetCurrentProcess(system.Kernel())
++                                  .GetHandleTable()
++                                  .GetObject<KTransferMemory>(trmem_handle);
++    R_UNLESS(trmem.IsNotNull(), ResultInvalidHandle);
++
++    // Verify that the mapping is in range.
++    R_UNLESS(GetCurrentProcess(system.Kernel())
++                 .GetPageTable()
++                 .CanContain(address, size, KMemoryState::Transfered),
++             ResultInvalidMemoryRegion);
++
++    // Map the transfer memory.
++    R_TRY(trmem->Map(address, size, map_perm));
++
++    // We succeeded.
++    R_SUCCEED();
+ }
+ 
+ Result UnmapTransferMemory(Core::System& system, Handle trmem_handle, uint64_t address,
+                            uint64_t size) {
+-    UNIMPLEMENTED();
+-    R_THROW(ResultNotImplemented);
++    // Validate the address/size.
++    R_UNLESS(Common::IsAligned(address, PageSize), ResultInvalidAddress);
++    R_UNLESS(Common::IsAligned(size, PageSize), ResultInvalidSize);
++    R_UNLESS(size > 0, ResultInvalidSize);
++    R_UNLESS((address < address + size), ResultInvalidCurrentMemory);
++
++    // Get the transfer memory.
++    KScopedAutoObject trmem = GetCurrentProcess(system.Kernel())
++                                  .GetHandleTable()
++                                  .GetObject<KTransferMemory>(trmem_handle);
++    R_UNLESS(trmem.IsNotNull(), ResultInvalidHandle);
++
++    // Verify that the mapping is in range.
++    R_UNLESS(GetCurrentProcess(system.Kernel())
++                 .GetPageTable()
++                 .CanContain(address, size, KMemoryState::Transfered),
++             ResultInvalidMemoryRegion);
++
++    // Unmap the transfer memory.
++    R_TRY(trmem->Unmap(address, size));
++
++    R_SUCCEED();
+ }
+ 
+ Result MapTransferMemory64(Core::System& system, Handle trmem_handle, uint64_t address,

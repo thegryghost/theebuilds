@@ -1,0 +1,138 @@
+diff --git a/src/common/settings.cpp b/src/common/settings.cpp
+index 98b43e49c82c..51717be06fab 100644
+--- a/src/common/settings.cpp
++++ b/src/common/settings.cpp
+@@ -203,6 +203,8 @@ const char* TranslateCategory(Category category) {
+     case Category::Ui:
+     case Category::UiGeneral:
+         return "UI";
++    case Category::UiAudio:
++        return "UiAudio";
+     case Category::UiLayout:
+         return "UiLayout";
+     case Category::UiGameList:
+diff --git a/src/common/settings.h b/src/common/settings.h
+index 9317075f766f..e899f1ae686c 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -153,7 +153,7 @@ struct Values {
+                                        true,
+                                        true};
+     Setting<bool, false> audio_muted{
+-        linkage, false, "audio_muted", Category::Audio, Specialization::Default, false, true};
++        linkage, false, "audio_muted", Category::Audio, Specialization::Default, true, true};
+     Setting<bool, false> dump_audio_commands{
+         linkage, false, "dump_audio_commands", Category::Audio, Specialization::Default, false};
+ 
+diff --git a/src/common/settings_common.h b/src/common/settings_common.h
+index 1800ab10dd53..7943223eba41 100644
+--- a/src/common/settings_common.h
++++ b/src/common/settings_common.h
+@@ -32,6 +32,7 @@ enum class Category : u32 {
+     AddOns,
+     Controls,
+     Ui,
++    UiAudio,
+     UiGeneral,
+     UiLayout,
+     UiGameList,
+diff --git a/src/yuzu/configuration/config.cpp b/src/yuzu/configuration/config.cpp
+index baa3e55f3dc4..42bbb2964171 100644
+--- a/src/yuzu/configuration/config.cpp
++++ b/src/yuzu/configuration/config.cpp
+@@ -360,6 +360,7 @@ void Config::ReadAudioValues() {
+     qt_config->beginGroup(QStringLiteral("Audio"));
+ 
+     ReadCategory(Settings::Category::Audio);
++    ReadCategory(Settings::Category::UiAudio);
+ 
+     qt_config->endGroup();
+ }
+@@ -900,6 +901,7 @@ void Config::SaveAudioValues() {
+     qt_config->beginGroup(QStringLiteral("Audio"));
+ 
+     WriteCategory(Settings::Category::Audio);
++    WriteCategory(Settings::Category::UiAudio);
+ 
+     qt_config->endGroup();
+ }
+diff --git a/src/yuzu/configuration/configure_audio.cpp b/src/yuzu/configuration/configure_audio.cpp
+index 81dd51ad36c0..9b6ef47a75b6 100644
+--- a/src/yuzu/configuration/configure_audio.cpp
++++ b/src/yuzu/configuration/configure_audio.cpp
+@@ -38,17 +38,21 @@ void ConfigureAudio::Setup(const ConfigurationShared::Builder& builder) {
+ 
+     std::map<u32, QWidget*> hold;
+ 
+-    auto push = [&](Settings::Category category) {
++    auto push_settings = [&](Settings::Category category) {
+         for (auto* setting : Settings::values.linkage.by_category[category]) {
+             settings.push_back(setting);
+         }
++    };
++
++    auto push_ui_settings = [&](Settings::Category category) {
+         for (auto* setting : UISettings::values.linkage.by_category[category]) {
+             settings.push_back(setting);
+         }
+     };
+ 
+-    push(Settings::Category::Audio);
+-    push(Settings::Category::SystemAudio);
++    push_settings(Settings::Category::Audio);
++    push_settings(Settings::Category::SystemAudio);
++    push_ui_settings(Settings::Category::UiAudio);
+ 
+     for (auto* setting : settings) {
+         auto* widget = builder.BuildWidget(setting, apply_funcs);
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index 91aba118a45b..1bf173efbba0 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -1064,12 +1064,6 @@ void GMainWindow::InitializeWidgets() {
+     volume_slider->setObjectName(QStringLiteral("volume_slider"));
+     volume_slider->setMaximum(200);
+     volume_slider->setPageStep(5);
+-    connect(volume_slider, &QSlider::valueChanged, this, [this](int percentage) {
+-        Settings::values.audio_muted = false;
+-        const auto volume = static_cast<u8>(percentage);
+-        Settings::values.volume.SetValue(volume);
+-        UpdateVolumeUI();
+-    });
+     volume_popup->layout()->addWidget(volume_slider);
+ 
+     volume_button = new VolumeButton();
+@@ -1077,6 +1071,12 @@ void GMainWindow::InitializeWidgets() {
+     volume_button->setFocusPolicy(Qt::NoFocus);
+     volume_button->setCheckable(true);
+     UpdateVolumeUI();
++    connect(volume_slider, &QSlider::valueChanged, this, [this](int percentage) {
++        Settings::values.audio_muted = false;
++        const auto volume = static_cast<u8>(percentage);
++        Settings::values.volume.SetValue(volume);
++        UpdateVolumeUI();
++    });
+     connect(volume_button, &QPushButton::clicked, this, [&] {
+         UpdateVolumeUI();
+         volume_popup->setVisible(!volume_popup->isVisible());
+diff --git a/src/yuzu/uisettings.h b/src/yuzu/uisettings.h
+index 77d992c54210..3485a6347ba9 100644
+--- a/src/yuzu/uisettings.h
++++ b/src/yuzu/uisettings.h
+@@ -109,9 +109,13 @@ struct Values {
+                                            Settings::Specialization::Default,
+                                            true,
+                                            true};
+-    Setting<bool> mute_when_in_background{
+-        linkage, false, "muteWhenInBackground", Category::Audio, Settings::Specialization::Default,
+-        true,    true};
++    Setting<bool> mute_when_in_background{linkage,
++                                          false,
++                                          "muteWhenInBackground",
++                                          Category::UiAudio,
++                                          Settings::Specialization::Default,
++                                          true,
++                                          true};
+     Setting<bool> hide_mouse{
+         linkage, true, "hideInactiveMouse", Category::UiGeneral, Settings::Specialization::Default,
+         true,    true};

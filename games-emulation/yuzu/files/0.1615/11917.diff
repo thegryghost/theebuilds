@@ -1,0 +1,205 @@
+diff --git a/src/core/hle/service/nvnflinger/buffer_queue_consumer.cpp b/src/core/hle/service/nvnflinger/buffer_queue_consumer.cpp
+index 51291539d980..215c1ea80974 100644
+--- a/src/core/hle/service/nvnflinger/buffer_queue_consumer.cpp
++++ b/src/core/hle/service/nvnflinger/buffer_queue_consumer.cpp
+@@ -175,6 +175,25 @@ Status BufferQueueConsumer::Connect(std::shared_ptr<IConsumerListener> consumer_
+     return Status::NoError;
+ }
+ 
++Status BufferQueueConsumer::Disconnect() {
++    LOG_DEBUG(Service_Nvnflinger, "called");
++
++    std::scoped_lock lock{core->mutex};
++
++    if (core->consumer_listener == nullptr) {
++        LOG_ERROR(Service_Nvnflinger, "no consumer is connected");
++        return Status::BadValue;
++    }
++
++    core->is_abandoned = true;
++    core->consumer_listener = nullptr;
++    core->queue.clear();
++    core->FreeAllBuffersLocked();
++    core->SignalDequeueCondition();
++
++    return Status::NoError;
++}
++
+ Status BufferQueueConsumer::GetReleasedBuffers(u64* out_slot_mask) {
+     if (out_slot_mask == nullptr) {
+         LOG_ERROR(Service_Nvnflinger, "out_slot_mask may not be nullptr");
+diff --git a/src/core/hle/service/nvnflinger/buffer_queue_consumer.h b/src/core/hle/service/nvnflinger/buffer_queue_consumer.h
+index 50ed0bb5fbba..9a6968dfa642 100644
+--- a/src/core/hle/service/nvnflinger/buffer_queue_consumer.h
++++ b/src/core/hle/service/nvnflinger/buffer_queue_consumer.h
+@@ -32,6 +32,7 @@ class BufferQueueConsumer final {
+     Status AcquireBuffer(BufferItem* out_buffer, std::chrono::nanoseconds expected_present);
+     Status ReleaseBuffer(s32 slot, u64 frame_number, const Fence& release_fence);
+     Status Connect(std::shared_ptr<IConsumerListener> consumer_listener, bool controlled_by_app);
++    Status Disconnect();
+     Status GetReleasedBuffers(u64* out_slot_mask);
+ 
+ private:
+diff --git a/src/core/hle/service/nvnflinger/buffer_queue_core.cpp b/src/core/hle/service/nvnflinger/buffer_queue_core.cpp
+index ed66f6f5b13b..4ed5e5978222 100644
+--- a/src/core/hle/service/nvnflinger/buffer_queue_core.cpp
++++ b/src/core/hle/service/nvnflinger/buffer_queue_core.cpp
+@@ -14,24 +14,12 @@ BufferQueueCore::BufferQueueCore() = default;
+ 
+ BufferQueueCore::~BufferQueueCore() = default;
+ 
+-void BufferQueueCore::NotifyShutdown() {
+-    std::scoped_lock lock{mutex};
+-
+-    is_shutting_down = true;
+-
+-    SignalDequeueCondition();
+-}
+-
+ void BufferQueueCore::SignalDequeueCondition() {
+     dequeue_possible.store(true);
+     dequeue_condition.notify_all();
+ }
+ 
+ bool BufferQueueCore::WaitForDequeueCondition(std::unique_lock<std::mutex>& lk) {
+-    if (is_shutting_down) {
+-        return false;
+-    }
+-
+     dequeue_condition.wait(lk, [&] { return dequeue_possible.load(); });
+     dequeue_possible.store(false);
+ 
+diff --git a/src/core/hle/service/nvnflinger/buffer_queue_core.h b/src/core/hle/service/nvnflinger/buffer_queue_core.h
+index 9164f08a0a68..e513d183bf0e 100644
+--- a/src/core/hle/service/nvnflinger/buffer_queue_core.h
++++ b/src/core/hle/service/nvnflinger/buffer_queue_core.h
+@@ -34,8 +34,6 @@ class BufferQueueCore final {
+     BufferQueueCore();
+     ~BufferQueueCore();
+ 
+-    void NotifyShutdown();
+-
+ private:
+     void SignalDequeueCondition();
+     bool WaitForDequeueCondition(std::unique_lock<std::mutex>& lk);
+@@ -74,7 +72,6 @@ class BufferQueueCore final {
+     u32 transform_hint{};
+     bool is_allocating{};
+     mutable std::condition_variable_any is_allocating_condition;
+-    bool is_shutting_down{};
+ };
+ 
+ } // namespace Service::android
+diff --git a/src/core/hle/service/nvnflinger/consumer_base.cpp b/src/core/hle/service/nvnflinger/consumer_base.cpp
+index 4dcda8dacd2e..1059e72bf35d 100644
+--- a/src/core/hle/service/nvnflinger/consumer_base.cpp
++++ b/src/core/hle/service/nvnflinger/consumer_base.cpp
+@@ -27,6 +27,26 @@ void ConsumerBase::Connect(bool controlled_by_app) {
+     consumer->Connect(shared_from_this(), controlled_by_app);
+ }
+ 
++void ConsumerBase::Abandon() {
++    LOG_DEBUG(Service_Nvnflinger, "called");
++
++    std::scoped_lock lock{mutex};
++
++    if (!is_abandoned) {
++        this->AbandonLocked();
++        is_abandoned = true;
++    }
++}
++
++void ConsumerBase::AbandonLocked() {
++    for (int i = 0; i < BufferQueueDefs::NUM_BUFFER_SLOTS; i++) {
++        this->FreeBufferLocked(i);
++    }
++    // disconnect from the BufferQueue
++    consumer->Disconnect();
++    consumer = nullptr;
++}
++
+ void ConsumerBase::FreeBufferLocked(s32 slot_index) {
+     LOG_DEBUG(Service_Nvnflinger, "slot_index={}", slot_index);
+ 
+diff --git a/src/core/hle/service/nvnflinger/consumer_base.h b/src/core/hle/service/nvnflinger/consumer_base.h
+index 264829414b2b..ea3e9e97abb2 100644
+--- a/src/core/hle/service/nvnflinger/consumer_base.h
++++ b/src/core/hle/service/nvnflinger/consumer_base.h
+@@ -24,6 +24,7 @@ class BufferQueueConsumer;
+ class ConsumerBase : public IConsumerListener, public std::enable_shared_from_this<ConsumerBase> {
+ public:
+     void Connect(bool controlled_by_app);
++    void Abandon();
+ 
+ protected:
+     explicit ConsumerBase(std::unique_ptr<BufferQueueConsumer> consumer_);
+@@ -34,6 +35,7 @@ class ConsumerBase : public IConsumerListener, public std::enable_shared_from_th
+     void OnBuffersReleased() override;
+     void OnSidebandStreamChanged() override;
+ 
++    void AbandonLocked();
+     void FreeBufferLocked(s32 slot_index);
+     Status AcquireBufferLocked(BufferItem* item, std::chrono::nanoseconds present_when);
+     Status ReleaseBufferLocked(s32 slot, const std::shared_ptr<GraphicBuffer>& graphic_buffer);
+diff --git a/src/core/hle/service/nvnflinger/nvnflinger.cpp b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+index bebb45eae3d8..0745434c5b31 100644
+--- a/src/core/hle/service/nvnflinger/nvnflinger.cpp
++++ b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+@@ -47,7 +47,10 @@ void Nvnflinger::SplitVSync(std::stop_token stop_token) {
+         vsync_signal.Wait();
+ 
+         const auto lock_guard = Lock();
+-        Compose();
++
++        if (!is_abandoned) {
++            Compose();
++        }
+     }
+ }
+ 
+@@ -98,7 +101,6 @@ Nvnflinger::~Nvnflinger() {
+     }
+ 
+     ShutdownLayers();
+-    vsync_thread = {};
+ 
+     if (nvdrv) {
+         nvdrv->Close(disp_fd);
+@@ -106,12 +108,20 @@ Nvnflinger::~Nvnflinger() {
+ }
+ 
+ void Nvnflinger::ShutdownLayers() {
+-    const auto lock_guard = Lock();
+-    for (auto& display : displays) {
+-        for (size_t layer = 0; layer < display.GetNumLayers(); ++layer) {
+-            display.GetLayer(layer).Core().NotifyShutdown();
++    // Abandon consumers.
++    {
++        const auto lock_guard = Lock();
++        for (auto& display : displays) {
++            for (size_t layer = 0; layer < display.GetNumLayers(); ++layer) {
++                display.GetLayer(layer).GetConsumer().Abandon();
++            }
+         }
++
++        is_abandoned = true;
+     }
++
++    // Join the vsync thread, if it exists.
++    vsync_thread = {};
+ }
+ 
+ void Nvnflinger::SetNVDrvInstance(std::shared_ptr<Nvidia::Module> instance) {
+diff --git a/src/core/hle/service/nvnflinger/nvnflinger.h b/src/core/hle/service/nvnflinger/nvnflinger.h
+index 959d8b46bf37..f5d73acdbbdb 100644
+--- a/src/core/hle/service/nvnflinger/nvnflinger.h
++++ b/src/core/hle/service/nvnflinger/nvnflinger.h
+@@ -140,6 +140,8 @@ class Nvnflinger final {
+ 
+     s32 swap_interval = 1;
+ 
++    bool is_abandoned = false;
++
+     /// Event that handles screen composition.
+     std::shared_ptr<Core::Timing::EventType> multi_composition_event;
+     std::shared_ptr<Core::Timing::EventType> single_composition_event;

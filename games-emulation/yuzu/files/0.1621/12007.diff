@@ -1,0 +1,862 @@
+diff --git a/src/common/settings_input.cpp b/src/common/settings_input.cpp
+index 0a6eea3cf4d9..a6007e7b2986 100644
+--- a/src/common/settings_input.cpp
++++ b/src/common/settings_input.cpp
+@@ -6,10 +6,11 @@
+ namespace Settings {
+ namespace NativeButton {
+ const std::array<const char*, NumButtons> mapping = {{
+-    "button_a",      "button_b",     "button_x",     "button_y",    "button_lstick",
+-    "button_rstick", "button_l",     "button_r",     "button_zl",   "button_zr",
+-    "button_plus",   "button_minus", "button_dleft", "button_dup",  "button_dright",
+-    "button_ddown",  "button_sl",    "button_sr",    "button_home", "button_screenshot",
++    "button_a",       "button_b",       "button_x",      "button_y",    "button_lstick",
++    "button_rstick",  "button_l",       "button_r",      "button_zl",   "button_zr",
++    "button_plus",    "button_minus",   "button_dleft",  "button_dup",  "button_dright",
++    "button_ddown",   "button_slleft",  "button_srleft", "button_home", "button_screenshot",
++    "button_slright", "button_srright",
+ }};
+ }
+ 
+diff --git a/src/common/settings_input.h b/src/common/settings_input.h
+index 46f38c7030b9..53a95ef8f119 100644
+--- a/src/common/settings_input.h
++++ b/src/common/settings_input.h
+@@ -29,12 +29,15 @@ enum Values : int {
+     DRight,
+     DDown,
+ 
+-    SL,
+-    SR,
++    SLLeft,
++    SRLeft,
+ 
+     Home,
+     Screenshot,
+ 
++    SLRight,
++    SRRight,
++
+     NumButtons,
+ };
+ 
+diff --git a/src/core/hid/emulated_controller.cpp b/src/core/hid/emulated_controller.cpp
+index b08a714468ce..34927cddd4f2 100644
+--- a/src/core/hid/emulated_controller.cpp
++++ b/src/core/hid/emulated_controller.cpp
+@@ -243,10 +243,12 @@ void EmulatedController::LoadTASParams() {
+     tas_button_params[Settings::NativeButton::DUp].Set("button", 13);
+     tas_button_params[Settings::NativeButton::DRight].Set("button", 14);
+     tas_button_params[Settings::NativeButton::DDown].Set("button", 15);
+-    tas_button_params[Settings::NativeButton::SL].Set("button", 16);
+-    tas_button_params[Settings::NativeButton::SR].Set("button", 17);
++    tas_button_params[Settings::NativeButton::SLLeft].Set("button", 16);
++    tas_button_params[Settings::NativeButton::SRLeft].Set("button", 17);
+     tas_button_params[Settings::NativeButton::Home].Set("button", 18);
+     tas_button_params[Settings::NativeButton::Screenshot].Set("button", 19);
++    tas_button_params[Settings::NativeButton::SLRight].Set("button", 20);
++    tas_button_params[Settings::NativeButton::SRRight].Set("button", 21);
+ 
+     tas_stick_params[Settings::NativeAnalog::LStick].Set("axis_x", 0);
+     tas_stick_params[Settings::NativeAnalog::LStick].Set("axis_y", 1);
+@@ -296,10 +298,12 @@ void EmulatedController::LoadVirtualGamepadParams() {
+     virtual_button_params[Settings::NativeButton::DUp].Set("button", 13);
+     virtual_button_params[Settings::NativeButton::DRight].Set("button", 14);
+     virtual_button_params[Settings::NativeButton::DDown].Set("button", 15);
+-    virtual_button_params[Settings::NativeButton::SL].Set("button", 16);
+-    virtual_button_params[Settings::NativeButton::SR].Set("button", 17);
++    virtual_button_params[Settings::NativeButton::SLLeft].Set("button", 16);
++    virtual_button_params[Settings::NativeButton::SRLeft].Set("button", 17);
+     virtual_button_params[Settings::NativeButton::Home].Set("button", 18);
+     virtual_button_params[Settings::NativeButton::Screenshot].Set("button", 19);
++    virtual_button_params[Settings::NativeButton::SLRight].Set("button", 20);
++    virtual_button_params[Settings::NativeButton::SRRight].Set("button", 21);
+ 
+     virtual_stick_params[Settings::NativeAnalog::LStick].Set("axis_x", 0);
+     virtual_stick_params[Settings::NativeAnalog::LStick].Set("axis_y", 1);
+@@ -867,12 +871,16 @@ void EmulatedController::SetButton(const Common::Input::CallbackStatus& callback
+         controller.npad_button_state.down.Assign(current_status.value);
+         controller.debug_pad_button_state.d_down.Assign(current_status.value);
+         break;
+-    case Settings::NativeButton::SL:
++    case Settings::NativeButton::SLLeft:
+         controller.npad_button_state.left_sl.Assign(current_status.value);
++        break;
++    case Settings::NativeButton::SLRight:
+         controller.npad_button_state.right_sl.Assign(current_status.value);
+         break;
+-    case Settings::NativeButton::SR:
++    case Settings::NativeButton::SRLeft:
+         controller.npad_button_state.left_sr.Assign(current_status.value);
++        break;
++    case Settings::NativeButton::SRRight:
+         controller.npad_button_state.right_sr.Assign(current_status.value);
+         break;
+     case Settings::NativeButton::Home:
+@@ -1890,12 +1898,16 @@ NpadButton EmulatedController::GetTurboButtonMask() const {
+         case Settings::NativeButton::DDown:
+             button_mask.down.Assign(1);
+             break;
+-        case Settings::NativeButton::SL:
++        case Settings::NativeButton::SLLeft:
+             button_mask.left_sl.Assign(1);
++            break;
++        case Settings::NativeButton::SLRight:
+             button_mask.right_sl.Assign(1);
+             break;
+-        case Settings::NativeButton::SR:
++        case Settings::NativeButton::SRLeft:
+             button_mask.left_sr.Assign(1);
++            break;
++        case Settings::NativeButton::SRRight:
+             button_mask.right_sr.Assign(1);
+             break;
+         default:
+diff --git a/src/core/hle/service/hid/controllers/npad.cpp b/src/core/hle/service/hid/controllers/npad.cpp
+index 21695bda2941..d46bf917e6a3 100644
+--- a/src/core/hle/service/hid/controllers/npad.cpp
++++ b/src/core/hle/service/hid/controllers/npad.cpp
+@@ -457,12 +457,14 @@ void Controller_NPad::RequestPadStateUpdate(Core::HID::NpadIdType npad_id) {
+         pad_entry.l_stick = stick_state.left;
+     }
+ 
+-    if (controller_type == Core::HID::NpadStyleIndex::JoyconLeft) {
++    if (controller_type == Core::HID::NpadStyleIndex::JoyconLeft ||
++        controller_type == Core::HID::NpadStyleIndex::JoyconDual) {
+         pad_entry.npad_buttons.left_sl.Assign(button_state.left_sl);
+         pad_entry.npad_buttons.left_sr.Assign(button_state.left_sr);
+     }
+ 
+-    if (controller_type == Core::HID::NpadStyleIndex::JoyconRight) {
++    if (controller_type == Core::HID::NpadStyleIndex::JoyconRight ||
++        controller_type == Core::HID::NpadStyleIndex::JoyconDual) {
+         pad_entry.npad_buttons.right_sl.Assign(button_state.right_sl);
+         pad_entry.npad_buttons.right_sr.Assign(button_state.right_sr);
+     }
+diff --git a/src/input_common/drivers/gc_adapter.cpp b/src/input_common/drivers/gc_adapter.cpp
+index 3ad34884d404..1ff296af525c 100644
+--- a/src/input_common/drivers/gc_adapter.cpp
++++ b/src/input_common/drivers/gc_adapter.cpp
+@@ -415,7 +415,7 @@ ButtonMapping GCAdapter::GetButtonMappingForDevice(const Common::ParamPackage& p
+     // This list is missing ZL/ZR since those are not considered buttons.
+     // We will add those afterwards
+     // This list also excludes any button that can't be really mapped
+-    static constexpr std::array<std::pair<Settings::NativeButton::Values, PadButton>, 12>
++    static constexpr std::array<std::pair<Settings::NativeButton::Values, PadButton>, 14>
+         switch_to_gcadapter_button = {
+             std::pair{Settings::NativeButton::A, PadButton::ButtonA},
+             {Settings::NativeButton::B, PadButton::ButtonB},
+@@ -426,8 +426,10 @@ ButtonMapping GCAdapter::GetButtonMappingForDevice(const Common::ParamPackage& p
+             {Settings::NativeButton::DUp, PadButton::ButtonUp},
+             {Settings::NativeButton::DRight, PadButton::ButtonRight},
+             {Settings::NativeButton::DDown, PadButton::ButtonDown},
+-            {Settings::NativeButton::SL, PadButton::TriggerL},
+-            {Settings::NativeButton::SR, PadButton::TriggerR},
++            {Settings::NativeButton::SLLeft, PadButton::TriggerL},
++            {Settings::NativeButton::SRLeft, PadButton::TriggerR},
++            {Settings::NativeButton::SLRight, PadButton::TriggerL},
++            {Settings::NativeButton::SRRight, PadButton::TriggerR},
+             {Settings::NativeButton::R, PadButton::TriggerZ},
+         };
+     if (!params.Has("port")) {
+diff --git a/src/input_common/drivers/joycon.cpp b/src/input_common/drivers/joycon.cpp
+index 0aca5a3a38d3..72d2951f3da1 100644
+--- a/src/input_common/drivers/joycon.cpp
++++ b/src/input_common/drivers/joycon.cpp
+@@ -680,8 +680,8 @@ ButtonMapping Joycons::GetButtonMappingForDevice(const Common::ParamPackage& par
+         Common::ParamPackage sr_button_params = button_params;
+         sl_button_params.Set("button", static_cast<int>(Joycon::PadButton::LeftSL));
+         sr_button_params.Set("button", static_cast<int>(Joycon::PadButton::LeftSR));
+-        mapping.insert_or_assign(Settings::NativeButton::SL, std::move(sl_button_params));
+-        mapping.insert_or_assign(Settings::NativeButton::SR, std::move(sr_button_params));
++        mapping.insert_or_assign(Settings::NativeButton::SLLeft, std::move(sl_button_params));
++        mapping.insert_or_assign(Settings::NativeButton::SRLeft, std::move(sr_button_params));
+     }
+ 
+     // Map SL and SR buttons for right joycons
+@@ -693,8 +693,8 @@ ButtonMapping Joycons::GetButtonMappingForDevice(const Common::ParamPackage& par
+         Common::ParamPackage sr_button_params = button_params;
+         sl_button_params.Set("button", static_cast<int>(Joycon::PadButton::RightSL));
+         sr_button_params.Set("button", static_cast<int>(Joycon::PadButton::RightSR));
+-        mapping.insert_or_assign(Settings::NativeButton::SL, std::move(sl_button_params));
+-        mapping.insert_or_assign(Settings::NativeButton::SR, std::move(sr_button_params));
++        mapping.insert_or_assign(Settings::NativeButton::SLRight, std::move(sl_button_params));
++        mapping.insert_or_assign(Settings::NativeButton::SRRight, std::move(sr_button_params));
+     }
+ 
+     return mapping;
+diff --git a/src/input_common/drivers/sdl_driver.cpp b/src/input_common/drivers/sdl_driver.cpp
+index 66e3ae9afd70..78f458afe3bc 100644
+--- a/src/input_common/drivers/sdl_driver.cpp
++++ b/src/input_common/drivers/sdl_driver.cpp
+@@ -828,16 +828,18 @@ ButtonMapping SDLDriver::GetButtonMappingForDevice(const Common::ParamPackage& p
+ ButtonBindings SDLDriver::GetDefaultButtonBinding(
+     const std::shared_ptr<SDLJoystick>& joystick) const {
+     // Default SL/SR mapping for other controllers
+-    auto sl_button = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+-    auto sr_button = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
++    auto sll_button = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
++    auto srl_button = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
++    auto slr_button = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
++    auto srr_button = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+ 
+     if (joystick->IsJoyconLeft()) {
+-        sl_button = SDL_CONTROLLER_BUTTON_PADDLE2;
+-        sr_button = SDL_CONTROLLER_BUTTON_PADDLE4;
++        sll_button = SDL_CONTROLLER_BUTTON_PADDLE2;
++        srl_button = SDL_CONTROLLER_BUTTON_PADDLE4;
+     }
+     if (joystick->IsJoyconRight()) {
+-        sl_button = SDL_CONTROLLER_BUTTON_PADDLE3;
+-        sr_button = SDL_CONTROLLER_BUTTON_PADDLE1;
++        slr_button = SDL_CONTROLLER_BUTTON_PADDLE3;
++        srr_button = SDL_CONTROLLER_BUTTON_PADDLE1;
+     }
+ 
+     return {
+@@ -855,8 +857,10 @@ ButtonBindings SDLDriver::GetDefaultButtonBinding(
+         {Settings::NativeButton::DUp, SDL_CONTROLLER_BUTTON_DPAD_UP},
+         {Settings::NativeButton::DRight, SDL_CONTROLLER_BUTTON_DPAD_RIGHT},
+         {Settings::NativeButton::DDown, SDL_CONTROLLER_BUTTON_DPAD_DOWN},
+-        {Settings::NativeButton::SL, sl_button},
+-        {Settings::NativeButton::SR, sr_button},
++        {Settings::NativeButton::SLLeft, sll_button},
++        {Settings::NativeButton::SRLeft, srl_button},
++        {Settings::NativeButton::SLRight, slr_button},
++        {Settings::NativeButton::SRRight, srr_button},
+         {Settings::NativeButton::Home, SDL_CONTROLLER_BUTTON_GUIDE},
+         {Settings::NativeButton::Screenshot, SDL_CONTROLLER_BUTTON_MISC1},
+     };
+diff --git a/src/input_common/drivers/sdl_driver.h b/src/input_common/drivers/sdl_driver.h
+index fcba4e3c6368..08e49a0da64c 100644
+--- a/src/input_common/drivers/sdl_driver.h
++++ b/src/input_common/drivers/sdl_driver.h
+@@ -24,7 +24,7 @@ namespace InputCommon {
+ class SDLJoystick;
+ 
+ using ButtonBindings =
+-    std::array<std::pair<Settings::NativeButton::Values, SDL_GameControllerButton>, 18>;
++    std::array<std::pair<Settings::NativeButton::Values, SDL_GameControllerButton>, 20>;
+ using ZButtonBindings =
+     std::array<std::pair<Settings::NativeButton::Values, SDL_GameControllerAxis>, 2>;
+ 
+diff --git a/src/input_common/drivers/udp_client.cpp b/src/input_common/drivers/udp_client.cpp
+index 77db60e929a6..60821b31a664 100644
+--- a/src/input_common/drivers/udp_client.cpp
++++ b/src/input_common/drivers/udp_client.cpp
+@@ -396,7 +396,7 @@ std::vector<Common::ParamPackage> UDPClient::GetInputDevices() const {
+ 
+ ButtonMapping UDPClient::GetButtonMappingForDevice(const Common::ParamPackage& params) {
+     // This list excludes any button that can't be really mapped
+-    static constexpr std::array<std::pair<Settings::NativeButton::Values, PadButton>, 20>
++    static constexpr std::array<std::pair<Settings::NativeButton::Values, PadButton>, 22>
+         switch_to_dsu_button = {
+             std::pair{Settings::NativeButton::A, PadButton::Circle},
+             {Settings::NativeButton::B, PadButton::Cross},
+@@ -412,8 +412,10 @@ ButtonMapping UDPClient::GetButtonMappingForDevice(const Common::ParamPackage& p
+             {Settings::NativeButton::R, PadButton::R1},
+             {Settings::NativeButton::ZL, PadButton::L2},
+             {Settings::NativeButton::ZR, PadButton::R2},
+-            {Settings::NativeButton::SL, PadButton::L2},
+-            {Settings::NativeButton::SR, PadButton::R2},
++            {Settings::NativeButton::SLLeft, PadButton::L2},
++            {Settings::NativeButton::SRLeft, PadButton::R2},
++            {Settings::NativeButton::SLRight, PadButton::L2},
++            {Settings::NativeButton::SRRight, PadButton::R2},
+             {Settings::NativeButton::LStick, PadButton::L3},
+             {Settings::NativeButton::RStick, PadButton::R3},
+             {Settings::NativeButton::Home, PadButton::Home},
+diff --git a/src/yuzu/configuration/config.cpp b/src/yuzu/configuration/config.cpp
+index baa3e55f3dc4..09cd8d180707 100644
+--- a/src/yuzu/configuration/config.cpp
++++ b/src/yuzu/configuration/config.cpp
+@@ -35,6 +35,7 @@ const std::array<int, Settings::NativeButton::NumButtons> Config::default_button
+     Qt::Key_G,    Qt::Key_Q, Qt::Key_E,    Qt::Key_R,  Qt::Key_T,
+     Qt::Key_M,    Qt::Key_N, Qt::Key_Left, Qt::Key_Up, Qt::Key_Right,
+     Qt::Key_Down, Qt::Key_Q, Qt::Key_E,    0,          0,
++    Qt::Key_Q,    Qt::Key_E,
+ };
+ 
+ const std::array<int, Settings::NativeMotion::NumMotions> Config::default_motions = {
+diff --git a/src/yuzu/configuration/configure_input_player.cpp b/src/yuzu/configuration/configure_input_player.cpp
+index 576f5b5711cd..9259e2a5d0b0 100644
+--- a/src/yuzu/configuration/configure_input_player.cpp
++++ b/src/yuzu/configuration/configure_input_player.cpp
+@@ -322,11 +322,12 @@ ConfigureInputPlayer::ConfigureInputPlayer(QWidget* parent, std::size_t player_i
+     setFocusPolicy(Qt::ClickFocus);
+ 
+     button_map = {
+-        ui->buttonA,        ui->buttonB,      ui->buttonX,         ui->buttonY,
+-        ui->buttonLStick,   ui->buttonRStick, ui->buttonL,         ui->buttonR,
+-        ui->buttonZL,       ui->buttonZR,     ui->buttonPlus,      ui->buttonMinus,
+-        ui->buttonDpadLeft, ui->buttonDpadUp, ui->buttonDpadRight, ui->buttonDpadDown,
+-        ui->buttonSL,       ui->buttonSR,     ui->buttonHome,      ui->buttonScreenshot,
++        ui->buttonA,        ui->buttonB,       ui->buttonX,         ui->buttonY,
++        ui->buttonLStick,   ui->buttonRStick,  ui->buttonL,         ui->buttonR,
++        ui->buttonZL,       ui->buttonZR,      ui->buttonPlus,      ui->buttonMinus,
++        ui->buttonDpadLeft, ui->buttonDpadUp,  ui->buttonDpadRight, ui->buttonDpadDown,
++        ui->buttonSLLeft,   ui->buttonSRLeft,  ui->buttonHome,      ui->buttonScreenshot,
++        ui->buttonSLRight,  ui->buttonSRRight,
+     };
+ 
+     analog_map_buttons = {{
+@@ -1181,10 +1182,13 @@ void ConfigureInputPlayer::UpdateControllerAvailableButtons() {
+ 
+     // List of all the widgets that will be hidden by any of the following layouts that need
+     // "unhidden" after the controller type changes
+-    const std::array<QWidget*, 11> layout_show = {
+-        ui->buttonShoulderButtonsSLSR,
++    const std::array<QWidget*, 14> layout_show = {
++        ui->buttonShoulderButtonsSLSRLeft,
++        ui->buttonShoulderButtonsSLSRRight,
+         ui->horizontalSpacerShoulderButtonsWidget,
+         ui->horizontalSpacerShoulderButtonsWidget2,
++        ui->horizontalSpacerShoulderButtonsWidget3,
++        ui->horizontalSpacerShoulderButtonsWidget4,
+         ui->buttonShoulderButtonsLeft,
+         ui->buttonMiscButtonsMinusScreenshot,
+         ui->bottomLeft,
+@@ -1202,16 +1206,19 @@ void ConfigureInputPlayer::UpdateControllerAvailableButtons() {
+     std::vector<QWidget*> layout_hidden;
+     switch (layout) {
+     case Core::HID::NpadStyleIndex::ProController:
+-    case Core::HID::NpadStyleIndex::JoyconDual:
+     case Core::HID::NpadStyleIndex::Handheld:
+         layout_hidden = {
+-            ui->buttonShoulderButtonsSLSR,
++            ui->buttonShoulderButtonsSLSRLeft,
++            ui->buttonShoulderButtonsSLSRRight,
+             ui->horizontalSpacerShoulderButtonsWidget2,
++            ui->horizontalSpacerShoulderButtonsWidget4,
+         };
+         break;
+     case Core::HID::NpadStyleIndex::JoyconLeft:
+         layout_hidden = {
++            ui->buttonShoulderButtonsSLSRRight,
+             ui->horizontalSpacerShoulderButtonsWidget2,
++            ui->horizontalSpacerShoulderButtonsWidget3,
+             ui->buttonShoulderButtonsRight,
+             ui->buttonMiscButtonsPlusHome,
+             ui->bottomRight,
+@@ -1219,16 +1226,17 @@ void ConfigureInputPlayer::UpdateControllerAvailableButtons() {
+         break;
+     case Core::HID::NpadStyleIndex::JoyconRight:
+         layout_hidden = {
+-            ui->horizontalSpacerShoulderButtonsWidget,
+-            ui->buttonShoulderButtonsLeft,
+-            ui->buttonMiscButtonsMinusScreenshot,
+-            ui->bottomLeft,
++            ui->buttonShoulderButtonsSLSRLeft,          ui->horizontalSpacerShoulderButtonsWidget,
++            ui->horizontalSpacerShoulderButtonsWidget4, ui->buttonShoulderButtonsLeft,
++            ui->buttonMiscButtonsMinusScreenshot,       ui->bottomLeft,
+         };
+         break;
+     case Core::HID::NpadStyleIndex::GameCube:
+         layout_hidden = {
+-            ui->buttonShoulderButtonsSLSR,
++            ui->buttonShoulderButtonsSLSRLeft,
++            ui->buttonShoulderButtonsSLSRRight,
+             ui->horizontalSpacerShoulderButtonsWidget2,
++            ui->horizontalSpacerShoulderButtonsWidget4,
+             ui->buttonMiscButtonsMinusGroup,
+             ui->buttonMiscButtonsScreenshotGroup,
+         };
+diff --git a/src/yuzu/configuration/configure_input_player.ui b/src/yuzu/configuration/configure_input_player.ui
+index 611a79477828..5518cccd1d75 100644
+--- a/src/yuzu/configuration/configure_input_player.ui
++++ b/src/yuzu/configuration/configure_input_player.ui
+@@ -1208,6 +1208,159 @@
+              <property name="spacing">
+               <number>3</number>
+              </property>
++              <item>
++                <widget class="QWidget" name="buttonShoulderButtonsSLSRLeft" native="true">
++                  <layout class="QVBoxLayout" name="buttonShoulderButtonsSLSRLeftVerticalLayout">
++                    <property name="spacing">
++                      <number>0</number>
++                    </property>
++                    <property name="leftMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="topMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="rightMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="bottomMargin">
++                      <number>0</number>
++                    </property>
++                    <item alignment="Qt::AlignHCenter">
++                      <widget class="QGroupBox" name="buttonShoulderButtonsSLLeftGroup">
++                        <property name="title">
++                          <string>SL</string>
++                        </property>
++                        <property name="alignment">
++                          <set>Qt::AlignCenter</set>
++                        </property>
++                        <layout class="QVBoxLayout" name="buttonShoulderButtonsSLLeftVerticalLayout">
++                          <property name="spacing">
++                            <number>3</number>
++                          </property>
++                          <property name="leftMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="topMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="rightMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="bottomMargin">
++                            <number>3</number>
++                          </property>
++                          <item>
++                            <widget class="QPushButton" name="buttonSLLeft">
++                              <property name="minimumSize">
++                                <size>
++                                  <width>68</width>
++                                  <height>0</height>
++                                </size>
++                              </property>
++                              <property name="maximumSize">
++                                <size>
++                                  <width>68</width>
++                                  <height>16777215</height>
++                                </size>
++                              </property>
++                              <property name="styleSheet">
++                                <string notr="true">min-width: 68px;</string>
++                              </property>
++                              <property name="text">
++                                <string>SL</string>
++                              </property>
++                            </widget>
++                          </item>
++                        </layout>
++                      </widget>
++                    </item>
++                    <item alignment="Qt::AlignHCenter">
++                      <widget class="QGroupBox" name="buttonShoulderButtonsSRLeftGroup">
++                        <property name="title">
++                          <string>SR</string>
++                        </property>
++                        <property name="alignment">
++                          <set>Qt::AlignCenter</set>
++                        </property>
++                        <layout class="QVBoxLayout" name="buttonShoulderButtonsSRLeftVerticalLayout">
++                          <property name="spacing">
++                            <number>3</number>
++                          </property>
++                          <property name="leftMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="topMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="rightMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="bottomMargin">
++                            <number>3</number>
++                          </property>
++                          <item>
++                            <widget class="QPushButton" name="buttonSRLeft">
++                              <property name="minimumSize">
++                                <size>
++                                  <width>68</width>
++                                  <height>0</height>
++                                </size>
++                              </property>
++                              <property name="maximumSize">
++                                <size>
++                                  <width>68</width>
++                                  <height>16777215</height>
++                                </size>
++                              </property>
++                              <property name="styleSheet">
++                                <string notr="true">min-width: 68px;</string>
++                              </property>
++                              <property name="text">
++                                <string>SR</string>
++                              </property>
++                            </widget>
++                          </item>
++                        </layout>
++                      </widget>
++                    </item>
++                  </layout>
++                </widget>
++              </item>
++              <item>
++                <widget class="QWidget" name="horizontalSpacerShoulderButtonsWidget4" native="true">
++                  <layout class="QHBoxLayout" name="horizontalSpacerShoulderButtonsWidget4Layout">
++                    <property name="spacing">
++                      <number>0</number>
++                    </property>
++                    <property name="leftMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="topMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="rightMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="bottomMargin">
++                      <number>0</number>
++                    </property>
++                    <item>
++                      <spacer name="horizontalSpacerShoulderButtons5">
++                        <property name="orientation">
++                          <enum>Qt::Horizontal</enum>
++                        </property>
++                        <property name="sizeHint" stdset="0">
++                          <size>
++                            <width>0</width>
++                            <height>20</height>
++                          </size>
++                        </property>
++                      </spacer>
++                    </item>
++                  </layout>
++                </widget>
++              </item>
+              <item>
+               <widget class="QWidget" name="buttonShoulderButtonsLeft" native="true">
+                <layout class="QVBoxLayout" name="buttonShoulderButtonsLeftVerticalLayout">
+@@ -1830,125 +1983,125 @@
+                </layout>
+               </widget>
+              </item>
+-             <item>
+-              <widget class="QWidget" name="buttonShoulderButtonsSLSR" native="true">
+-               <layout class="QVBoxLayout" name="buttonShoulderButtonsSLSRVerticalLayout">
+-                <property name="spacing">
+-                 <number>0</number>
+-                </property>
+-                <property name="leftMargin">
+-                 <number>0</number>
+-                </property>
+-                <property name="topMargin">
+-                 <number>0</number>
+-                </property>
+-                <property name="rightMargin">
+-                 <number>0</number>
+-                </property>
+-                <property name="bottomMargin">
+-                 <number>0</number>
+-                </property>
+-                <item alignment="Qt::AlignHCenter">
+-                 <widget class="QGroupBox" name="buttonShoulderButtonsSLGroup">
+-                  <property name="title">
+-                   <string>SL</string>
+-                  </property>
+-                  <property name="alignment">
+-                   <set>Qt::AlignCenter</set>
+-                  </property>
+-                  <layout class="QVBoxLayout" name="buttonShoulderButtonsSLVerticalLayout">
+-                   <property name="spacing">
+-                    <number>3</number>
+-                   </property>
+-                   <property name="leftMargin">
+-                    <number>3</number>
+-                   </property>
+-                   <property name="topMargin">
+-                    <number>3</number>
+-                   </property>
+-                   <property name="rightMargin">
+-                    <number>3</number>
+-                   </property>
+-                   <property name="bottomMargin">
+-                    <number>3</number>
+-                   </property>
+-                   <item>
+-                    <widget class="QPushButton" name="buttonSL">
+-                     <property name="minimumSize">
+-                      <size>
+-                       <width>68</width>
+-                       <height>0</height>
+-                      </size>
+-                     </property>
+-                     <property name="maximumSize">
+-                      <size>
+-                       <width>68</width>
+-                       <height>16777215</height>
+-                      </size>
+-                     </property>
+-                     <property name="styleSheet">
+-                      <string notr="true">min-width: 68px;</string>
+-                     </property>
+-                     <property name="text">
+-                      <string>SL</string>
+-                     </property>
+-                    </widget>
+-                   </item>
+-                  </layout>
+-                 </widget>
+-                </item>
+-                <item alignment="Qt::AlignHCenter">
+-                 <widget class="QGroupBox" name="buttonShoulderButtonsSRGroup">
+-                  <property name="title">
+-                   <string>SR</string>
+-                  </property>
+-                  <property name="alignment">
+-                   <set>Qt::AlignCenter</set>
+-                  </property>
+-                  <layout class="QVBoxLayout" name="buttonShoulderButtonsSRVerticalLayout">
+-                   <property name="spacing">
+-                    <number>3</number>
+-                   </property>
+-                   <property name="leftMargin">
+-                    <number>3</number>
+-                   </property>
+-                   <property name="topMargin">
+-                    <number>3</number>
+-                   </property>
+-                   <property name="rightMargin">
+-                    <number>3</number>
+-                   </property>
+-                   <property name="bottomMargin">
+-                    <number>3</number>
+-                   </property>
+-                   <item>
+-                    <widget class="QPushButton" name="buttonSR">
+-                     <property name="minimumSize">
+-                      <size>
+-                       <width>68</width>
+-                       <height>0</height>
+-                      </size>
+-                     </property>
+-                     <property name="maximumSize">
+-                      <size>
+-                       <width>68</width>
+-                       <height>16777215</height>
+-                      </size>
+-                     </property>
+-                     <property name="styleSheet">
+-                      <string notr="true">min-width: 68px;</string>
+-                     </property>
+-                     <property name="text">
+-                      <string>SR</string>
+-                     </property>
+-                    </widget>
+-                   </item>
++              <item>
++                <widget class="QWidget" name="buttonShoulderButtonsSLSRRight" native="true">
++                  <layout class="QVBoxLayout" name="buttonShoulderButtonsSLSRRightVerticalLayout">
++                    <property name="spacing">
++                      <number>0</number>
++                    </property>
++                    <property name="leftMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="topMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="rightMargin">
++                      <number>0</number>
++                    </property>
++                    <property name="bottomMargin">
++                      <number>0</number>
++                    </property>
++                    <item alignment="Qt::AlignHCenter">
++                      <widget class="QGroupBox" name="buttonShoulderButtonsSLRightGroup">
++                        <property name="title">
++                          <string>SL</string>
++                        </property>
++                        <property name="alignment">
++                          <set>Qt::AlignCenter</set>
++                        </property>
++                        <layout class="QVBoxLayout" name="buttonShoulderButtonsSLRightVerticalLayout">
++                          <property name="spacing">
++                            <number>3</number>
++                          </property>
++                          <property name="leftMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="topMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="rightMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="bottomMargin">
++                            <number>3</number>
++                          </property>
++                          <item>
++                            <widget class="QPushButton" name="buttonSLRight">
++                              <property name="minimumSize">
++                                <size>
++                                  <width>68</width>
++                                  <height>0</height>
++                                </size>
++                              </property>
++                              <property name="maximumSize">
++                                <size>
++                                  <width>68</width>
++                                  <height>16777215</height>
++                                </size>
++                              </property>
++                              <property name="styleSheet">
++                                <string notr="true">min-width: 68px;</string>
++                              </property>
++                              <property name="text">
++                                <string>SL</string>
++                              </property>
++                            </widget>
++                          </item>
++                        </layout>
++                      </widget>
++                    </item>
++                    <item alignment="Qt::AlignHCenter">
++                      <widget class="QGroupBox" name="buttonShoulderButtonsSRRightGroup">
++                        <property name="title">
++                          <string>SR</string>
++                        </property>
++                        <property name="alignment">
++                          <set>Qt::AlignCenter</set>
++                        </property>
++                        <layout class="QVBoxLayout" name="buttonShoulderButtonsSRRightVerticalLayout">
++                          <property name="spacing">
++                            <number>3</number>
++                          </property>
++                          <property name="leftMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="topMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="rightMargin">
++                            <number>3</number>
++                          </property>
++                          <property name="bottomMargin">
++                            <number>3</number>
++                          </property>
++                          <item>
++                            <widget class="QPushButton" name="buttonSRRight">
++                              <property name="minimumSize">
++                                <size>
++                                  <width>68</width>
++                                  <height>0</height>
++                                </size>
++                              </property>
++                              <property name="maximumSize">
++                                <size>
++                                  <width>68</width>
++                                  <height>16777215</height>
++                                </size>
++                              </property>
++                              <property name="styleSheet">
++                                <string notr="true">min-width: 68px;</string>
++                              </property>
++                              <property name="text">
++                                <string>SR</string>
++                              </property>
++                            </widget>
++                          </item>
++                        </layout>
++                      </widget>
++                    </item>
+                   </layout>
+-                 </widget>
+-                </item>
+-               </layout>
+-              </widget>
+-             </item>
++                </widget>
++              </item>
+             </layout>
+            </item>
+             <item>
+diff --git a/src/yuzu/configuration/configure_input_player_widget.cpp b/src/yuzu/configuration/configure_input_player_widget.cpp
+index a188eef92cbb..550cff9a0ffe 100644
+--- a/src/yuzu/configuration/configure_input_player_widget.cpp
++++ b/src/yuzu/configuration/configure_input_player_widget.cpp
+@@ -297,8 +297,8 @@ void PlayerControlPreview::DrawLeftController(QPainter& p, const QPointF center)
+ 
+         // Sideview SL and SR buttons
+         button_color = colors.slider_button;
+-        DrawRoundButton(p, center + QPoint(59, 52), button_values[SR], 5, 12, Direction::Left);
+-        DrawRoundButton(p, center + QPoint(59, -69), button_values[SL], 5, 12, Direction::Left);
++        DrawRoundButton(p, center + QPoint(59, 52), button_values[SRLeft], 5, 12, Direction::Left);
++        DrawRoundButton(p, center + QPoint(59, -69), button_values[SLLeft], 5, 12, Direction::Left);
+ 
+         DrawLeftBody(p, center);
+ 
+@@ -353,8 +353,10 @@ void PlayerControlPreview::DrawLeftController(QPainter& p, const QPointF center)
+     // SR and SL buttons
+     p.setPen(colors.outline);
+     button_color = colors.slider_button;
+-    DrawRoundButton(p, center + QPoint(155, 52), button_values[SR], 5.2f, 12, Direction::None, 4);
+-    DrawRoundButton(p, center + QPoint(155, -69), button_values[SL], 5.2f, 12, Direction::None, 4);
++    DrawRoundButton(p, center + QPoint(155, 52), button_values[SRLeft], 5.2f, 12, Direction::None,
++                    4);
++    DrawRoundButton(p, center + QPoint(155, -69), button_values[SLLeft], 5.2f, 12, Direction::None,
++                    4);
+ 
+     // SR and SL text
+     p.setPen(colors.transparent);
+@@ -428,8 +430,10 @@ void PlayerControlPreview::DrawRightController(QPainter& p, const QPointF center
+ 
+         // Sideview SL and SR buttons
+         button_color = colors.slider_button;
+-        DrawRoundButton(p, center + QPoint(-59, 52), button_values[SL], 5, 11, Direction::Right);
+-        DrawRoundButton(p, center + QPoint(-59, -69), button_values[SR], 5, 11, Direction::Right);
++        DrawRoundButton(p, center + QPoint(-59, 52), button_values[SLRight], 5, 11,
++                        Direction::Right);
++        DrawRoundButton(p, center + QPoint(-59, -69), button_values[SRRight], 5, 11,
++                        Direction::Right);
+ 
+         DrawRightBody(p, center);
+ 
+@@ -484,8 +488,10 @@ void PlayerControlPreview::DrawRightController(QPainter& p, const QPointF center
+     // SR and SL buttons
+     p.setPen(colors.outline);
+     button_color = colors.slider_button;
+-    DrawRoundButton(p, center + QPoint(-155, 52), button_values[SL], 5, 12, Direction::None, 4.0f);
+-    DrawRoundButton(p, center + QPoint(-155, -69), button_values[SR], 5, 12, Direction::None, 4.0f);
++    DrawRoundButton(p, center + QPoint(-155, 52), button_values[SLRight], 5, 12, Direction::None,
++                    4.0f);
++    DrawRoundButton(p, center + QPoint(-155, -69), button_values[SRRight], 5, 12, Direction::None,
++                    4.0f);
+ 
+     // SR and SL text
+     p.setPen(colors.transparent);
+@@ -557,6 +563,19 @@ void PlayerControlPreview::DrawDualController(QPainter& p, const QPointF center)
+         DrawRoundButton(p, center + QPoint(-154, -72), button_values[Minus], 7, 4, Direction::Up,
+                         1);
+ 
++        // Left SR and SL sideview buttons
++        button_color = colors.slider_button;
++        DrawRoundButton(p, center + QPoint(-20, -62), button_values[SLLeft], 4, 11,
++                        Direction::Left);
++        DrawRoundButton(p, center + QPoint(-20, 47), button_values[SRLeft], 4, 11, Direction::Left);
++
++        // Right SR and SL sideview buttons
++        button_color = colors.slider_button;
++        DrawRoundButton(p, center + QPoint(20, 47), button_values[SLRight], 4, 11,
++                        Direction::Right);
++        DrawRoundButton(p, center + QPoint(20, -62), button_values[SRRight], 4, 11,
++                        Direction::Right);
++
+         DrawDualBody(p, center);
+ 
+         // Right trigger top view
+@@ -1792,16 +1811,6 @@ void PlayerControlPreview::DrawDualBody(QPainter& p, const QPointF center) {
+     p.setBrush(colors.right);
+     DrawPolygon(p, qright_joycon_topview);
+ 
+-    // Right SR and SL sideview buttons
+-    p.setPen(colors.outline);
+-    p.setBrush(colors.slider_button);
+-    DrawRoundRectangle(p, center + QPoint(19, 47), 7, 22, 1);
+-    DrawRoundRectangle(p, center + QPoint(19, -62), 7, 22, 1);
+-
+-    // Left SR and SL sideview buttons
+-    DrawRoundRectangle(p, center + QPoint(-19, 47), 7, 22, 1);
+-    DrawRoundRectangle(p, center + QPoint(-19, -62), 7, 22, 1);
+-
+     // Right Sideview body
+     p.setBrush(colors.slider);
+     DrawPolygon(p, qright_joycon_slider);

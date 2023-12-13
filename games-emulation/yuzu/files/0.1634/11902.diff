@@ -1,0 +1,286 @@
+diff --git a/src/shader_recompiler/backend/glasm/emit_glasm_memory.cpp b/src/shader_recompiler/backend/glasm/emit_glasm_memory.cpp
+index 2705ab1404ce..9319ea007f23 100644
+--- a/src/shader_recompiler/backend/glasm/emit_glasm_memory.cpp
++++ b/src/shader_recompiler/backend/glasm/emit_glasm_memory.cpp
+@@ -5,6 +5,7 @@
+ #include "shader_recompiler/backend/glasm/glasm_emit_context.h"
+ #include "shader_recompiler/frontend/ir/program.h"
+ #include "shader_recompiler/frontend/ir/value.h"
++#include "shader_recompiler/profile.h"
+ #include "shader_recompiler/runtime_info.h"
+ 
+ namespace Shader::Backend::GLASM {
+@@ -35,7 +36,9 @@ void GlobalStorageOp(EmitContext& ctx, Register address, bool pointer_based, std
+             continue;
+         }
+         const auto& ssbo{ctx.info.storage_buffers_descriptors[index]};
+-        ctx.Add("LDC.U64 DC.x,c{}[{}];"    // ssbo_addr
++        const u64 ssbo_align_mask{~(ctx.profile.min_ssbo_alignment - 1U)};
++        ctx.Add("LDC.U64 DC.x,c{}[{}];"    // unaligned_ssbo_addr
++                "AND.U64 DC.x,DC.x,{};"    // ssbo_addr = unaligned_ssbo_addr & ssbo_align_mask
+                 "LDC.U32 RC.x,c{}[{}];"    // ssbo_size_u32
+                 "CVT.U64.U32 DC.y,RC.x;"   // ssbo_size = ssbo_size_u32
+                 "ADD.U64 DC.y,DC.y,DC.x;"  // ssbo_end = ssbo_addr + ssbo_size
+@@ -44,8 +47,8 @@ void GlobalStorageOp(EmitContext& ctx, Register address, bool pointer_based, std
+                 "AND.U.CC RC.x,RC.x,RC.y;" // cond = a && b
+                 "IF NE.x;"                 // if cond
+                 "SUB.U64 DC.x,{}.x,DC.x;", // offset = input_addr - ssbo_addr
+-                ssbo.cbuf_index, ssbo.cbuf_offset, ssbo.cbuf_index, ssbo.cbuf_offset + 8, address,
+-                address, address);
++                ssbo.cbuf_index, ssbo.cbuf_offset, ssbo_align_mask, ssbo.cbuf_index,
++                ssbo.cbuf_offset + 8, address, address, address);
+         if (pointer_based) {
+             ctx.Add("PK64.U DC.y,c[{}];"      // host_ssbo = cbuf
+                     "ADD.U64 DC.x,DC.x,DC.y;" // host_addr = host_ssbo + offset
+diff --git a/src/shader_recompiler/backend/glsl/glsl_emit_context.cpp b/src/shader_recompiler/backend/glsl/glsl_emit_context.cpp
+index 9ff4028c2625..fd9a99449d4f 100644
+--- a/src/shader_recompiler/backend/glsl/glsl_emit_context.cpp
++++ b/src/shader_recompiler/backend/glsl/glsl_emit_context.cpp
+@@ -601,7 +601,10 @@ std::string EmitContext::DefineGlobalMemoryFunctions() {
+             addr_xy[i] = fmt::format("ftou({}[{}].{})", cbuf, addr_loc / 16, Swizzle(addr_loc));
+             size_xy[i] = fmt::format("ftou({}[{}].{})", cbuf, size_loc / 16, Swizzle(size_loc));
+         }
+-        const auto addr_pack{fmt::format("packUint2x32(uvec2({},{}))", addr_xy[0], addr_xy[1])};
++        const u32 ssbo_align_mask{~(static_cast<u32>(profile.min_ssbo_alignment) - 1U)};
++        const auto aligned_low_addr{fmt::format("{}&{}", addr_xy[0], ssbo_align_mask)};
++        const auto aligned_addr{fmt::format("uvec2({},{})", aligned_low_addr, addr_xy[1])};
++        const auto addr_pack{fmt::format("packUint2x32({})", aligned_addr)};
+         const auto addr_statment{fmt::format("uint64_t {}={};", ssbo_addr, addr_pack)};
+         func += addr_statment;
+ 
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index 57df6fc34aa2..3350f1f85d9f 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -891,7 +891,9 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
+             const Id ssbo_size_pointer{OpAccessChain(uniform_types.U32, cbufs[ssbo.cbuf_index].U32,
+                                                      zero, ssbo_size_cbuf_offset)};
+ 
+-            const Id ssbo_addr{OpBitcast(U64, OpLoad(U32[2], ssbo_addr_pointer))};
++            const u64 ssbo_align_mask{~(profile.min_ssbo_alignment - 1U)};
++            const Id unaligned_addr{OpBitcast(U64, OpLoad(U32[2], ssbo_addr_pointer))};
++            const Id ssbo_addr{OpBitwiseAnd(U64, unaligned_addr, Constant(U64, ssbo_align_mask))};
+             const Id ssbo_size{OpUConvert(U64, OpLoad(U32[1], ssbo_size_pointer))};
+             const Id ssbo_end{OpIAdd(U64, ssbo_addr, ssbo_size)};
+             const Id cond{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, ssbo_addr),
+diff --git a/src/shader_recompiler/frontend/maxwell/translate_program.cpp b/src/shader_recompiler/frontend/maxwell/translate_program.cpp
+index 8fac6bad3fa5..321ea625bcda 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate_program.cpp
++++ b/src/shader_recompiler/frontend/maxwell/translate_program.cpp
+@@ -298,7 +298,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
+ 
+     Optimization::PositionPass(env, program);
+ 
+-    Optimization::GlobalMemoryToStorageBufferPass(program);
++    Optimization::GlobalMemoryToStorageBufferPass(program, host_info);
+     Optimization::TexturePass(env, program, host_info);
+ 
+     if (Settings::values.resolution_info.active) {
+diff --git a/src/shader_recompiler/host_translate_info.h b/src/shader_recompiler/host_translate_info.h
+index 7d2ded907094..1b53404fcc30 100644
+--- a/src/shader_recompiler/host_translate_info.h
++++ b/src/shader_recompiler/host_translate_info.h
+@@ -16,6 +16,7 @@ struct HostTranslateInfo {
+     bool needs_demote_reorder{}; ///< True when the device needs DemoteToHelperInvocation reordered
+     bool support_snorm_render_buffer{};  ///< True when the device supports SNORM render buffers
+     bool support_viewport_index_layer{}; ///< True when the device supports gl_Layer in VS
++    u32 min_ssbo_alignment{};            ///< Minimum alignment supported by the device for SSBOs
+     bool support_geometry_shader_passthrough{}; ///< True when the device supports geometry
+                                                 ///< passthrough shaders
+     bool support_conditional_barrier{}; ///< True when the device supports barriers in conditional
+diff --git a/src/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp b/src/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
+index d1e59f22eb66..0cea79945566 100644
+--- a/src/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
++++ b/src/shader_recompiler/ir_opt/global_memory_to_storage_buffer_pass.cpp
+@@ -11,6 +11,7 @@
+ #include "shader_recompiler/frontend/ir/breadth_first_search.h"
+ #include "shader_recompiler/frontend/ir/ir_emitter.h"
+ #include "shader_recompiler/frontend/ir/value.h"
++#include "shader_recompiler/host_translate_info.h"
+ #include "shader_recompiler/ir_opt/passes.h"
+ 
+ namespace Shader::Optimization {
+@@ -408,7 +409,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info)
+ }
+ 
+ /// Returns the offset in indices (not bytes) for an equivalent storage instruction
+-IR::U32 StorageOffset(IR::Block& block, IR::Inst& inst, StorageBufferAddr buffer) {
++IR::U32 StorageOffset(IR::Block& block, IR::Inst& inst, StorageBufferAddr buffer, u32 alignment) {
+     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
+     IR::U32 offset;
+     if (const std::optional<LowAddrInfo> low_addr{TrackLowAddress(&inst)}) {
+@@ -421,7 +422,10 @@ IR::U32 StorageOffset(IR::Block& block, IR::Inst& inst, StorageBufferAddr buffer
+     }
+     // Subtract the least significant 32 bits from the guest offset. The result is the storage
+     // buffer offset in bytes.
+-    const IR::U32 low_cbuf{ir.GetCbuf(ir.Imm32(buffer.index), ir.Imm32(buffer.offset))};
++    IR::U32 low_cbuf{ir.GetCbuf(ir.Imm32(buffer.index), ir.Imm32(buffer.offset))};
++
++    // Align the offset base to match the host alignment requirements
++    low_cbuf = ir.BitwiseAnd(low_cbuf, ir.Imm32(~(alignment - 1U)));
+     return ir.ISub(offset, low_cbuf);
+ }
+ 
+@@ -516,7 +520,7 @@ void Replace(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
+ }
+ } // Anonymous namespace
+ 
+-void GlobalMemoryToStorageBufferPass(IR::Program& program) {
++void GlobalMemoryToStorageBufferPass(IR::Program& program, const HostTranslateInfo& host_info) {
+     StorageInfo info;
+     for (IR::Block* const block : program.post_order_blocks) {
+         for (IR::Inst& inst : block->Instructions()) {
+@@ -540,7 +544,8 @@ void GlobalMemoryToStorageBufferPass(IR::Program& program) {
+         const IR::U32 index{IR::Value{static_cast<u32>(info.set.index_of(it))}};
+         IR::Block* const block{storage_inst.block};
+         IR::Inst* const inst{storage_inst.inst};
+-        const IR::U32 offset{StorageOffset(*block, *inst, storage_buffer)};
++        const IR::U32 offset{
++            StorageOffset(*block, *inst, storage_buffer, host_info.min_ssbo_alignment)};
+         Replace(*block, *inst, index, offset);
+     }
+ }
+diff --git a/src/shader_recompiler/ir_opt/passes.h b/src/shader_recompiler/ir_opt/passes.h
+index d4d5285e53f2..1e637cb23c8d 100644
+--- a/src/shader_recompiler/ir_opt/passes.h
++++ b/src/shader_recompiler/ir_opt/passes.h
+@@ -16,7 +16,7 @@ void CollectShaderInfoPass(Environment& env, IR::Program& program);
+ void ConditionalBarrierPass(IR::Program& program);
+ void ConstantPropagationPass(Environment& env, IR::Program& program);
+ void DeadCodeEliminationPass(IR::Program& program);
+-void GlobalMemoryToStorageBufferPass(IR::Program& program);
++void GlobalMemoryToStorageBufferPass(IR::Program& program, const HostTranslateInfo& host_info);
+ void IdentityRemovalPass(IR::Program& program);
+ void LowerFp64ToFp32(IR::Program& program);
+ void LowerFp16ToFp32(IR::Program& program);
+diff --git a/src/shader_recompiler/profile.h b/src/shader_recompiler/profile.h
+index a9de9f4a958b..66901a96540c 100644
+--- a/src/shader_recompiler/profile.h
++++ b/src/shader_recompiler/profile.h
+@@ -85,6 +85,8 @@ struct Profile {
+ 
+     /// Maxwell and earlier nVidia architectures have broken robust support
+     bool has_broken_robust{};
++
++    u64 min_ssbo_alignment{};
+ };
+ 
+ } // namespace Shader
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 90dbd352f9c3..6d1fc388735f 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -1753,15 +1753,25 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
+         const u32 memory_layout_size = static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
+         return std::min(memory_layout_size, static_cast<u32>(8_MiB));
+     }();
+-    const std::optional<VAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
+-    if (!cpu_addr || size == 0) {
++    // Alignment only applies to the offset of the buffer
++    const u32 alignment = runtime.GetStorageBufferAlignment();
++    const GPUVAddr aligned_gpu_addr = Common::AlignDown(gpu_addr, alignment);
++    const u32 aligned_size = static_cast<u32>(gpu_addr - aligned_gpu_addr) + size;
++
++    const std::optional<VAddr> aligned_cpu_addr = gpu_memory->GpuToCpuAddress(aligned_gpu_addr);
++    if (!aligned_cpu_addr || size == 0) {
+         LOG_WARNING(HW_GPU, "Failed to find storage buffer for cbuf index {}", cbuf_index);
+         return NULL_BINDING;
+     }
+-    const VAddr cpu_end = Common::AlignUp(*cpu_addr + size, YUZU_PAGESIZE);
++    const std::optional<VAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
++    ASSERT_MSG(cpu_addr, "Unaligned storage buffer address not found for cbuf index {}",
++               cbuf_index);
++    // The end address used for size calculation does not need to be aligned
++    const VAddr cpu_end = Common::AlignUp(*cpu_addr + size, Core::Memory::YUZU_PAGESIZE);
++
+     const Binding binding{
+-        .cpu_addr = *cpu_addr,
+-        .size = is_written ? size : static_cast<u32>(cpu_end - *cpu_addr),
++        .cpu_addr = *aligned_cpu_addr,
++        .size = is_written ? aligned_size : static_cast<u32>(cpu_end - *aligned_cpu_addr),
+         .buffer_id = BufferId{},
+     };
+     return binding;
+diff --git a/src/video_core/renderer_opengl/gl_buffer_cache.h b/src/video_core/renderer_opengl/gl_buffer_cache.h
+index feccf06f9fdf..000f29a82694 100644
+--- a/src/video_core/renderer_opengl/gl_buffer_cache.h
++++ b/src/video_core/renderer_opengl/gl_buffer_cache.h
+@@ -191,6 +191,10 @@ class BufferCacheRuntime {
+         return device.CanReportMemoryUsage();
+     }
+ 
++    u32 GetStorageBufferAlignment() const {
++        return static_cast<u32>(device.GetShaderStorageBufferAlignment());
++    }
++
+ private:
+     static constexpr std::array PABO_LUT{
+         GL_VERTEX_PROGRAM_PARAMETER_BUFFER_NV,          GL_TESS_CONTROL_PROGRAM_PARAMETER_BUFFER_NV,
+diff --git a/src/video_core/renderer_opengl/gl_shader_cache.cpp b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+index 2888e0238509..26f2d0ea72c5 100644
+--- a/src/video_core/renderer_opengl/gl_shader_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+@@ -232,6 +232,7 @@ ShaderCache::ShaderCache(RasterizerOpenGL& rasterizer_, Core::Frontend::EmuWindo
+           .has_gl_bool_ref_bug = device.HasBoolRefBug(),
+           .ignore_nan_fp_comparisons = true,
+           .gl_max_compute_smem_size = device.GetMaxComputeSharedMemorySize(),
++          .min_ssbo_alignment = device.GetShaderStorageBufferAlignment(),
+       },
+       host_info{
+           .support_float64 = true,
+@@ -240,6 +241,7 @@ ShaderCache::ShaderCache(RasterizerOpenGL& rasterizer_, Core::Frontend::EmuWindo
+           .needs_demote_reorder = device.IsAmd(),
+           .support_snorm_render_buffer = false,
+           .support_viewport_index_layer = device.HasVertexViewportLayer(),
++          .min_ssbo_alignment = static_cast<u32>(device.GetShaderStorageBufferAlignment()),
+           .support_geometry_shader_passthrough = device.HasGeometryShaderPassthrough(),
+           .support_conditional_barrier = device.SupportsConditionalBarriers(),
+       } {
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+index 7691cc2ba2b8..5958f52f76f4 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+@@ -355,6 +355,10 @@ bool BufferCacheRuntime::CanReportMemoryUsage() const {
+     return device.CanReportMemoryUsage();
+ }
+ 
++u32 BufferCacheRuntime::GetStorageBufferAlignment() const {
++    return static_cast<u32>(device.GetStorageBufferAlignment());
++}
++
+ void BufferCacheRuntime::TickFrame(VideoCommon::SlotVector<Buffer>& slot_buffers) noexcept {
+     for (auto it = slot_buffers.begin(); it != slot_buffers.end(); it++) {
+         it->ResetUsageTracking();
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.h b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+index 4416a902f7c3..0b3fbd6d053d 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.h
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+@@ -91,6 +91,8 @@ class BufferCacheRuntime {
+ 
+     bool CanReportMemoryUsage() const;
+ 
++    u32 GetStorageBufferAlignment() const;
++
+     [[nodiscard]] StagingBufferRef UploadStagingBuffer(size_t size);
+ 
+     [[nodiscard]] StagingBufferRef DownloadStagingBuffer(size_t size, bool deferred = false);
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 89b455bff844..2a13b2a72ed7 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -373,6 +373,7 @@ PipelineCache::PipelineCache(RasterizerVulkan& rasterizer_, const Device& device
+             driver_id == VK_DRIVER_ID_QUALCOMM_PROPRIETARY,
+         .has_broken_robust =
+             device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Pascal,
++        .min_ssbo_alignment = device.GetStorageBufferAlignment(),
+     };
+ 
+     host_info = Shader::HostTranslateInfo{
+@@ -383,6 +384,7 @@ PipelineCache::PipelineCache(RasterizerVulkan& rasterizer_, const Device& device
+             driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || driver_id == VK_DRIVER_ID_AMD_OPEN_SOURCE,
+         .support_snorm_render_buffer = true,
+         .support_viewport_index_layer = device.IsExtShaderViewportIndexLayerSupported(),
++        .min_ssbo_alignment = static_cast<u32>(device.GetStorageBufferAlignment()),
+         .support_geometry_shader_passthrough = device.IsNvGeometryShaderPassthroughSupported(),
+         .support_conditional_barrier = device.SupportsConditionalBarriers(),
+     };

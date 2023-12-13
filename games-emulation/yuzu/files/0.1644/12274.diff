@@ -1,0 +1,497 @@
+diff --git a/src/video_core/renderer_opengl/gl_rasterizer.cpp b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+index 9995b6dd4fd4..279e5a4e08a5 100644
+--- a/src/video_core/renderer_opengl/gl_rasterizer.cpp
++++ b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+@@ -714,7 +714,8 @@ bool RasterizerOpenGL::AccelerateDisplay(const Tegra::FramebufferConfig& config,
+     MICROPROFILE_SCOPE(OpenGL_CacheManagement);
+ 
+     std::scoped_lock lock{texture_cache.mutex};
+-    ImageView* const image_view{texture_cache.TryFindFramebufferImageView(framebuffer_addr)};
++    ImageView* const image_view{
++        texture_cache.TryFindFramebufferImageView(config, framebuffer_addr)};
+     if (!image_view) {
+         return false;
+     }
+@@ -725,7 +726,6 @@ bool RasterizerOpenGL::AccelerateDisplay(const Tegra::FramebufferConfig& config,
+     screen_info.texture.width = image_view->size.width;
+     screen_info.texture.height = image_view->size.height;
+     screen_info.display_texture = image_view->Handle(Shader::TextureType::Color2D);
+-    screen_info.display_srgb = VideoCore::Surface::IsPixelFormatSRGB(image_view->format);
+     return true;
+ }
+ 
+diff --git a/src/video_core/renderer_opengl/renderer_opengl.cpp b/src/video_core/renderer_opengl/renderer_opengl.cpp
+index 6bfed08a1f9d..7a4f0c5c1870 100644
+--- a/src/video_core/renderer_opengl/renderer_opengl.cpp
++++ b/src/video_core/renderer_opengl/renderer_opengl.cpp
+@@ -653,11 +653,7 @@ void RendererOpenGL::DrawScreen(const Layout::FramebufferLayout& layout) {
+     };
+     glNamedBufferSubData(vertex_buffer.handle, 0, sizeof(vertices), std::data(vertices));
+ 
+-    if (screen_info.display_srgb) {
+-        glEnable(GL_FRAMEBUFFER_SRGB);
+-    } else {
+-        glDisable(GL_FRAMEBUFFER_SRGB);
+-    }
++    glDisable(GL_FRAMEBUFFER_SRGB);
+     glViewportIndexedf(0, 0.0f, 0.0f, static_cast<GLfloat>(layout.width),
+                        static_cast<GLfloat>(layout.height));
+ 
+@@ -710,8 +706,7 @@ void RendererOpenGL::RenderScreenshot() {
+     GLuint renderbuffer;
+     glGenRenderbuffers(1, &renderbuffer);
+     glBindRenderbuffer(GL_RENDERBUFFER, renderbuffer);
+-    glRenderbufferStorage(GL_RENDERBUFFER, screen_info.display_srgb ? GL_SRGB8 : GL_RGB8,
+-                          layout.width, layout.height);
++    glRenderbufferStorage(GL_RENDERBUFFER, GL_SRGB8, layout.width, layout.height);
+     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, renderbuffer);
+ 
+     DrawScreen(layout);
+diff --git a/src/video_core/renderer_opengl/renderer_opengl.h b/src/video_core/renderer_opengl/renderer_opengl.h
+index f1d5fd954236..b706076350ea 100644
+--- a/src/video_core/renderer_opengl/renderer_opengl.h
++++ b/src/video_core/renderer_opengl/renderer_opengl.h
+@@ -53,7 +53,6 @@ struct TextureInfo {
+ struct ScreenInfo {
+     GLuint display_texture{};
+     bool was_accelerated = false;
+-    bool display_srgb{};
+     const Common::Rectangle<float> display_texcoords{0.0f, 0.0f, 1.0f, 1.0f};
+     TextureInfo texture;
+ };
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+index c4c30d8071dd..100b70918b8a 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -94,7 +94,7 @@ RendererVulkan::RendererVulkan(Core::TelemetrySession& telemetry_session_,
+       device(CreateDevice(instance, dld, *surface)), memory_allocator(device), state_tracker(),
+       scheduler(device, state_tracker),
+       swapchain(*surface, device, scheduler, render_window.GetFramebufferLayout().width,
+-                render_window.GetFramebufferLayout().height, false),
++                render_window.GetFramebufferLayout().height),
+       present_manager(instance, render_window, device, memory_allocator, scheduler, swapchain,
+                       surface),
+       blit_screen(cpu_memory, render_window, device, memory_allocator, swapchain, present_manager,
+@@ -131,11 +131,10 @@ void RendererVulkan::SwapBuffers(const Tegra::FramebufferConfig* framebuffer) {
+     const VAddr framebuffer_addr = framebuffer->address + framebuffer->offset;
+     const bool use_accelerated =
+         rasterizer.AccelerateDisplay(*framebuffer, framebuffer_addr, framebuffer->stride);
+-    const bool is_srgb = use_accelerated && screen_info.is_srgb;
+     RenderScreenshot(*framebuffer, use_accelerated);
+ 
+     Frame* frame = present_manager.GetRenderFrame();
+-    blit_screen.DrawToSwapchain(frame, *framebuffer, use_accelerated, is_srgb);
++    blit_screen.DrawToSwapchain(frame, *framebuffer, use_accelerated);
+     scheduler.Flush(*frame->render_ready);
+     present_manager.Present(frame);
+ 
+@@ -205,7 +204,7 @@ void Vulkan::RendererVulkan::RenderScreenshot(const Tegra::FramebufferConfig& fr
+         .flags = 0,
+         .image = *staging_image,
+         .viewType = VK_IMAGE_VIEW_TYPE_2D,
+-        .format = screen_info.is_srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM,
++        .format = VK_FORMAT_B8G8R8A8_UNORM,
+         .components{
+             .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+             .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+diff --git a/src/video_core/renderer_vulkan/vk_blit_screen.cpp b/src/video_core/renderer_vulkan/vk_blit_screen.cpp
+index 5e461fbd02b4..60432f5addc7 100644
+--- a/src/video_core/renderer_vulkan/vk_blit_screen.cpp
++++ b/src/video_core/renderer_vulkan/vk_blit_screen.cpp
+@@ -127,9 +127,9 @@ BlitScreen::BlitScreen(Core::Memory::Memory& cpu_memory_, Core::Frontend::EmuWin
+                        Scheduler& scheduler_, const ScreenInfo& screen_info_)
+     : cpu_memory{cpu_memory_}, render_window{render_window_}, device{device_},
+       memory_allocator{memory_allocator_}, swapchain{swapchain_}, present_manager{present_manager_},
+-      scheduler{scheduler_}, image_count{swapchain.GetImageCount()}, screen_info{screen_info_},
+-      current_srgb{swapchain.IsSrgb()}, image_view_format{swapchain.GetImageViewFormat()} {
++      scheduler{scheduler_}, image_count{swapchain.GetImageCount()}, screen_info{screen_info_} {
+     resource_ticks.resize(image_count);
++    swapchain_view_format = swapchain.GetImageViewFormat();
+ 
+     CreateStaticResources();
+     CreateDynamicResources();
+@@ -480,28 +480,22 @@ void BlitScreen::Draw(const Tegra::FramebufferConfig& framebuffer,
+ }
+ 
+ void BlitScreen::DrawToSwapchain(Frame* frame, const Tegra::FramebufferConfig& framebuffer,
+-                                 bool use_accelerated, bool is_srgb) {
+-    // Recreate dynamic resources if the the image count or colorspace changed
++                                 bool use_accelerated) {
++    // Recreate dynamic resources if the the image count or input format changed
++    const VkFormat current_framebuffer_format =
++        std::exchange(framebuffer_view_format, GetFormat(framebuffer));
+     if (const std::size_t swapchain_images = swapchain.GetImageCount();
+-        swapchain_images != image_count || current_srgb != is_srgb) {
+-        current_srgb = is_srgb;
+-#ifdef ANDROID
+-        // Android is already ordered the same as Switch.
+-        image_view_format = current_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+-#else
+-        image_view_format = current_srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
+-#endif
++        swapchain_images != image_count || current_framebuffer_format != framebuffer_view_format) {
+         image_count = swapchain_images;
+         Recreate();
+     }
+ 
+     // Recreate the presentation frame if the dimensions of the window changed
+     const Layout::FramebufferLayout layout = render_window.GetFramebufferLayout();
+-    if (layout.width != frame->width || layout.height != frame->height ||
+-        is_srgb != frame->is_srgb) {
++    if (layout.width != frame->width || layout.height != frame->height) {
+         Recreate();
+-        present_manager.RecreateFrame(frame, layout.width, layout.height, is_srgb,
+-                                      image_view_format, *renderpass);
++        present_manager.RecreateFrame(frame, layout.width, layout.height, swapchain_view_format,
++                                      *renderpass);
+     }
+ 
+     const VkExtent2D render_area{frame->width, frame->height};
+@@ -629,7 +623,7 @@ void BlitScreen::CreateDescriptorPool() {
+ }
+ 
+ void BlitScreen::CreateRenderPass() {
+-    renderpass = CreateRenderPassImpl(image_view_format);
++    renderpass = CreateRenderPassImpl(swapchain_view_format);
+ }
+ 
+ vk::RenderPass BlitScreen::CreateRenderPassImpl(VkFormat format) {
+@@ -1149,7 +1143,7 @@ void BlitScreen::CreateRawImages(const Tegra::FramebufferConfig& framebuffer) {
+             .pNext = nullptr,
+             .flags = 0,
+             .imageType = VK_IMAGE_TYPE_2D,
+-            .format = used_on_framebuffer ? VK_FORMAT_R16G16B16A16_SFLOAT : GetFormat(framebuffer),
++            .format = used_on_framebuffer ? VK_FORMAT_R16G16B16A16_SFLOAT : framebuffer_view_format,
+             .extent =
+                 {
+                     .width = (up_scale * framebuffer.width) >> down_shift,
+@@ -1174,7 +1168,7 @@ void BlitScreen::CreateRawImages(const Tegra::FramebufferConfig& framebuffer) {
+             .flags = 0,
+             .image = *image,
+             .viewType = VK_IMAGE_VIEW_TYPE_2D,
+-            .format = used_on_framebuffer ? VK_FORMAT_R16G16B16A16_SFLOAT : GetFormat(framebuffer),
++            .format = used_on_framebuffer ? VK_FORMAT_R16G16B16A16_SFLOAT : framebuffer_view_format,
+             .components =
+                 {
+                     .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+diff --git a/src/video_core/renderer_vulkan/vk_blit_screen.h b/src/video_core/renderer_vulkan/vk_blit_screen.h
+index 8365b56688e5..16b882b6d2ce 100644
+--- a/src/video_core/renderer_vulkan/vk_blit_screen.h
++++ b/src/video_core/renderer_vulkan/vk_blit_screen.h
+@@ -52,7 +52,6 @@ struct ScreenInfo {
+     VkImageView image_view{};
+     u32 width{};
+     u32 height{};
+-    bool is_srgb{};
+ };
+ 
+ class BlitScreen {
+@@ -69,7 +68,7 @@ class BlitScreen {
+               const Layout::FramebufferLayout layout, VkExtent2D render_area, bool use_accelerated);
+ 
+     void DrawToSwapchain(Frame* frame, const Tegra::FramebufferConfig& framebuffer,
+-                         bool use_accelerated, bool is_srgb);
++                         bool use_accelerated);
+ 
+     [[nodiscard]] vk::Framebuffer CreateFramebuffer(const VkImageView& image_view,
+                                                     VkExtent2D extent);
+@@ -161,8 +160,8 @@ class BlitScreen {
+     u32 raw_width = 0;
+     u32 raw_height = 0;
+     Service::android::PixelFormat pixel_format{};
+-    bool current_srgb;
+-    VkFormat image_view_format;
++    VkFormat framebuffer_view_format;
++    VkFormat swapchain_view_format;
+ 
+     std::unique_ptr<FSR> fsr;
+     std::unique_ptr<SMAA> smaa;
+diff --git a/src/video_core/renderer_vulkan/vk_present_manager.cpp b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+index 2ef36583be12..8e4c74b5cea8 100644
+--- a/src/video_core/renderer_vulkan/vk_present_manager.cpp
++++ b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+@@ -172,13 +172,12 @@ void PresentManager::Present(Frame* frame) {
+     });
+ }
+ 
+-void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, bool is_srgb,
+-                                   VkFormat image_view_format, VkRenderPass rd) {
++void PresentManager::RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat image_view_format,
++                                   VkRenderPass rd) {
+     auto& dld = device.GetLogical();
+ 
+     frame->width = width;
+     frame->height = height;
+-    frame->is_srgb = is_srgb;
+ 
+     frame->image = memory_allocator.CreateImage({
+         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+@@ -289,7 +288,7 @@ void PresentManager::PresentThread(std::stop_token token) {
+ }
+ 
+ void PresentManager::RecreateSwapchain(Frame* frame) {
+-    swapchain.Create(*surface, frame->width, frame->height, frame->is_srgb);
++    swapchain.Create(*surface, frame->width, frame->height);
+     image_count = swapchain.GetImageCount();
+ }
+ 
+@@ -319,12 +318,12 @@ void PresentManager::CopyToSwapchain(Frame* frame) {
+ void PresentManager::CopyToSwapchainImpl(Frame* frame) {
+     MICROPROFILE_SCOPE(Vulkan_CopyToSwapchain);
+ 
+-    // If the size or colorspace of the incoming frames has changed, recreate the swapchain
++    // If the size of the incoming frames has changed, recreate the swapchain
+     // to account for that.
+-    const bool srgb_changed = swapchain.NeedsRecreation(frame->is_srgb);
++    const bool is_suboptimal = swapchain.NeedsRecreation();
+     const bool size_changed =
+         swapchain.GetWidth() != frame->width || swapchain.GetHeight() != frame->height;
+-    if (srgb_changed || size_changed) {
++    if (is_suboptimal || size_changed) {
+         RecreateSwapchain(frame);
+     }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_present_manager.h b/src/video_core/renderer_vulkan/vk_present_manager.h
+index a3d825fe6967..337171a09bef 100644
+--- a/src/video_core/renderer_vulkan/vk_present_manager.h
++++ b/src/video_core/renderer_vulkan/vk_present_manager.h
+@@ -25,7 +25,6 @@ class Swapchain;
+ struct Frame {
+     u32 width;
+     u32 height;
+-    bool is_srgb;
+     vk::Image image;
+     vk::ImageView image_view;
+     vk::Framebuffer framebuffer;
+@@ -48,8 +47,8 @@ class PresentManager {
+     void Present(Frame* frame);
+ 
+     /// Recreates the present frame to match the provided parameters
+-    void RecreateFrame(Frame* frame, u32 width, u32 height, bool is_srgb,
+-                       VkFormat image_view_format, VkRenderPass rd);
++    void RecreateFrame(Frame* frame, u32 width, u32 height, VkFormat image_view_format,
++                       VkRenderPass rd);
+ 
+     /// Waits for the present thread to finish presenting all queued frames.
+     void WaitPresent();
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 07222e603b62..c850e1689bfd 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -777,7 +777,8 @@ bool RasterizerVulkan::AccelerateDisplay(const Tegra::FramebufferConfig& config,
+         return false;
+     }
+     std::scoped_lock lock{texture_cache.mutex};
+-    ImageView* const image_view = texture_cache.TryFindFramebufferImageView(framebuffer_addr);
++    ImageView* const image_view =
++        texture_cache.TryFindFramebufferImageView(config, framebuffer_addr);
+     if (!image_view) {
+         return false;
+     }
+@@ -786,7 +787,6 @@ bool RasterizerVulkan::AccelerateDisplay(const Tegra::FramebufferConfig& config,
+     screen_info.image_view = image_view->Handle(Shader::TextureType::Color2D);
+     screen_info.width = image_view->size.width;
+     screen_info.height = image_view->size.height;
+-    screen_info.is_srgb = VideoCore::Surface::IsPixelFormatSRGB(image_view->format);
+     return true;
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.cpp b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+index 821f44f1a85e..86a30dcd18d2 100644
+--- a/src/video_core/renderer_vulkan/vk_swapchain.cpp
++++ b/src/video_core/renderer_vulkan/vk_swapchain.cpp
+@@ -105,14 +105,14 @@ VkCompositeAlphaFlagBitsKHR ChooseAlphaFlags(const VkSurfaceCapabilitiesKHR& cap
+ } // Anonymous namespace
+ 
+ Swapchain::Swapchain(VkSurfaceKHR surface_, const Device& device_, Scheduler& scheduler_,
+-                     u32 width_, u32 height_, bool srgb)
++                     u32 width_, u32 height_)
+     : surface{surface_}, device{device_}, scheduler{scheduler_} {
+-    Create(surface_, width_, height_, srgb);
++    Create(surface_, width_, height_);
+ }
+ 
+ Swapchain::~Swapchain() = default;
+ 
+-void Swapchain::Create(VkSurfaceKHR surface_, u32 width_, u32 height_, bool srgb) {
++void Swapchain::Create(VkSurfaceKHR surface_, u32 width_, u32 height_) {
+     is_outdated = false;
+     is_suboptimal = false;
+     width = width_;
+@@ -127,7 +127,7 @@ void Swapchain::Create(VkSurfaceKHR surface_, u32 width_, u32 height_, bool srgb
+ 
+     Destroy();
+ 
+-    CreateSwapchain(capabilities, srgb);
++    CreateSwapchain(capabilities);
+     CreateSemaphores();
+ 
+     resource_ticks.clear();
+@@ -196,7 +196,7 @@ void Swapchain::Present(VkSemaphore render_semaphore) {
+     }
+ }
+ 
+-void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities, bool srgb) {
++void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities) {
+     const auto physical_device{device.GetPhysical()};
+     const auto formats{physical_device.GetSurfaceFormatsKHR(surface)};
+     const auto present_modes = physical_device.GetSurfacePresentModesKHR(surface);
+@@ -274,15 +274,14 @@ void Swapchain::CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities, bo
+     swapchain = device.GetLogical().CreateSwapchainKHR(swapchain_ci);
+ 
+     extent = swapchain_ci.imageExtent;
+-    current_srgb = srgb;
+ 
+     images = swapchain.GetImages();
+     image_count = static_cast<u32>(images.size());
+ #ifdef ANDROID
+     // Android is already ordered the same as Switch.
+-    image_view_format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
++    image_view_format = VK_FORMAT_R8G8B8A8_UNORM;
+ #else
+-    image_view_format = srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
++    image_view_format = VK_FORMAT_B8G8R8A8_UNORM;
+ #endif
+ }
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_swapchain.h b/src/video_core/renderer_vulkan/vk_swapchain.h
+index b8a1465a6f78..d264f06e41a5 100644
+--- a/src/video_core/renderer_vulkan/vk_swapchain.h
++++ b/src/video_core/renderer_vulkan/vk_swapchain.h
+@@ -20,11 +20,11 @@ class Scheduler;
+ class Swapchain {
+ public:
+     explicit Swapchain(VkSurfaceKHR surface, const Device& device, Scheduler& scheduler, u32 width,
+-                       u32 height, bool srgb);
++                       u32 height);
+     ~Swapchain();
+ 
+     /// Creates (or recreates) the swapchain with a given size.
+-    void Create(VkSurfaceKHR surface, u32 width, u32 height, bool srgb);
++    void Create(VkSurfaceKHR surface, u32 width, u32 height);
+ 
+     /// Acquires the next image in the swapchain, waits as needed.
+     bool AcquireNextImage();
+@@ -33,13 +33,8 @@ class Swapchain {
+     void Present(VkSemaphore render_semaphore);
+ 
+     /// Returns true when the swapchain needs to be recreated.
+-    bool NeedsRecreation(bool is_srgb) const {
+-        return HasColorSpaceChanged(is_srgb) || IsSubOptimal() || NeedsPresentModeUpdate();
+-    }
+-
+-    /// Returns true when the color space has changed.
+-    bool HasColorSpaceChanged(bool is_srgb) const {
+-        return current_srgb != is_srgb;
++    bool NeedsRecreation() const {
++        return IsSubOptimal() || NeedsPresentModeUpdate();
+     }
+ 
+     /// Returns true when the swapchain is outdated.
+@@ -52,11 +47,6 @@ class Swapchain {
+         return is_suboptimal;
+     }
+ 
+-    /// Returns true when the swapchain format is in the srgb color space
+-    bool IsSrgb() const {
+-        return current_srgb;
+-    }
+-
+     VkExtent2D GetSize() const {
+         return extent;
+     }
+@@ -110,7 +100,7 @@ class Swapchain {
+     }
+ 
+ private:
+-    void CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities, bool srgb);
++    void CreateSwapchain(const VkSurfaceCapabilitiesKHR& capabilities);
+     void CreateSemaphores();
+     void CreateImageViews();
+ 
+@@ -144,7 +134,6 @@ class Swapchain {
+     bool has_mailbox{false};
+     bool has_fifo_relaxed{false};
+ 
+-    bool current_srgb{};
+     bool is_outdated{};
+     bool is_suboptimal{};
+ };
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index dade38b18c0d..0d5a1709fbb7 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -712,14 +712,15 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
+ }
+ 
+ template <class P>
+-typename P::ImageView* TextureCache<P>::TryFindFramebufferImageView(VAddr cpu_addr) {
++typename P::ImageView* TextureCache<P>::TryFindFramebufferImageView(
++    const Tegra::FramebufferConfig& config, VAddr cpu_addr) {
+     // TODO: Properly implement this
+     const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
+     if (it == page_table.end()) {
+         return nullptr;
+     }
+     const auto& image_map_ids = it->second;
+-    boost::container::small_vector<const ImageBase*, 4> valid_images;
++    boost::container::small_vector<ImageId, 4> valid_image_ids;
+     for (const ImageMapId map_id : image_map_ids) {
+         const ImageMapView& map = slot_map_views[map_id];
+         const ImageBase& image = slot_images[map.image_id];
+@@ -729,18 +730,34 @@ typename P::ImageView* TextureCache<P>::TryFindFramebufferImageView(VAddr cpu_ad
+         if (image.image_view_ids.empty()) {
+             continue;
+         }
+-        valid_images.push_back(&image);
++        valid_image_ids.push_back(map.image_id);
+     }
+ 
+-    if (valid_images.size() == 1) [[likely]] {
+-        return &slot_image_views[valid_images[0]->image_view_ids.at(0)];
++    const auto view_format = [&]() {
++        switch (config.pixel_format) {
++        case Service::android::PixelFormat::Rgb565:
++            return PixelFormat::R5G6B5_UNORM;
++        case Service::android::PixelFormat::Bgra8888:
++            return PixelFormat::B8G8R8A8_UNORM;
++        default:
++            return PixelFormat::A8B8G8R8_UNORM;
++        }
++    }();
++
++    const auto GetImageViewForFramebuffer = [&](ImageId image_id) {
++        const ImageViewInfo info{ImageViewType::e2D, view_format};
++        return &slot_image_views[FindOrEmplaceImageView(image_id, info)];
++    };
++
++    if (valid_image_ids.size() == 1) [[likely]] {
++        return GetImageViewForFramebuffer(valid_image_ids.front());
+     }
+ 
+-    if (valid_images.size() > 0) [[unlikely]] {
+-        std::ranges::sort(valid_images, [](const auto* a, const auto* b) {
+-            return a->modification_tick > b->modification_tick;
++    if (valid_image_ids.size() > 0) [[unlikely]] {
++        auto most_recent = std::ranges::max_element(valid_image_ids, [&](auto a, auto b) {
++            return slot_images[a].modification_tick < slot_images[b].modification_tick;
+         });
+-        return &slot_image_views[valid_images[0]->image_view_ids.at(0)];
++        return GetImageViewForFramebuffer(*most_recent);
+     }
+ 
+     return nullptr;
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index a40825c9f2be..cbe56e1666df 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -209,7 +209,8 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+                    const Tegra::Engines::Fermi2D::Config& copy);
+ 
+     /// Try to find a cached image view in the given CPU address
+-    [[nodiscard]] ImageView* TryFindFramebufferImageView(VAddr cpu_addr);
++    [[nodiscard]] ImageView* TryFindFramebufferImageView(const Tegra::FramebufferConfig& config,
++                                                         VAddr cpu_addr);
+ 
+     /// Return true when there are uncommitted images to be downloaded
+     [[nodiscard]] bool HasUncommittedFlushes() const noexcept;

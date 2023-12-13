@@ -1,0 +1,69 @@
+diff --git a/src/audio_core/sink/cubeb_sink.cpp b/src/audio_core/sink/cubeb_sink.cpp
+index bbb598bc55c9..51a23fe15873 100644
+--- a/src/audio_core/sink/cubeb_sink.cpp
++++ b/src/audio_core/sink/cubeb_sink.cpp
+@@ -146,7 +146,7 @@ class CubebSinkStream final : public SinkStream {
+             return;
+         }
+ 
+-        paused = true;
++        SignalPause();
+         if (cubeb_stream_stop(stream_backend) != CUBEB_OK) {
+             LOG_CRITICAL(Audio_Sink, "Error stopping cubeb stream");
+         }
+diff --git a/src/audio_core/sink/sdl2_sink.cpp b/src/audio_core/sink/sdl2_sink.cpp
+index 7b89151de282..96e0efce2e0e 100644
+--- a/src/audio_core/sink/sdl2_sink.cpp
++++ b/src/audio_core/sink/sdl2_sink.cpp
+@@ -111,7 +111,7 @@ class SDLSinkStream final : public SinkStream {
+         if (device == 0 || paused) {
+             return;
+         }
+-        paused = true;
++        SignalPause();
+         SDL_PauseAudioDevice(device, 1);
+     }
+ 
+diff --git a/src/audio_core/sink/sink_stream.cpp b/src/audio_core/sink/sink_stream.cpp
+index d66d04fae850..2a09db599e50 100644
+--- a/src/audio_core/sink/sink_stream.cpp
++++ b/src/audio_core/sink/sink_stream.cpp
+@@ -282,11 +282,19 @@ u64 SinkStream::GetExpectedPlayedSampleCount() {
+ void SinkStream::WaitFreeSpace(std::stop_token stop_token) {
+     std::unique_lock lk{release_mutex};
+     release_cv.wait_for(lk, std::chrono::milliseconds(5),
+-                        [this]() { return queued_buffers < max_queue_size; });
++                        [this]() { return paused || queued_buffers < max_queue_size; });
+     if (queued_buffers > max_queue_size + 3) {
+         Common::CondvarWait(release_cv, lk, stop_token,
+-                            [this] { return queued_buffers < max_queue_size; });
++                            [this] { return paused || queued_buffers < max_queue_size; });
+     }
+ }
+ 
++void SinkStream::SignalPause() {
++    {
++        std::scoped_lock lk{release_mutex};
++        paused = true;
++    }
++    release_cv.notify_one();
++}
++
+ } // namespace AudioCore::Sink
+diff --git a/src/audio_core/sink/sink_stream.h b/src/audio_core/sink/sink_stream.h
+index 6a4996ca3858..f2ccd19b89ab 100644
+--- a/src/audio_core/sink/sink_stream.h
++++ b/src/audio_core/sink/sink_stream.h
+@@ -213,6 +213,12 @@ class SinkStream {
+      */
+     void WaitFreeSpace(std::stop_token stop_token);
+ 
++protected:
++    /**
++     * Unblocks the ADSP if the stream is paused.
++     */
++    void SignalPause();
++
+ protected:
+     /// Core system
+     Core::System& system;

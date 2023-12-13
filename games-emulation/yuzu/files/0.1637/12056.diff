@@ -1,0 +1,261 @@
+diff --git a/src/video_core/renderer_opengl/gl_buffer_cache.cpp b/src/video_core/renderer_opengl/gl_buffer_cache.cpp
+index 38d553d3c221..d1284e62fa07 100644
+--- a/src/video_core/renderer_opengl/gl_buffer_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_buffer_cache.cpp
+@@ -146,8 +146,12 @@ StagingBufferMap BufferCacheRuntime::UploadStagingBuffer(size_t size) {
+     return staging_buffer_pool.RequestUploadBuffer(size);
+ }
+ 
+-StagingBufferMap BufferCacheRuntime::DownloadStagingBuffer(size_t size) {
+-    return staging_buffer_pool.RequestDownloadBuffer(size);
++StagingBufferMap BufferCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) {
++    return staging_buffer_pool.RequestDownloadBuffer(size, deferred);
++}
++
++void BufferCacheRuntime::FreeDeferredStagingBuffer(StagingBufferMap& buffer) {
++    staging_buffer_pool.FreeDeferredStagingBuffer(buffer);
+ }
+ 
+ u64 BufferCacheRuntime::GetDeviceMemoryUsage() const {
+diff --git a/src/video_core/renderer_opengl/gl_buffer_cache.h b/src/video_core/renderer_opengl/gl_buffer_cache.h
+index 41b746f3bfe1..1b87954d7edb 100644
+--- a/src/video_core/renderer_opengl/gl_buffer_cache.h
++++ b/src/video_core/renderer_opengl/gl_buffer_cache.h
+@@ -64,7 +64,9 @@ class BufferCacheRuntime {
+ 
+     [[nodiscard]] StagingBufferMap UploadStagingBuffer(size_t size);
+ 
+-    [[nodiscard]] StagingBufferMap DownloadStagingBuffer(size_t size);
++    [[nodiscard]] StagingBufferMap DownloadStagingBuffer(size_t size, bool deferred = false);
++
++    void FreeDeferredStagingBuffer(StagingBufferMap& buffer);
+ 
+     void CopyBuffer(GLuint dst_buffer, GLuint src_buffer,
+                     std::span<const VideoCommon::BufferCopy> copies, bool barrier = true);
+@@ -233,7 +235,7 @@ struct BufferCacheParams {
+     static constexpr bool NEEDS_BIND_STORAGE_INDEX = true;
+     static constexpr bool USE_MEMORY_MAPS = true;
+     static constexpr bool SEPARATE_IMAGE_BUFFER_BINDINGS = true;
+-    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = false;
++    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
+ 
+     // TODO: Investigate why OpenGL seems to perform worse with persistently mapped buffer uploads
+     static constexpr bool USE_MEMORY_MAPS_FOR_UPLOADS = false;
+diff --git a/src/video_core/renderer_opengl/gl_staging_buffer_pool.cpp b/src/video_core/renderer_opengl/gl_staging_buffer_pool.cpp
+index bbb06e51ffd9..cadad650727b 100644
+--- a/src/video_core/renderer_opengl/gl_staging_buffer_pool.cpp
++++ b/src/video_core/renderer_opengl/gl_staging_buffer_pool.cpp
+@@ -28,63 +28,69 @@ StagingBuffers::StagingBuffers(GLenum storage_flags_, GLenum map_flags_)
+ 
+ StagingBuffers::~StagingBuffers() = default;
+ 
+-StagingBufferMap StagingBuffers::RequestMap(size_t requested_size, bool insert_fence) {
++StagingBufferMap StagingBuffers::RequestMap(size_t requested_size, bool insert_fence,
++                                            bool deferred) {
+     MICROPROFILE_SCOPE(OpenGL_BufferRequest);
+ 
+     const size_t index = RequestBuffer(requested_size);
+-    OGLSync* const sync = insert_fence ? &syncs[index] : nullptr;
+-    sync_indices[index] = insert_fence ? ++current_sync_index : 0;
++    OGLSync* const sync = insert_fence ? &allocs[index].sync : nullptr;
++    allocs[index].sync_index = insert_fence ? ++current_sync_index : 0;
++    allocs[index].deferred = deferred;
+     return StagingBufferMap{
+-        .mapped_span = std::span(maps[index], requested_size),
++        .mapped_span = std::span(allocs[index].map, requested_size),
+         .sync = sync,
+-        .buffer = buffers[index].handle,
++        .buffer = allocs[index].buffer.handle,
++        .index = index,
+     };
+ }
+ 
++void StagingBuffers::FreeDeferredStagingBuffer(size_t index) {
++    ASSERT(allocs[index].deferred);
++    allocs[index].deferred = false;
++}
++
+ size_t StagingBuffers::RequestBuffer(size_t requested_size) {
+     if (const std::optional<size_t> index = FindBuffer(requested_size); index) {
+         return *index;
+     }
+-
+-    OGLBuffer& buffer = buffers.emplace_back();
+-    buffer.Create();
++    StagingBufferAlloc alloc;
++    alloc.buffer.Create();
+     const auto next_pow2_size = Common::NextPow2(requested_size);
+-    glNamedBufferStorage(buffer.handle, next_pow2_size, nullptr,
++    glNamedBufferStorage(alloc.buffer.handle, next_pow2_size, nullptr,
+                          storage_flags | GL_MAP_PERSISTENT_BIT);
+-    maps.push_back(static_cast<u8*>(glMapNamedBufferRange(buffer.handle, 0, next_pow2_size,
+-                                                          map_flags | GL_MAP_PERSISTENT_BIT)));
+-    syncs.emplace_back();
+-    sync_indices.emplace_back();
+-    sizes.push_back(next_pow2_size);
+-
+-    ASSERT(syncs.size() == buffers.size() && buffers.size() == maps.size() &&
+-           maps.size() == sizes.size());
+-
+-    return buffers.size() - 1;
++    alloc.map = static_cast<u8*>(glMapNamedBufferRange(alloc.buffer.handle, 0, next_pow2_size,
++                                                       map_flags | GL_MAP_PERSISTENT_BIT));
++    alloc.size = next_pow2_size;
++    allocs.emplace_back(std::move(alloc));
++    return allocs.size() - 1;
+ }
+ 
+ std::optional<size_t> StagingBuffers::FindBuffer(size_t requested_size) {
+     size_t known_unsignaled_index = current_sync_index + 1;
+     size_t smallest_buffer = std::numeric_limits<size_t>::max();
+     std::optional<size_t> found;
+-    const size_t num_buffers = sizes.size();
++    const size_t num_buffers = allocs.size();
+     for (size_t index = 0; index < num_buffers; ++index) {
+-        const size_t buffer_size = sizes[index];
++        StagingBufferAlloc& alloc = allocs[index];
++        const size_t buffer_size = alloc.size;
+         if (buffer_size < requested_size || buffer_size >= smallest_buffer) {
+             continue;
+         }
+-        if (syncs[index].handle != 0) {
+-            if (sync_indices[index] >= known_unsignaled_index) {
++        if (alloc.deferred) {
++            continue;
++        }
++        if (alloc.sync.handle != 0) {
++            if (alloc.sync_index >= known_unsignaled_index) {
+                 // This fence is later than a fence that is known to not be signaled
+                 continue;
+             }
+-            if (!syncs[index].IsSignaled()) {
++            if (!alloc.sync.IsSignaled()) {
+                 // Since this fence hasn't been signaled, it's safe to assume all later
+                 // fences haven't been signaled either
+-                known_unsignaled_index = std::min(known_unsignaled_index, sync_indices[index]);
++                known_unsignaled_index = std::min(known_unsignaled_index, alloc.sync_index);
+                 continue;
+             }
+-            syncs[index].Release();
++            alloc.sync.Release();
+         }
+         smallest_buffer = buffer_size;
+         found = index;
+@@ -143,8 +149,12 @@ StagingBufferMap StagingBufferPool::RequestUploadBuffer(size_t size) {
+     return upload_buffers.RequestMap(size, true);
+ }
+ 
+-StagingBufferMap StagingBufferPool::RequestDownloadBuffer(size_t size) {
+-    return download_buffers.RequestMap(size, false);
++StagingBufferMap StagingBufferPool::RequestDownloadBuffer(size_t size, bool deferred) {
++    return download_buffers.RequestMap(size, false, deferred);
++}
++
++void StagingBufferPool::FreeDeferredStagingBuffer(StagingBufferMap& buffer) {
++    download_buffers.FreeDeferredStagingBuffer(buffer.index);
+ }
+ 
+ } // namespace OpenGL
+diff --git a/src/video_core/renderer_opengl/gl_staging_buffer_pool.h b/src/video_core/renderer_opengl/gl_staging_buffer_pool.h
+index 60f72d3a08b9..07a56b4d2b24 100644
+--- a/src/video_core/renderer_opengl/gl_staging_buffer_pool.h
++++ b/src/video_core/renderer_opengl/gl_staging_buffer_pool.h
+@@ -26,23 +26,30 @@ struct StagingBufferMap {
+     size_t offset = 0;
+     OGLSync* sync;
+     GLuint buffer;
++    size_t index;
+ };
+ 
+ struct StagingBuffers {
+     explicit StagingBuffers(GLenum storage_flags_, GLenum map_flags_);
+     ~StagingBuffers();
+ 
+-    StagingBufferMap RequestMap(size_t requested_size, bool insert_fence);
++    StagingBufferMap RequestMap(size_t requested_size, bool insert_fence, bool deferred = false);
++
++    void FreeDeferredStagingBuffer(size_t index);
+ 
+     size_t RequestBuffer(size_t requested_size);
+ 
+     std::optional<size_t> FindBuffer(size_t requested_size);
+ 
+-    std::vector<OGLSync> syncs;
+-    std::vector<OGLBuffer> buffers;
+-    std::vector<u8*> maps;
+-    std::vector<size_t> sizes;
+-    std::vector<size_t> sync_indices;
++    struct StagingBufferAlloc {
++        OGLSync sync;
++        OGLBuffer buffer;
++        u8* map;
++        size_t size;
++        size_t sync_index;
++        bool deferred;
++    };
++    std::vector<StagingBufferAlloc> allocs;
+     GLenum storage_flags;
+     GLenum map_flags;
+     size_t current_sync_index = 0;
+@@ -85,7 +92,8 @@ class StagingBufferPool {
+     ~StagingBufferPool() = default;
+ 
+     StagingBufferMap RequestUploadBuffer(size_t size);
+-    StagingBufferMap RequestDownloadBuffer(size_t size);
++    StagingBufferMap RequestDownloadBuffer(size_t size, bool deferred = false);
++    void FreeDeferredStagingBuffer(StagingBufferMap& buffer);
+ 
+ private:
+     StagingBuffers upload_buffers{GL_MAP_WRITE_BIT, GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT};
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.cpp b/src/video_core/renderer_opengl/gl_texture_cache.cpp
+index 512eef575946..66a5ca03e94c 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_texture_cache.cpp
+@@ -557,8 +557,12 @@ StagingBufferMap TextureCacheRuntime::UploadStagingBuffer(size_t size) {
+     return staging_buffer_pool.RequestUploadBuffer(size);
+ }
+ 
+-StagingBufferMap TextureCacheRuntime::DownloadStagingBuffer(size_t size) {
+-    return staging_buffer_pool.RequestDownloadBuffer(size);
++StagingBufferMap TextureCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) {
++    return staging_buffer_pool.RequestDownloadBuffer(size, deferred);
++}
++
++void TextureCacheRuntime::FreeDeferredStagingBuffer(StagingBufferMap& buffer) {
++    staging_buffer_pool.FreeDeferredStagingBuffer(buffer);
+ }
+ 
+ u64 TextureCacheRuntime::GetDeviceMemoryUsage() const {
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.h b/src/video_core/renderer_opengl/gl_texture_cache.h
+index e71b87e99233..34870c81faf4 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.h
++++ b/src/video_core/renderer_opengl/gl_texture_cache.h
+@@ -74,7 +74,9 @@ class TextureCacheRuntime {
+ 
+     StagingBufferMap UploadStagingBuffer(size_t size);
+ 
+-    StagingBufferMap DownloadStagingBuffer(size_t size);
++    StagingBufferMap DownloadStagingBuffer(size_t size, bool deferred = false);
++
++    void FreeDeferredStagingBuffer(StagingBufferMap& buffer);
+ 
+     u64 GetDeviceLocalMemory() const {
+         return device_access_memory;
+@@ -359,7 +361,7 @@ struct TextureCacheParams {
+     static constexpr bool FRAMEBUFFER_BLITS = true;
+     static constexpr bool HAS_EMULATED_COPIES = true;
+     static constexpr bool HAS_DEVICE_MEMORY_INFO = true;
+-    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = false;
++    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
+ 
+     using Runtime = OpenGL::TextureCacheRuntime;
+     using Image = OpenGL::Image;
+@@ -367,7 +369,7 @@ struct TextureCacheParams {
+     using ImageView = OpenGL::ImageView;
+     using Sampler = OpenGL::Sampler;
+     using Framebuffer = OpenGL::Framebuffer;
+-    using AsyncBuffer = u32;
++    using AsyncBuffer = OpenGL::StagingBufferMap;
+     using BufferType = GLuint;
+ };
+ 

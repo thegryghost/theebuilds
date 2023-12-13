@@ -1,0 +1,65 @@
+diff --git a/src/core/file_sys/savedata_factory.cpp b/src/core/file_sys/savedata_factory.cpp
+index a4d06000703f..8d5d593e8afe 100644
+--- a/src/core/file_sys/savedata_factory.cpp
++++ b/src/core/file_sys/savedata_factory.cpp
+@@ -12,8 +12,6 @@
+ 
+ namespace FileSys {
+ 
+-constexpr char SAVE_DATA_SIZE_FILENAME[] = ".yuzu_save_size";
+-
+ namespace {
+ 
+ void PrintSaveDataAttributeWarnings(SaveDataAttribute meta) {
+@@ -197,7 +195,7 @@ SaveDataSize SaveDataFactory::ReadSaveDataSize(SaveDataType type, u64 title_id,
+         GetFullPath(system, dir, SaveDataSpaceId::NandUser, type, title_id, user_id, 0);
+     const auto relative_dir = GetOrCreateDirectoryRelative(dir, path);
+ 
+-    const auto size_file = relative_dir->GetFile(SAVE_DATA_SIZE_FILENAME);
++    const auto size_file = relative_dir->GetFile(GetSaveDataSizeFileName());
+     if (size_file == nullptr || size_file->GetSize() < sizeof(SaveDataSize)) {
+         return {0, 0};
+     }
+@@ -216,7 +214,7 @@ void SaveDataFactory::WriteSaveDataSize(SaveDataType type, u64 title_id, u128 us
+         GetFullPath(system, dir, SaveDataSpaceId::NandUser, type, title_id, user_id, 0);
+     const auto relative_dir = GetOrCreateDirectoryRelative(dir, path);
+ 
+-    const auto size_file = relative_dir->CreateFile(SAVE_DATA_SIZE_FILENAME);
++    const auto size_file = relative_dir->CreateFile(GetSaveDataSizeFileName());
+     if (size_file == nullptr) {
+         return;
+     }
+diff --git a/src/core/file_sys/savedata_factory.h b/src/core/file_sys/savedata_factory.h
+index 45c7c81fb03c..e3a0f8cef3ed 100644
+--- a/src/core/file_sys/savedata_factory.h
++++ b/src/core/file_sys/savedata_factory.h
+@@ -83,6 +83,10 @@ struct SaveDataSize {
+     u64 journal;
+ };
+ 
++constexpr const char* GetSaveDataSizeFileName() {
++    return ".yuzu_save_size";
++}
++
+ /// File system interface to the SaveData archive
+ class SaveDataFactory {
+ public:
+diff --git a/src/core/hle/service/filesystem/fsp_srv.cpp b/src/core/hle/service/filesystem/fsp_srv.cpp
+index 126cd6ffdc23..b1310d6e4430 100644
+--- a/src/core/hle/service/filesystem/fsp_srv.cpp
++++ b/src/core/hle/service/filesystem/fsp_srv.cpp
+@@ -246,7 +246,13 @@ static void BuildEntryIndex(std::vector<FileSys::Entry>& entries, const std::vec
+     entries.reserve(entries.size() + new_data.size());
+ 
+     for (const auto& new_entry : new_data) {
+-        entries.emplace_back(new_entry->GetName(), type,
++        auto name = new_entry->GetName();
++
++        if (type == FileSys::EntryType::File && name == FileSys::GetSaveDataSizeFileName()) {
++            continue;
++        }
++
++        entries.emplace_back(name, type,
+                              type == FileSys::EntryType::Directory ? 0 : new_entry->GetSize());
+     }
+ }

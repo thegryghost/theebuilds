@@ -1,0 +1,292 @@
+diff --git a/src/core/frontend/emu_window.h b/src/core/frontend/emu_window.h
+index a72df034e4da..c7b48a58d77f 100644
+--- a/src/core/frontend/emu_window.h
++++ b/src/core/frontend/emu_window.h
+@@ -167,6 +167,11 @@ class EmuWindow {
+      */
+     std::pair<f32, f32> MapToTouchScreen(u32 framebuffer_x, u32 framebuffer_y) const;
+ 
++    /**
++     * Clip the provided coordinates to be inside the touchscreen area.
++     */
++    std::pair<u32, u32> ClipToTouchScreen(u32 new_x, u32 new_y) const;
++
+     WindowSystemInfo window_info;
+ 
+     bool strict_context_required = false;
+@@ -181,11 +186,6 @@ class EmuWindow {
+         // By default, ignore this request and do nothing.
+     }
+ 
+-    /**
+-     * Clip the provided coordinates to be inside the touchscreen area.
+-     */
+-    std::pair<u32, u32> ClipToTouchScreen(u32 new_x, u32 new_y) const;
+-
+     Layout::FramebufferLayout framebuffer_layout; ///< Current framebuffer layout
+ 
+     u32 client_area_width;  ///< Current client width, should be set by window impl.
+diff --git a/src/yuzu/bootmanager.cpp b/src/yuzu/bootmanager.cpp
+index 2afa721404c4..ed5750155257 100644
+--- a/src/yuzu/bootmanager.cpp
++++ b/src/yuzu/bootmanager.cpp
+@@ -30,7 +30,6 @@
+ #include <QSize>
+ #include <QStringLiteral>
+ #include <QSurfaceFormat>
+-#include <QTimer>
+ #include <QWindow>
+ #include <QtCore/qobjectdefs.h>
+ 
+@@ -66,6 +65,8 @@ class QObject;
+ class QPaintEngine;
+ class QSurface;
+ 
++constexpr int default_mouse_constrain_timeout = 10;
++
+ EmuThread::EmuThread(Core::System& system) : m_system{system} {}
+ 
+ EmuThread::~EmuThread() = default;
+@@ -304,6 +305,9 @@ GRenderWindow::GRenderWindow(GMainWindow* parent, EmuThread* emu_thread_,
+             Qt::QueuedConnection);
+     connect(this, &GRenderWindow::ExitSignal, parent, &GMainWindow::OnExit, Qt::QueuedConnection);
+     connect(this, &GRenderWindow::TasPlaybackStateChanged, parent, &GMainWindow::OnTasStateChanged);
++
++    mouse_constrain_timer.setInterval(default_mouse_constrain_timeout);
++    connect(&mouse_constrain_timer, &QTimer::timeout, this, &GRenderWindow::ConstrainMouse);
+ }
+ 
+ void GRenderWindow::ExecuteProgram(std::size_t program_index) {
+@@ -393,6 +397,22 @@ void GRenderWindow::closeEvent(QCloseEvent* event) {
+     QWidget::closeEvent(event);
+ }
+ 
++void GRenderWindow::leaveEvent(QEvent* event) {
++    if (Settings::values.mouse_panning) {
++        const QRect& rect = QWidget::geometry();
++        QPoint position = QCursor::pos();
++
++        qint32 x = qBound(rect.left(), position.x(), rect.right());
++        qint32 y = qBound(rect.top(), position.y(), rect.bottom());
++        // Only start the timer if the mouse has left the window bound.
++        // The leave event is also triggered when the window looses focus.
++        if (x != position.x() || y != position.y()) {
++            mouse_constrain_timer.start();
++        }
++        event->accept();
++    }
++}
++
+ int GRenderWindow::QtKeyToSwitchKey(Qt::Key qt_key) {
+     static constexpr std::array<std::pair<Qt::Key, Settings::NativeKeyboard::Keys>, 106> key_map = {
+         std::pair<Qt::Key, Settings::NativeKeyboard::Keys>{Qt::Key_A, Settings::NativeKeyboard::A},
+@@ -658,10 +678,19 @@ void GRenderWindow::mouseMoveEvent(QMouseEvent* event) {
+     input_subsystem->GetMouse()->TouchMove(touch_x, touch_y);
+     input_subsystem->GetMouse()->Move(pos.x(), pos.y(), center_x, center_y);
+ 
++    // Center mouse for mouse panning
+     if (Settings::values.mouse_panning && !Settings::values.mouse_enabled) {
+         QCursor::setPos(mapToGlobal(QPoint{center_x, center_y}));
+     }
+ 
++    // Constrain mouse for mouse emulation with mouse panning
++    if (Settings::values.mouse_panning && Settings::values.mouse_enabled) {
++        const auto [clamped_mouse_x, clamped_mouse_y] = ClipToTouchScreen(x, y);
++        QCursor::setPos(mapToGlobal(
++            QPoint{static_cast<int>(clamped_mouse_x), static_cast<int>(clamped_mouse_y)}));
++    }
++
++    mouse_constrain_timer.stop();
+     emit MouseActivity();
+ }
+ 
+@@ -675,6 +704,31 @@ void GRenderWindow::mouseReleaseEvent(QMouseEvent* event) {
+     input_subsystem->GetMouse()->ReleaseButton(button);
+ }
+ 
++void GRenderWindow::ConstrainMouse() {
++    if (emu_thread == nullptr || !Settings::values.mouse_panning) {
++        mouse_constrain_timer.stop();
++        return;
++    }
++    if (!this->isActiveWindow()) {
++        mouse_constrain_timer.stop();
++        return;
++    }
++
++    if (Settings::values.mouse_enabled) {
++        const auto pos = mapFromGlobal(QCursor::pos());
++        const int new_pos_x = std::clamp(pos.x(), 0, width());
++        const int new_pos_y = std::clamp(pos.y(), 0, height());
++
++        QCursor::setPos(mapToGlobal(QPoint{new_pos_x, new_pos_y}));
++        return;
++    }
++
++    const int center_x = width() / 2;
++    const int center_y = height() / 2;
++
++    QCursor::setPos(mapToGlobal(QPoint{center_x, center_y}));
++}
++
+ void GRenderWindow::wheelEvent(QWheelEvent* event) {
+     const int x = event->angleDelta().x();
+     const int y = event->angleDelta().y();
+diff --git a/src/yuzu/bootmanager.h b/src/yuzu/bootmanager.h
+index 87b23df12337..60edd464c4ad 100644
+--- a/src/yuzu/bootmanager.h
++++ b/src/yuzu/bootmanager.h
+@@ -17,6 +17,7 @@
+ #include <QString>
+ #include <QStringList>
+ #include <QThread>
++#include <QTimer>
+ #include <QWidget>
+ #include <qglobal.h>
+ #include <qnamespace.h>
+@@ -38,7 +39,6 @@ class QMouseEvent;
+ class QObject;
+ class QResizeEvent;
+ class QShowEvent;
+-class QTimer;
+ class QTouchEvent;
+ class QWheelEvent;
+ 
+@@ -166,6 +166,7 @@ class GRenderWindow : public QWidget, public Core::Frontend::EmuWindow {
+     std::pair<u32, u32> ScaleTouch(const QPointF& pos) const;
+ 
+     void closeEvent(QCloseEvent* event) override;
++    void leaveEvent(QEvent* event) override;
+ 
+     void resizeEvent(QResizeEvent* event) override;
+ 
+@@ -229,6 +230,7 @@ public slots:
+     void TouchBeginEvent(const QTouchEvent* event);
+     void TouchUpdateEvent(const QTouchEvent* event);
+     void TouchEndEvent();
++    void ConstrainMouse();
+ 
+     void RequestCameraCapture();
+     void OnCameraCapture(int requestId, const QImage& img);
+@@ -268,6 +270,8 @@ public slots:
+     std::unique_ptr<QTimer> camera_timer;
+ #endif
+ 
++    QTimer mouse_constrain_timer;
++
+     Core::System& system;
+ 
+ protected:
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index f22db233b1a9..e4b782fea915 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -185,7 +185,6 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+ #endif
+ 
+ constexpr int default_mouse_hide_timeout = 2500;
+-constexpr int default_mouse_center_timeout = 10;
+ constexpr int default_input_update_timeout = 1;
+ 
+ constexpr size_t CopyBufferSize = 1_MiB;
+@@ -435,9 +434,6 @@ GMainWindow::GMainWindow(std::unique_ptr<Config> config_, bool has_broken_vulkan
+     connect(&mouse_hide_timer, &QTimer::timeout, this, &GMainWindow::HideMouseCursor);
+     connect(ui->menubar, &QMenuBar::hovered, this, &GMainWindow::ShowMouseCursor);
+ 
+-    mouse_center_timer.setInterval(default_mouse_center_timeout);
+-    connect(&mouse_center_timer, &QTimer::timeout, this, &GMainWindow::CenterMouseCursor);
+-
+     update_input_timer.setInterval(default_input_update_timeout);
+     connect(&update_input_timer, &QTimer::timeout, this, &GMainWindow::UpdateInputDrivers);
+     update_input_timer.start();
+@@ -1366,14 +1362,6 @@ void GMainWindow::InitializeHotkeys() {
+         }
+     });
+     connect_shortcut(QStringLiteral("Toggle Mouse Panning"), [&] {
+-        if (Settings::values.mouse_enabled) {
+-            Settings::values.mouse_panning = false;
+-            QMessageBox::warning(
+-                this, tr("Emulated mouse is enabled"),
+-                tr("Real mouse input and mouse panning are incompatible. Please disable the "
+-                   "emulated mouse in input advanced settings to allow mouse panning."));
+-            return;
+-        }
+         Settings::values.mouse_panning = !Settings::values.mouse_panning;
+         if (Settings::values.mouse_panning) {
+             render_window->installEventFilter(render_window);
+@@ -4693,26 +4681,10 @@ void GMainWindow::ShowMouseCursor() {
+     }
+ }
+ 
+-void GMainWindow::CenterMouseCursor() {
+-    if (emu_thread == nullptr || !Settings::values.mouse_panning) {
+-        mouse_center_timer.stop();
+-        return;
+-    }
+-    if (!this->isActiveWindow()) {
+-        mouse_center_timer.stop();
+-        return;
+-    }
+-    const int center_x = render_window->width() / 2;
+-    const int center_y = render_window->height() / 2;
+-
+-    QCursor::setPos(mapToGlobal(QPoint{center_x, center_y}));
+-}
+-
+ void GMainWindow::OnMouseActivity() {
+     if (!Settings::values.mouse_panning) {
+         ShowMouseCursor();
+     }
+-    mouse_center_timer.stop();
+ }
+ 
+ void GMainWindow::OnReinitializeKeys(ReinitializeKeyBehavior behavior) {
+@@ -4988,22 +4960,6 @@ void GMainWindow::dragMoveEvent(QDragMoveEvent* event) {
+     AcceptDropEvent(event);
+ }
+ 
+-void GMainWindow::leaveEvent(QEvent* event) {
+-    if (Settings::values.mouse_panning) {
+-        const QRect& rect = geometry();
+-        QPoint position = QCursor::pos();
+-
+-        qint32 x = qBound(rect.left(), position.x(), rect.right());
+-        qint32 y = qBound(rect.top(), position.y(), rect.bottom());
+-        // Only start the timer if the mouse has left the window bound.
+-        // The leave event is also triggered when the window looses focus.
+-        if (x != position.x() || y != position.y()) {
+-            mouse_center_timer.start();
+-        }
+-        event->accept();
+-    }
+-}
+-
+ bool GMainWindow::ConfirmChangeGame() {
+     if (emu_thread == nullptr)
+         return true;
+diff --git a/src/yuzu/main.h b/src/yuzu/main.h
+index 49ee1e1d2e0b..eea39815a481 100644
+--- a/src/yuzu/main.h
++++ b/src/yuzu/main.h
+@@ -450,7 +450,6 @@ private slots:
+     void UpdateInputDrivers();
+     void HideMouseCursor();
+     void ShowMouseCursor();
+-    void CenterMouseCursor();
+     void OpenURL(const QUrl& url);
+     void LoadTranslation();
+     void OpenPerGameConfiguration(u64 title_id, const std::string& file_name);
+@@ -532,7 +531,6 @@ private slots:
+     bool auto_paused = false;
+     bool auto_muted = false;
+     QTimer mouse_hide_timer;
+-    QTimer mouse_center_timer;
+     QTimer update_input_timer;
+ 
+     QString startup_icon_theme;
+@@ -589,5 +587,4 @@ private slots:
+     void dropEvent(QDropEvent* event) override;
+     void dragEnterEvent(QDragEnterEvent* event) override;
+     void dragMoveEvent(QDragMoveEvent* event) override;
+-    void leaveEvent(QEvent* event) override;
+ };

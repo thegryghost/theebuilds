@@ -1,0 +1,15 @@
+diff --git a/src/core/hle/service/set/set_sys.cpp b/src/core/hle/service/set/set_sys.cpp
+index f5edfdc8bfe0..48304e6d1f92 100644
+--- a/src/core/hle/service/set/set_sys.cpp
++++ b/src/core/hle/service/set/set_sys.cpp
+@@ -34,7 +34,9 @@ Result GetFirmwareVersionImpl(FirmwareVersionFormat& out_firmware, Core::System&
+         nca = bis_system->GetEntry(FirmwareVersionSystemDataId, FileSys::ContentRecordType::Data);
+     }
+     if (nca) {
+-        romfs = FileSys::ExtractRomFS(nca->GetRomFS());
++        if (auto nca_romfs = nca->GetRomFS(); nca_romfs) {
++            romfs = FileSys::ExtractRomFS(nca_romfs);
++        }
+     }
+     if (!romfs) {
+         romfs = FileSys::ExtractRomFS(

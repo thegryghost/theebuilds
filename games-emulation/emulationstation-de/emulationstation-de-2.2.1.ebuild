@@ -24,7 +24,6 @@ DEPEND="
 	media-libs/freetype
 	media-libs/libsdl2
 	net-misc/curl
-	media-video/vlc
 	media-libs/freeimage
 	dev-libs/pugixml
 	app-text/xmlstarlet

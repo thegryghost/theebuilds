@@ -1,0 +1,1370 @@
+diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
+index cf9266d54167..b65b9f2a24d9 100644
+--- a/src/video_core/CMakeLists.txt
++++ b/src/video_core/CMakeLists.txt
+@@ -4,7 +4,7 @@
+ add_subdirectory(host_shaders)
+ 
+ if(LIBVA_FOUND)
+-    set_source_files_properties(host1x/codecs/codec.cpp
++    set_source_files_properties(host1x/ffmpeg/ffmpeg.cpp
+         PROPERTIES COMPILE_DEFINITIONS LIBVA_FOUND=1)
+     list(APPEND FFmpeg_LIBRARIES ${LIBVA_LIBRARIES})
+ endif()
+@@ -66,6 +66,8 @@ add_library(video_core STATIC
+     host1x/codecs/vp9.cpp
+     host1x/codecs/vp9.h
+     host1x/codecs/vp9_types.h
++    host1x/ffmpeg/ffmpeg.cpp
++    host1x/ffmpeg/ffmpeg.h
+     host1x/control.cpp
+     host1x/control.h
+     host1x/host1x.cpp
+diff --git a/src/video_core/host1x/codecs/codec.cpp b/src/video_core/host1x/codecs/codec.cpp
+index dbcf508e5604..1030db68197a 100644
+--- a/src/video_core/host1x/codecs/codec.cpp
++++ b/src/video_core/host1x/codecs/codec.cpp
+@@ -1,11 +1,7 @@
+ // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#include <algorithm>
+-#include <fstream>
+-#include <vector>
+ #include "common/assert.h"
+-#include "common/scope_exit.h"
+ #include "common/settings.h"
+ #include "video_core/host1x/codecs/codec.h"
+ #include "video_core/host1x/codecs/h264.h"
+@@ -14,242 +10,17 @@
+ #include "video_core/host1x/host1x.h"
+ #include "video_core/memory_manager.h"
+ 
+-extern "C" {
+-#include <libavfilter/buffersink.h>
+-#include <libavfilter/buffersrc.h>
+-#include <libavutil/opt.h>
+-#ifdef LIBVA_FOUND
+-// for querying VAAPI driver information
+-#include <libavutil/hwcontext_vaapi.h>
+-#endif
+-}
+-
+ namespace Tegra {
+-namespace {
+-constexpr AVPixelFormat PREFERRED_GPU_FMT = AV_PIX_FMT_NV12;
+-constexpr AVPixelFormat PREFERRED_CPU_FMT = AV_PIX_FMT_YUV420P;
+-constexpr std::array PREFERRED_GPU_DECODERS = {
+-    AV_HWDEVICE_TYPE_CUDA,
+-#ifdef _WIN32
+-    AV_HWDEVICE_TYPE_D3D11VA,
+-    AV_HWDEVICE_TYPE_DXVA2,
+-#elif defined(__unix__)
+-    AV_HWDEVICE_TYPE_VAAPI,
+-    AV_HWDEVICE_TYPE_VDPAU,
+-#endif
+-    // last resort for Linux Flatpak (w/ NVIDIA)
+-    AV_HWDEVICE_TYPE_VULKAN,
+-};
+-
+-void AVPacketDeleter(AVPacket* ptr) {
+-    av_packet_free(&ptr);
+-}
+-
+-using AVPacketPtr = std::unique_ptr<AVPacket, decltype(&AVPacketDeleter)>;
+-
+-AVPixelFormat GetGpuFormat(AVCodecContext* av_codec_ctx, const AVPixelFormat* pix_fmts) {
+-    for (const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
+-        if (*p == av_codec_ctx->pix_fmt) {
+-            return av_codec_ctx->pix_fmt;
+-        }
+-    }
+-    LOG_INFO(Service_NVDRV, "Could not find compatible GPU AV format, falling back to CPU");
+-    av_buffer_unref(&av_codec_ctx->hw_device_ctx);
+-    av_codec_ctx->pix_fmt = PREFERRED_CPU_FMT;
+-    return PREFERRED_CPU_FMT;
+-}
+-
+-// List all the currently available hwcontext in ffmpeg
+-std::vector<AVHWDeviceType> ListSupportedContexts() {
+-    std::vector<AVHWDeviceType> contexts{};
+-    AVHWDeviceType current_device_type = AV_HWDEVICE_TYPE_NONE;
+-    do {
+-        current_device_type = av_hwdevice_iterate_types(current_device_type);
+-        contexts.push_back(current_device_type);
+-    } while (current_device_type != AV_HWDEVICE_TYPE_NONE);
+-    return contexts;
+-}
+-
+-} // namespace
+-
+-void AVFrameDeleter(AVFrame* ptr) {
+-    av_frame_free(&ptr);
+-}
+ 
+ Codec::Codec(Host1x::Host1x& host1x_, const Host1x::NvdecCommon::NvdecRegisters& regs)
+     : host1x(host1x_), state{regs}, h264_decoder(std::make_unique<Decoder::H264>(host1x)),
+       vp8_decoder(std::make_unique<Decoder::VP8>(host1x)),
+       vp9_decoder(std::make_unique<Decoder::VP9>(host1x)) {}
+ 
+-Codec::~Codec() {
+-    if (!initialized) {
+-        return;
+-    }
+-    // Free libav memory
+-    avcodec_free_context(&av_codec_ctx);
+-    av_buffer_unref(&av_gpu_decoder);
+-
+-    if (filters_initialized) {
+-        avfilter_graph_free(&av_filter_graph);
+-    }
+-}
+-
+-bool Codec::CreateGpuAvDevice() {
+-    static constexpr auto HW_CONFIG_METHOD = AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX;
+-    static const auto supported_contexts = ListSupportedContexts();
+-    for (const auto& type : PREFERRED_GPU_DECODERS) {
+-        if (std::none_of(supported_contexts.begin(), supported_contexts.end(),
+-                         [&type](const auto& context) { return context == type; })) {
+-            LOG_DEBUG(Service_NVDRV, "{} explicitly unsupported", av_hwdevice_get_type_name(type));
+-            continue;
+-        }
+-        // Avoid memory leak from not cleaning up after av_hwdevice_ctx_create
+-        av_buffer_unref(&av_gpu_decoder);
+-        const int hwdevice_res = av_hwdevice_ctx_create(&av_gpu_decoder, type, nullptr, nullptr, 0);
+-        if (hwdevice_res < 0) {
+-            LOG_DEBUG(Service_NVDRV, "{} av_hwdevice_ctx_create failed {}",
+-                      av_hwdevice_get_type_name(type), hwdevice_res);
+-            continue;
+-        }
+-#ifdef LIBVA_FOUND
+-        if (type == AV_HWDEVICE_TYPE_VAAPI) {
+-            // we need to determine if this is an impersonated VAAPI driver
+-            AVHWDeviceContext* hwctx =
+-                static_cast<AVHWDeviceContext*>(static_cast<void*>(av_gpu_decoder->data));
+-            AVVAAPIDeviceContext* vactx = static_cast<AVVAAPIDeviceContext*>(hwctx->hwctx);
+-            const char* vendor_name = vaQueryVendorString(vactx->display);
+-            if (strstr(vendor_name, "VDPAU backend")) {
+-                // VDPAU impersonated VAAPI impl's are super buggy, we need to skip them
+-                LOG_DEBUG(Service_NVDRV, "Skipping vdapu impersonated VAAPI driver");
+-                continue;
+-            } else {
+-                // according to some user testing, certain vaapi driver (Intel?) could be buggy
+-                // so let's log the driver name which may help the developers/supporters
+-                LOG_DEBUG(Service_NVDRV, "Using VAAPI driver: {}", vendor_name);
+-            }
+-        }
+-#endif
+-        for (int i = 0;; i++) {
+-            const AVCodecHWConfig* config = avcodec_get_hw_config(av_codec, i);
+-            if (!config) {
+-                LOG_DEBUG(Service_NVDRV, "{} decoder does not support device type {}.",
+-                          av_codec->name, av_hwdevice_get_type_name(type));
+-                break;
+-            }
+-            if ((config->methods & HW_CONFIG_METHOD) != 0 && config->device_type == type) {
+-                LOG_INFO(Service_NVDRV, "Using {} GPU decoder", av_hwdevice_get_type_name(type));
+-                av_codec_ctx->pix_fmt = config->pix_fmt;
+-                return true;
+-            }
+-        }
+-    }
+-    return false;
+-}
+-
+-void Codec::InitializeAvCodecContext() {
+-    av_codec_ctx = avcodec_alloc_context3(av_codec);
+-    av_opt_set(av_codec_ctx->priv_data, "tune", "zerolatency", 0);
+-    av_codec_ctx->thread_count = 0;
+-    av_codec_ctx->thread_type &= ~FF_THREAD_FRAME;
+-}
+-
+-void Codec::InitializeGpuDecoder() {
+-    if (!CreateGpuAvDevice()) {
+-        av_buffer_unref(&av_gpu_decoder);
+-        return;
+-    }
+-    auto* hw_device_ctx = av_buffer_ref(av_gpu_decoder);
+-    ASSERT_MSG(hw_device_ctx, "av_buffer_ref failed");
+-    av_codec_ctx->hw_device_ctx = hw_device_ctx;
+-    av_codec_ctx->get_format = GetGpuFormat;
+-}
+-
+-void Codec::InitializeAvFilters(AVFrame* frame) {
+-    const AVFilter* buffer_src = avfilter_get_by_name("buffer");
+-    const AVFilter* buffer_sink = avfilter_get_by_name("buffersink");
+-    AVFilterInOut* inputs = avfilter_inout_alloc();
+-    AVFilterInOut* outputs = avfilter_inout_alloc();
+-    SCOPE_EXIT({
+-        avfilter_inout_free(&inputs);
+-        avfilter_inout_free(&outputs);
+-    });
+-
+-    // Don't know how to get the accurate time_base but it doesn't matter for yadif filter
+-    // so just use 1/1 to make buffer filter happy
+-    std::string args = fmt::format("video_size={}x{}:pix_fmt={}:time_base=1/1", frame->width,
+-                                   frame->height, frame->format);
+-
+-    av_filter_graph = avfilter_graph_alloc();
+-    int ret = avfilter_graph_create_filter(&av_filter_src_ctx, buffer_src, "in", args.c_str(),
+-                                           nullptr, av_filter_graph);
+-    if (ret < 0) {
+-        LOG_ERROR(Service_NVDRV, "avfilter_graph_create_filter source error: {}", ret);
+-        return;
+-    }
+-
+-    ret = avfilter_graph_create_filter(&av_filter_sink_ctx, buffer_sink, "out", nullptr, nullptr,
+-                                       av_filter_graph);
+-    if (ret < 0) {
+-        LOG_ERROR(Service_NVDRV, "avfilter_graph_create_filter sink error: {}", ret);
+-        return;
+-    }
+-
+-    inputs->name = av_strdup("out");
+-    inputs->filter_ctx = av_filter_sink_ctx;
+-    inputs->pad_idx = 0;
+-    inputs->next = nullptr;
+-
+-    outputs->name = av_strdup("in");
+-    outputs->filter_ctx = av_filter_src_ctx;
+-    outputs->pad_idx = 0;
+-    outputs->next = nullptr;
+-
+-    const char* description = "yadif=1:-1:0";
+-    ret = avfilter_graph_parse_ptr(av_filter_graph, description, &inputs, &outputs, nullptr);
+-    if (ret < 0) {
+-        LOG_ERROR(Service_NVDRV, "avfilter_graph_parse_ptr error: {}", ret);
+-        return;
+-    }
+-
+-    ret = avfilter_graph_config(av_filter_graph, nullptr);
+-    if (ret < 0) {
+-        LOG_ERROR(Service_NVDRV, "avfilter_graph_config error: {}", ret);
+-        return;
+-    }
+-
+-    filters_initialized = true;
+-}
++Codec::~Codec() = default;
+ 
+ void Codec::Initialize() {
+-    const AVCodecID codec = [&] {
+-        switch (current_codec) {
+-        case Host1x::NvdecCommon::VideoCodec::H264:
+-            return AV_CODEC_ID_H264;
+-        case Host1x::NvdecCommon::VideoCodec::VP8:
+-            return AV_CODEC_ID_VP8;
+-        case Host1x::NvdecCommon::VideoCodec::VP9:
+-            return AV_CODEC_ID_VP9;
+-        default:
+-            UNIMPLEMENTED_MSG("Unknown codec {}", current_codec);
+-            return AV_CODEC_ID_NONE;
+-        }
+-    }();
+-    av_codec = avcodec_find_decoder(codec);
+-
+-    InitializeAvCodecContext();
+-    if (Settings::values.nvdec_emulation.GetValue() == Settings::NvdecEmulation::Gpu) {
+-        InitializeGpuDecoder();
+-    }
+-    if (const int res = avcodec_open2(av_codec_ctx, av_codec, nullptr); res < 0) {
+-        LOG_ERROR(Service_NVDRV, "avcodec_open2() Failed with result {}", res);
+-        avcodec_free_context(&av_codec_ctx);
+-        av_buffer_unref(&av_gpu_decoder);
+-        return;
+-    }
+-    if (!av_codec_ctx->hw_device_ctx) {
+-        LOG_INFO(Service_NVDRV, "Using FFmpeg software decoding");
+-    }
+-    initialized = true;
++    initialized = decode_api.Initialize(current_codec);
+ }
+ 
+ void Codec::SetTargetCodec(Host1x::NvdecCommon::VideoCodec codec) {
+@@ -264,14 +35,18 @@ void Codec::Decode() {
+     if (is_first_frame) {
+         Initialize();
+     }
++
+     if (!initialized) {
+         return;
+     }
++
++    // Assemble bitstream.
+     bool vp9_hidden_frame = false;
+-    const auto& frame_data = [&]() {
++    size_t configuration_size = 0;
++    const auto packet_data = [&]() {
+         switch (current_codec) {
+         case Tegra::Host1x::NvdecCommon::VideoCodec::H264:
+-            return h264_decoder->ComposeFrame(state, is_first_frame);
++            return h264_decoder->ComposeFrame(state, &configuration_size, is_first_frame);
+         case Tegra::Host1x::NvdecCommon::VideoCodec::VP8:
+             return vp8_decoder->ComposeFrame(state);
+         case Tegra::Host1x::NvdecCommon::VideoCodec::VP9:
+@@ -283,89 +58,35 @@ void Codec::Decode() {
+             return std::span<const u8>{};
+         }
+     }();
+-    AVPacketPtr packet{av_packet_alloc(), AVPacketDeleter};
+-    if (!packet) {
+-        LOG_ERROR(Service_NVDRV, "av_packet_alloc failed");
+-        return;
+-    }
+-    packet->data = const_cast<u8*>(frame_data.data());
+-    packet->size = static_cast<s32>(frame_data.size());
+-    if (const int res = avcodec_send_packet(av_codec_ctx, packet.get()); res != 0) {
+-        LOG_DEBUG(Service_NVDRV, "avcodec_send_packet error {}", res);
++
++    // Send assembled bitstream to decoder.
++    if (!decode_api.SendPacket(packet_data, configuration_size)) {
+         return;
+     }
+-    // Only receive/store visible frames
++
++    // Only receive/store visible frames.
+     if (vp9_hidden_frame) {
+         return;
+     }
+-    AVFramePtr initial_frame{av_frame_alloc(), AVFrameDeleter};
+-    AVFramePtr final_frame{nullptr, AVFrameDeleter};
+-    ASSERT_MSG(initial_frame, "av_frame_alloc initial_frame failed");
+-    if (const int ret = avcodec_receive_frame(av_codec_ctx, initial_frame.get()); ret) {
+-        LOG_DEBUG(Service_NVDRV, "avcodec_receive_frame error {}", ret);
+-        return;
+-    }
+-    if (initial_frame->width == 0 || initial_frame->height == 0) {
+-        LOG_WARNING(Service_NVDRV, "Zero width or height in frame");
+-        return;
+-    }
+-    bool is_interlaced = initial_frame->interlaced_frame != 0;
+-    if (av_codec_ctx->hw_device_ctx) {
+-        final_frame = AVFramePtr{av_frame_alloc(), AVFrameDeleter};
+-        ASSERT_MSG(final_frame, "av_frame_alloc final_frame failed");
+-        // Can't use AV_PIX_FMT_YUV420P and share code with software decoding in vic.cpp
+-        // because Intel drivers crash unless using AV_PIX_FMT_NV12
+-        final_frame->format = PREFERRED_GPU_FMT;
+-        const int ret = av_hwframe_transfer_data(final_frame.get(), initial_frame.get(), 0);
+-        ASSERT_MSG(!ret, "av_hwframe_transfer_data error {}", ret);
+-    } else {
+-        final_frame = std::move(initial_frame);
+-    }
+-    if (final_frame->format != PREFERRED_CPU_FMT && final_frame->format != PREFERRED_GPU_FMT) {
+-        UNIMPLEMENTED_MSG("Unexpected video format: {}", final_frame->format);
+-        return;
+-    }
+-    if (!is_interlaced) {
+-        av_frames.push(std::move(final_frame));
+-    } else {
+-        if (!filters_initialized) {
+-            InitializeAvFilters(final_frame.get());
+-        }
+-        if (const int ret = av_buffersrc_add_frame_flags(av_filter_src_ctx, final_frame.get(),
+-                                                         AV_BUFFERSRC_FLAG_KEEP_REF);
+-            ret) {
+-            LOG_DEBUG(Service_NVDRV, "av_buffersrc_add_frame_flags error {}", ret);
+-            return;
+-        }
+-        while (true) {
+-            auto filter_frame = AVFramePtr{av_frame_alloc(), AVFrameDeleter};
+ 
+-            int ret = av_buffersink_get_frame(av_filter_sink_ctx, filter_frame.get());
++    // Receive output frames from decoder.
++    decode_api.ReceiveFrames(frames);
+ 
+-            if (ret == AVERROR(EAGAIN) || ret == AVERROR(AVERROR_EOF))
+-                break;
+-            if (ret < 0) {
+-                LOG_DEBUG(Service_NVDRV, "av_buffersink_get_frame error {}", ret);
+-                return;
+-            }
+-
+-            av_frames.push(std::move(filter_frame));
+-        }
+-    }
+-    while (av_frames.size() > 10) {
+-        LOG_TRACE(Service_NVDRV, "av_frames.push overflow dropped frame");
+-        av_frames.pop();
++    while (frames.size() > 10) {
++        LOG_DEBUG(HW_GPU, "ReceiveFrames overflow, dropped frame");
++        frames.pop();
+     }
+ }
+ 
+-AVFramePtr Codec::GetCurrentFrame() {
++std::unique_ptr<FFmpeg::Frame> Codec::GetCurrentFrame() {
+     // Sometimes VIC will request more frames than have been decoded.
+-    // in this case, return a nullptr and don't overwrite previous frame data
+-    if (av_frames.empty()) {
+-        return AVFramePtr{nullptr, AVFrameDeleter};
++    // in this case, return a blank frame and don't overwrite previous data.
++    if (frames.empty()) {
++        return {};
+     }
+-    AVFramePtr frame = std::move(av_frames.front());
+-    av_frames.pop();
++
++    auto frame = std::move(frames.front());
++    frames.pop();
+     return frame;
+ }
+ 
+diff --git a/src/video_core/host1x/codecs/codec.h b/src/video_core/host1x/codecs/codec.h
+index 06fe00a4b1ee..f700ae129355 100644
+--- a/src/video_core/host1x/codecs/codec.h
++++ b/src/video_core/host1x/codecs/codec.h
+@@ -4,28 +4,15 @@
+ #pragma once
+ 
+ #include <memory>
++#include <optional>
+ #include <string_view>
+ #include <queue>
+ #include "common/common_types.h"
++#include "video_core/host1x/ffmpeg/ffmpeg.h"
+ #include "video_core/host1x/nvdec_common.h"
+ 
+-extern "C" {
+-#if defined(__GNUC__) || defined(__clang__)
+-#pragma GCC diagnostic push
+-#pragma GCC diagnostic ignored "-Wconversion"
+-#endif
+-#include <libavcodec/avcodec.h>
+-#include <libavfilter/avfilter.h>
+-#if defined(__GNUC__) || defined(__clang__)
+-#pragma GCC diagnostic pop
+-#endif
+-}
+-
+ namespace Tegra {
+ 
+-void AVFrameDeleter(AVFrame* ptr);
+-using AVFramePtr = std::unique_ptr<AVFrame, decltype(&AVFrameDeleter)>;
+-
+ namespace Decoder {
+ class H264;
+ class VP8;
+@@ -51,7 +38,7 @@ class Codec {
+     void Decode();
+ 
+     /// Returns next decoded frame
+-    [[nodiscard]] AVFramePtr GetCurrentFrame();
++    [[nodiscard]] std::unique_ptr<FFmpeg::Frame> GetCurrentFrame();
+ 
+     /// Returns the value of current_codec
+     [[nodiscard]] Host1x::NvdecCommon::VideoCodec GetCurrentCodec() const;
+@@ -60,25 +47,9 @@ class Codec {
+     [[nodiscard]] std::string_view GetCurrentCodecName() const;
+ 
+ private:
+-    void InitializeAvCodecContext();
+-
+-    void InitializeAvFilters(AVFrame* frame);
+-
+-    void InitializeGpuDecoder();
+-
+-    bool CreateGpuAvDevice();
+-
+     bool initialized{};
+-    bool filters_initialized{};
+     Host1x::NvdecCommon::VideoCodec current_codec{Host1x::NvdecCommon::VideoCodec::None};
+-
+-    const AVCodec* av_codec{nullptr};
+-    AVCodecContext* av_codec_ctx{nullptr};
+-    AVBufferRef* av_gpu_decoder{nullptr};
+-
+-    AVFilterContext* av_filter_src_ctx{nullptr};
+-    AVFilterContext* av_filter_sink_ctx{nullptr};
+-    AVFilterGraph* av_filter_graph{nullptr};
++    FFmpeg::DecodeApi decode_api;
+ 
+     Host1x::Host1x& host1x;
+     const Host1x::NvdecCommon::NvdecRegisters& state;
+@@ -86,7 +57,7 @@ class Codec {
+     std::unique_ptr<Decoder::VP8> vp8_decoder;
+     std::unique_ptr<Decoder::VP9> vp9_decoder;
+ 
+-    std::queue<AVFramePtr> av_frames{};
++    std::queue<std::unique_ptr<FFmpeg::Frame>> frames{};
+ };
+ 
+ } // namespace Tegra
+diff --git a/src/video_core/host1x/codecs/h264.cpp b/src/video_core/host1x/codecs/h264.cpp
+index ece79b1e25fb..309a7f1d5423 100644
+--- a/src/video_core/host1x/codecs/h264.cpp
++++ b/src/video_core/host1x/codecs/h264.cpp
+@@ -30,7 +30,7 @@ H264::H264(Host1x::Host1x& host1x_) : host1x{host1x_} {}
+ H264::~H264() = default;
+ 
+ std::span<const u8> H264::ComposeFrame(const Host1x::NvdecCommon::NvdecRegisters& state,
+-                                       bool is_first_frame) {
++                                       size_t* out_configuration_size, bool is_first_frame) {
+     H264DecoderContext context;
+     host1x.MemoryManager().ReadBlock(state.picture_info_offset, &context,
+                                      sizeof(H264DecoderContext));
+@@ -39,6 +39,7 @@ std::span<const u8> H264::ComposeFrame(const Host1x::NvdecCommon::NvdecRegisters
+     if (!is_first_frame && frame_number != 0) {
+         frame.resize_destructive(context.stream_len);
+         host1x.MemoryManager().ReadBlock(state.frame_bitstream_offset, frame.data(), frame.size());
++        *out_configuration_size = 0;
+         return frame;
+     }
+ 
+@@ -157,6 +158,7 @@ std::span<const u8> H264::ComposeFrame(const Host1x::NvdecCommon::NvdecRegisters
+     frame.resize(encoded_header.size() + context.stream_len);
+     std::memcpy(frame.data(), encoded_header.data(), encoded_header.size());
+ 
++    *out_configuration_size = encoded_header.size();
+     host1x.MemoryManager().ReadBlock(state.frame_bitstream_offset,
+                                      frame.data() + encoded_header.size(), context.stream_len);
+ 
+diff --git a/src/video_core/host1x/codecs/h264.h b/src/video_core/host1x/codecs/h264.h
+index d6b55632232c..1deaf46320a6 100644
+--- a/src/video_core/host1x/codecs/h264.h
++++ b/src/video_core/host1x/codecs/h264.h
+@@ -67,6 +67,7 @@ class H264 {
+ 
+     /// Compose the H264 frame for FFmpeg decoding
+     [[nodiscard]] std::span<const u8> ComposeFrame(const Host1x::NvdecCommon::NvdecRegisters& state,
++                                                   size_t* out_configuration_size,
+                                                    bool is_first_frame = false);
+ 
+ private:
+diff --git a/src/video_core/host1x/ffmpeg/ffmpeg.cpp b/src/video_core/host1x/ffmpeg/ffmpeg.cpp
+new file mode 100644
+index 000000000000..dcd07e6d2526
+--- /dev/null
++++ b/src/video_core/host1x/ffmpeg/ffmpeg.cpp
+@@ -0,0 +1,419 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "common/assert.h"
++#include "common/logging/log.h"
++#include "common/scope_exit.h"
++#include "common/settings.h"
++#include "video_core/host1x/ffmpeg/ffmpeg.h"
++
++extern "C" {
++#ifdef LIBVA_FOUND
++// for querying VAAPI driver information
++#include <libavutil/hwcontext_vaapi.h>
++#endif
++}
++
++namespace FFmpeg {
++
++namespace {
++
++constexpr AVPixelFormat PreferredGpuFormat = AV_PIX_FMT_NV12;
++constexpr AVPixelFormat PreferredCpuFormat = AV_PIX_FMT_YUV420P;
++constexpr std::array PreferredGpuDecoders = {
++    AV_HWDEVICE_TYPE_CUDA,
++#ifdef _WIN32
++    AV_HWDEVICE_TYPE_D3D11VA,
++    AV_HWDEVICE_TYPE_DXVA2,
++#elif defined(__unix__)
++    AV_HWDEVICE_TYPE_VAAPI,
++    AV_HWDEVICE_TYPE_VDPAU,
++#endif
++    // last resort for Linux Flatpak (w/ NVIDIA)
++    AV_HWDEVICE_TYPE_VULKAN,
++};
++
++AVPixelFormat GetGpuFormat(AVCodecContext* codec_context, const AVPixelFormat* pix_fmts) {
++    for (const AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
++        if (*p == codec_context->pix_fmt) {
++            return codec_context->pix_fmt;
++        }
++    }
++
++    LOG_INFO(HW_GPU, "Could not find compatible GPU AV format, falling back to CPU");
++    av_buffer_unref(&codec_context->hw_device_ctx);
++
++    codec_context->pix_fmt = PreferredCpuFormat;
++    return codec_context->pix_fmt;
++}
++
++std::string AVError(int errnum) {
++    char errbuf[AV_ERROR_MAX_STRING_SIZE] = {};
++    av_make_error_string(errbuf, sizeof(errbuf) - 1, errnum);
++    return errbuf;
++}
++
++} // namespace
++
++Packet::Packet(std::span<const u8> data) {
++    m_packet = av_packet_alloc();
++    m_packet->data = const_cast<u8*>(data.data());
++    m_packet->size = static_cast<s32>(data.size());
++}
++
++Packet::~Packet() {
++    av_packet_free(&m_packet);
++}
++
++Frame::Frame() {
++    m_frame = av_frame_alloc();
++}
++
++Frame::~Frame() {
++    av_frame_free(&m_frame);
++}
++
++Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
++    const AVCodecID av_codec = [&] {
++        switch (codec) {
++        case Tegra::Host1x::NvdecCommon::VideoCodec::H264:
++            return AV_CODEC_ID_H264;
++        case Tegra::Host1x::NvdecCommon::VideoCodec::VP8:
++            return AV_CODEC_ID_VP8;
++        case Tegra::Host1x::NvdecCommon::VideoCodec::VP9:
++            return AV_CODEC_ID_VP9;
++        default:
++            UNIMPLEMENTED_MSG("Unknown codec {}", codec);
++            return AV_CODEC_ID_NONE;
++        }
++    }();
++
++    m_codec = avcodec_find_decoder(av_codec);
++}
++
++bool Decoder::SupportsDecodingOnDevice(AVPixelFormat* out_pix_fmt, AVHWDeviceType type) const {
++    for (int i = 0;; i++) {
++        const AVCodecHWConfig* config = avcodec_get_hw_config(m_codec, i);
++        if (!config) {
++            LOG_DEBUG(HW_GPU, "{} decoder does not support device type {}", m_codec->name,
++                      av_hwdevice_get_type_name(type));
++            break;
++        }
++        if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0 &&
++            config->device_type == type) {
++            LOG_INFO(HW_GPU, "Using {} GPU decoder", av_hwdevice_get_type_name(type));
++            *out_pix_fmt = config->pix_fmt;
++            return true;
++        }
++    }
++
++    return false;
++}
++
++std::vector<AVHWDeviceType> HardwareContext::GetSupportedDeviceTypes() {
++    std::vector<AVHWDeviceType> types;
++    AVHWDeviceType current_device_type = AV_HWDEVICE_TYPE_NONE;
++
++    while (true) {
++        current_device_type = av_hwdevice_iterate_types(current_device_type);
++        if (current_device_type == AV_HWDEVICE_TYPE_NONE) {
++            return types;
++        }
++
++        types.push_back(current_device_type);
++    }
++}
++
++HardwareContext::~HardwareContext() {
++    av_buffer_unref(&m_gpu_decoder);
++}
++
++bool HardwareContext::InitializeForDecoder(DecoderContext& decoder_context,
++                                           const Decoder& decoder) {
++    const auto supported_types = GetSupportedDeviceTypes();
++    for (const auto type : PreferredGpuDecoders) {
++        AVPixelFormat hw_pix_fmt;
++
++        if (std::ranges::find(supported_types, type) == supported_types.end()) {
++            LOG_DEBUG(HW_GPU, "{} explicitly unsupported", av_hwdevice_get_type_name(type));
++            continue;
++        }
++
++        if (!this->InitializeWithType(type)) {
++            continue;
++        }
++
++        if (decoder.SupportsDecodingOnDevice(&hw_pix_fmt, type)) {
++            decoder_context.InitializeHardwareDecoder(*this, hw_pix_fmt);
++            return true;
++        }
++    }
++
++    return false;
++}
++
++bool HardwareContext::InitializeWithType(AVHWDeviceType type) {
++    av_buffer_unref(&m_gpu_decoder);
++
++    if (const int ret = av_hwdevice_ctx_create(&m_gpu_decoder, type, nullptr, nullptr, 0);
++        ret < 0) {
++        LOG_DEBUG(HW_GPU, "av_hwdevice_ctx_create({}) failed: {}", av_hwdevice_get_type_name(type),
++                  AVError(ret));
++        return false;
++    }
++
++#ifdef LIBVA_FOUND
++    if (type == AV_HWDEVICE_TYPE_VAAPI) {
++        // We need to determine if this is an impersonated VAAPI driver.
++        auto* hwctx = reinterpret_cast<AVHWDeviceContext*>(m_gpu_decoder->data);
++        auto* vactx = static_cast<AVVAAPIDeviceContext*>(hwctx->hwctx);
++        const char* vendor_name = vaQueryVendorString(vactx->display);
++        if (strstr(vendor_name, "VDPAU backend")) {
++            // VDPAU impersonated VAAPI impls are super buggy, we need to skip them.
++            LOG_DEBUG(HW_GPU, "Skipping VDPAU impersonated VAAPI driver");
++            return false;
++        } else {
++            // According to some user testing, certain VAAPI drivers (Intel?) could be buggy.
++            // Log the driver name just in case.
++            LOG_DEBUG(HW_GPU, "Using VAAPI driver: {}", vendor_name);
++        }
++    }
++#endif
++
++    return true;
++}
++
++DecoderContext::DecoderContext(const Decoder& decoder) {
++    m_codec_context = avcodec_alloc_context3(decoder.GetCodec());
++    av_opt_set(m_codec_context->priv_data, "tune", "zerolatency", 0);
++    m_codec_context->thread_count = 0;
++    m_codec_context->thread_type &= ~FF_THREAD_FRAME;
++}
++
++DecoderContext::~DecoderContext() {
++    av_buffer_unref(&m_codec_context->hw_device_ctx);
++    avcodec_free_context(&m_codec_context);
++}
++
++void DecoderContext::InitializeHardwareDecoder(const HardwareContext& context,
++                                               AVPixelFormat hw_pix_fmt) {
++    m_codec_context->hw_device_ctx = av_buffer_ref(context.GetBufferRef());
++    m_codec_context->get_format = GetGpuFormat;
++    m_codec_context->pix_fmt = hw_pix_fmt;
++}
++
++bool DecoderContext::OpenContext(const Decoder& decoder) {
++    if (const int ret = avcodec_open2(m_codec_context, decoder.GetCodec(), nullptr); ret < 0) {
++        LOG_ERROR(HW_GPU, "avcodec_open2 error: {}", AVError(ret));
++        return false;
++    }
++
++    if (!m_codec_context->hw_device_ctx) {
++        LOG_INFO(HW_GPU, "Using FFmpeg software decoding");
++    }
++
++    return true;
++}
++
++bool DecoderContext::SendPacket(const Packet& packet) {
++    if (const int ret = avcodec_send_packet(m_codec_context, packet.GetPacket()); ret < 0) {
++        LOG_ERROR(HW_GPU, "avcodec_send_packet error: {}", AVError(ret));
++        return false;
++    }
++
++    return true;
++}
++
++std::unique_ptr<Frame> DecoderContext::ReceiveFrame(bool* out_is_interlaced) {
++    auto dst_frame = std::make_unique<Frame>();
++
++    const auto ReceiveImpl = [&](AVFrame* frame) {
++        if (const int ret = avcodec_receive_frame(m_codec_context, frame); ret < 0) {
++            LOG_ERROR(HW_GPU, "avcodec_receive_frame error: {}", AVError(ret));
++            return false;
++        }
++
++        *out_is_interlaced = frame->interlaced_frame != 0;
++        return true;
++    };
++
++    if (m_codec_context->hw_device_ctx) {
++        // If we have a hardware context, make a separate frame here to receive the
++        // hardware result before sending it to the output.
++        Frame intermediate_frame;
++
++        if (!ReceiveImpl(intermediate_frame.GetFrame())) {
++            return {};
++        }
++
++        dst_frame->SetFormat(PreferredGpuFormat);
++        if (const int ret =
++                av_hwframe_transfer_data(dst_frame->GetFrame(), intermediate_frame.GetFrame(), 0);
++            ret < 0) {
++            LOG_ERROR(HW_GPU, "av_hwframe_transfer_data error: {}", AVError(ret));
++            return {};
++        }
++    } else {
++        // Otherwise, decode the frame as normal.
++        if (!ReceiveImpl(dst_frame->GetFrame())) {
++            return {};
++        }
++    }
++
++    return dst_frame;
++}
++
++DeinterlaceFilter::DeinterlaceFilter(const Frame& frame) {
++    const AVFilter* buffer_src = avfilter_get_by_name("buffer");
++    const AVFilter* buffer_sink = avfilter_get_by_name("buffersink");
++    AVFilterInOut* inputs = avfilter_inout_alloc();
++    AVFilterInOut* outputs = avfilter_inout_alloc();
++    SCOPE_EXIT({
++        avfilter_inout_free(&inputs);
++        avfilter_inout_free(&outputs);
++    });
++
++    // Don't know how to get the accurate time_base but it doesn't matter for yadif filter
++    // so just use 1/1 to make buffer filter happy
++    std::string args = fmt::format("video_size={}x{}:pix_fmt={}:time_base=1/1", frame.GetWidth(),
++                                   frame.GetHeight(), static_cast<int>(frame.GetPixelFormat()));
++
++    m_filter_graph = avfilter_graph_alloc();
++    int ret = avfilter_graph_create_filter(&m_source_context, buffer_src, "in", args.c_str(),
++                                           nullptr, m_filter_graph);
++    if (ret < 0) {
++        LOG_ERROR(HW_GPU, "avfilter_graph_create_filter source error: {}", AVError(ret));
++        return;
++    }
++
++    ret = avfilter_graph_create_filter(&m_sink_context, buffer_sink, "out", nullptr, nullptr,
++                                       m_filter_graph);
++    if (ret < 0) {
++        LOG_ERROR(HW_GPU, "avfilter_graph_create_filter sink error: {}", AVError(ret));
++        return;
++    }
++
++    inputs->name = av_strdup("out");
++    inputs->filter_ctx = m_sink_context;
++    inputs->pad_idx = 0;
++    inputs->next = nullptr;
++
++    outputs->name = av_strdup("in");
++    outputs->filter_ctx = m_source_context;
++    outputs->pad_idx = 0;
++    outputs->next = nullptr;
++
++    const char* description = "yadif=1:-1:0";
++    ret = avfilter_graph_parse_ptr(m_filter_graph, description, &inputs, &outputs, nullptr);
++    if (ret < 0) {
++        LOG_ERROR(HW_GPU, "avfilter_graph_parse_ptr error: {}", AVError(ret));
++        return;
++    }
++
++    ret = avfilter_graph_config(m_filter_graph, nullptr);
++    if (ret < 0) {
++        LOG_ERROR(HW_GPU, "avfilter_graph_config error: {}", AVError(ret));
++        return;
++    }
++
++    m_initialized = true;
++}
++
++bool DeinterlaceFilter::AddSourceFrame(const Frame& frame) {
++    if (const int ret = av_buffersrc_add_frame_flags(m_source_context, frame.GetFrame(),
++                                                     AV_BUFFERSRC_FLAG_KEEP_REF);
++        ret < 0) {
++        LOG_ERROR(HW_GPU, "av_buffersrc_add_frame_flags error: {}", AVError(ret));
++        return false;
++    }
++
++    return true;
++}
++
++std::unique_ptr<Frame> DeinterlaceFilter::DrainSinkFrame() {
++    auto dst_frame = std::make_unique<Frame>();
++    const int ret = av_buffersink_get_frame(m_sink_context, dst_frame->GetFrame());
++
++    if (ret == AVERROR(EAGAIN) || ret == AVERROR(AVERROR_EOF)) {
++        return {};
++    }
++
++    if (ret < 0) {
++        LOG_ERROR(HW_GPU, "av_buffersink_get_frame error: {}", AVError(ret));
++        return {};
++    }
++
++    return dst_frame;
++}
++
++DeinterlaceFilter::~DeinterlaceFilter() {
++    avfilter_graph_free(&m_filter_graph);
++}
++
++void DecodeApi::Reset() {
++    m_deinterlace_filter.reset();
++    m_hardware_context.reset();
++    m_decoder_context.reset();
++    m_decoder.reset();
++}
++
++bool DecodeApi::Initialize(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
++    this->Reset();
++    m_decoder.emplace(codec);
++    m_decoder_context.emplace(*m_decoder);
++
++    // Enable GPU decoding if requested.
++    if (Settings::values.nvdec_emulation.GetValue() == Settings::NvdecEmulation::Gpu) {
++        m_hardware_context.emplace();
++        m_hardware_context->InitializeForDecoder(*m_decoder_context, *m_decoder);
++    }
++
++    // Open the decoder context.
++    if (!m_decoder_context->OpenContext(*m_decoder)) {
++        this->Reset();
++        return false;
++    }
++
++    return true;
++}
++
++bool DecodeApi::SendPacket(std::span<const u8> packet_data, size_t configuration_size) {
++    FFmpeg::Packet packet(packet_data);
++    return m_decoder_context->SendPacket(packet);
++}
++
++void DecodeApi::ReceiveFrames(std::queue<std::unique_ptr<Frame>>& frame_queue) {
++    // Receive raw frame from decoder.
++    bool is_interlaced;
++    auto frame = m_decoder_context->ReceiveFrame(&is_interlaced);
++    if (!frame) {
++        return;
++    }
++
++    if (!is_interlaced) {
++        // If the frame is not interlaced, we can pend it now.
++        frame_queue.push(std::move(frame));
++    } else {
++        // Create the deinterlacer if needed.
++        if (!m_deinterlace_filter) {
++            m_deinterlace_filter.emplace(*frame);
++        }
++
++        // Add the frame we just received.
++        if (!m_deinterlace_filter->AddSourceFrame(*frame)) {
++            return;
++        }
++
++        // Pend output fields.
++        while (true) {
++            auto filter_frame = m_deinterlace_filter->DrainSinkFrame();
++            if (!filter_frame) {
++                break;
++            }
++
++            frame_queue.push(std::move(filter_frame));
++        }
++    }
++}
++
++} // namespace FFmpeg
+diff --git a/src/video_core/host1x/ffmpeg/ffmpeg.h b/src/video_core/host1x/ffmpeg/ffmpeg.h
+new file mode 100644
+index 000000000000..1de0bbd83933
+--- /dev/null
++++ b/src/video_core/host1x/ffmpeg/ffmpeg.h
+@@ -0,0 +1,213 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <memory>
++#include <optional>
++#include <span>
++#include <vector>
++#include <queue>
++
++#include "common/common_funcs.h"
++#include "common/common_types.h"
++#include "video_core/host1x/nvdec_common.h"
++
++extern "C" {
++#if defined(__GNUC__) || defined(__clang__)
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wconversion"
++#endif
++
++#include <libavcodec/avcodec.h>
++#include <libavfilter/avfilter.h>
++#include <libavfilter/buffersink.h>
++#include <libavfilter/buffersrc.h>
++#include <libavutil/avutil.h>
++#include <libavutil/opt.h>
++
++#if defined(__GNUC__) || defined(__clang__)
++#pragma GCC diagnostic pop
++#endif
++}
++
++namespace FFmpeg {
++
++class Packet;
++class Frame;
++class Decoder;
++class HardwareContext;
++class DecoderContext;
++class DeinterlaceFilter;
++
++// Wraps an AVPacket, a container for compressed bitstream data.
++class Packet {
++public:
++    YUZU_NON_COPYABLE(Packet);
++    YUZU_NON_MOVEABLE(Packet);
++
++    explicit Packet(std::span<const u8> data);
++    ~Packet();
++
++    AVPacket* GetPacket() const {
++        return m_packet;
++    }
++
++private:
++    AVPacket* m_packet{};
++};
++
++// Wraps an AVFrame, a container for audio and video stream data.
++class Frame {
++public:
++    YUZU_NON_COPYABLE(Frame);
++    YUZU_NON_MOVEABLE(Frame);
++
++    explicit Frame();
++    ~Frame();
++
++    int GetWidth() const {
++        return m_frame->width;
++    }
++
++    int GetHeight() const {
++        return m_frame->height;
++    }
++
++    AVPixelFormat GetPixelFormat() const {
++        return static_cast<AVPixelFormat>(m_frame->format);
++    }
++
++    int GetStride(int plane) const {
++        return m_frame->linesize[plane];
++    }
++
++    int* GetStrides() const {
++        return m_frame->linesize;
++    }
++
++    u8* GetData(int plane) const {
++        return m_frame->data[plane];
++    }
++
++    u8** GetPlanes() const {
++        return m_frame->data;
++    }
++
++    void SetFormat(int format) {
++        m_frame->format = format;
++    }
++
++    AVFrame* GetFrame() const {
++        return m_frame;
++    }
++
++private:
++    AVFrame* m_frame{};
++};
++
++// Wraps an AVCodec, a type containing information about a codec.
++class Decoder {
++public:
++    YUZU_NON_COPYABLE(Decoder);
++    YUZU_NON_MOVEABLE(Decoder);
++
++    explicit Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec);
++    ~Decoder() = default;
++
++    bool SupportsDecodingOnDevice(AVPixelFormat* out_pix_fmt, AVHWDeviceType type) const;
++
++    const AVCodec* GetCodec() const {
++        return m_codec;
++    }
++
++private:
++    const AVCodec* m_codec{};
++};
++
++// Wraps AVBufferRef for an accelerated decoder.
++class HardwareContext {
++public:
++    YUZU_NON_COPYABLE(HardwareContext);
++    YUZU_NON_MOVEABLE(HardwareContext);
++
++    static std::vector<AVHWDeviceType> GetSupportedDeviceTypes();
++
++    explicit HardwareContext() = default;
++    ~HardwareContext();
++
++    bool InitializeForDecoder(DecoderContext& decoder_context, const Decoder& decoder);
++
++    AVBufferRef* GetBufferRef() const {
++        return m_gpu_decoder;
++    }
++
++private:
++    bool InitializeWithType(AVHWDeviceType type);
++
++    AVBufferRef* m_gpu_decoder{};
++};
++
++// Wraps an AVCodecContext.
++class DecoderContext {
++public:
++    YUZU_NON_COPYABLE(DecoderContext);
++    YUZU_NON_MOVEABLE(DecoderContext);
++
++    explicit DecoderContext(const Decoder& decoder);
++    ~DecoderContext();
++
++    void InitializeHardwareDecoder(const HardwareContext& context, AVPixelFormat hw_pix_fmt);
++    bool OpenContext(const Decoder& decoder);
++    bool SendPacket(const Packet& packet);
++    std::unique_ptr<Frame> ReceiveFrame(bool* out_is_interlaced);
++
++    AVCodecContext* GetCodecContext() const {
++        return m_codec_context;
++    }
++
++private:
++    AVCodecContext* m_codec_context{};
++};
++
++// Wraps an AVFilterGraph.
++class DeinterlaceFilter {
++public:
++    YUZU_NON_COPYABLE(DeinterlaceFilter);
++    YUZU_NON_MOVEABLE(DeinterlaceFilter);
++
++    explicit DeinterlaceFilter(const Frame& frame);
++    ~DeinterlaceFilter();
++
++    bool AddSourceFrame(const Frame& frame);
++    std::unique_ptr<Frame> DrainSinkFrame();
++
++private:
++    AVFilterGraph* m_filter_graph{};
++    AVFilterContext* m_source_context{};
++    AVFilterContext* m_sink_context{};
++    bool m_initialized{};
++};
++
++class DecodeApi {
++public:
++    YUZU_NON_COPYABLE(DecodeApi);
++    YUZU_NON_MOVEABLE(DecodeApi);
++
++    DecodeApi() = default;
++    ~DecodeApi() = default;
++
++    bool Initialize(Tegra::Host1x::NvdecCommon::VideoCodec codec);
++    void Reset();
++
++    bool SendPacket(std::span<const u8> packet_data, size_t configuration_size);
++    void ReceiveFrames(std::queue<std::unique_ptr<Frame>>& frame_queue);
++
++private:
++    std::optional<FFmpeg::Decoder> m_decoder;
++    std::optional<FFmpeg::DecoderContext> m_decoder_context;
++    std::optional<FFmpeg::HardwareContext> m_hardware_context;
++    std::optional<FFmpeg::DeinterlaceFilter> m_deinterlace_filter;
++};
++
++} // namespace FFmpeg
+diff --git a/src/video_core/host1x/nvdec.cpp b/src/video_core/host1x/nvdec.cpp
+index a4bd5b79ffc5..b8f5866d3c57 100644
+--- a/src/video_core/host1x/nvdec.cpp
++++ b/src/video_core/host1x/nvdec.cpp
+@@ -28,7 +28,7 @@ void Nvdec::ProcessMethod(u32 method, u32 argument) {
+     }
+ }
+ 
+-AVFramePtr Nvdec::GetFrame() {
++std::unique_ptr<FFmpeg::Frame> Nvdec::GetFrame() {
+     return codec->GetCurrentFrame();
+ }
+ 
+diff --git a/src/video_core/host1x/nvdec.h b/src/video_core/host1x/nvdec.h
+index 3949d51815d4..ddddb8d281e3 100644
+--- a/src/video_core/host1x/nvdec.h
++++ b/src/video_core/host1x/nvdec.h
+@@ -23,7 +23,7 @@ class Nvdec {
+     void ProcessMethod(u32 method, u32 argument);
+ 
+     /// Return most recently decoded frame
+-    [[nodiscard]] AVFramePtr GetFrame();
++    [[nodiscard]] std::unique_ptr<FFmpeg::Frame> GetFrame();
+ 
+ private:
+     /// Invoke codec to decode a frame
+diff --git a/src/video_core/host1x/vic.cpp b/src/video_core/host1x/vic.cpp
+index 10d7ef884210..2a5eba415a86 100644
+--- a/src/video_core/host1x/vic.cpp
++++ b/src/video_core/host1x/vic.cpp
+@@ -82,27 +82,26 @@ void Vic::Execute() {
+         return;
+     }
+     const VicConfig config{host1x.MemoryManager().Read<u64>(config_struct_address + 0x20)};
+-    const AVFramePtr frame_ptr = nvdec_processor->GetFrame();
+-    const auto* frame = frame_ptr.get();
++    auto frame = nvdec_processor->GetFrame();
+     if (!frame) {
+         return;
+     }
+     const u64 surface_width = config.surface_width_minus1 + 1;
+     const u64 surface_height = config.surface_height_minus1 + 1;
+-    if (static_cast<u64>(frame->width) != surface_width ||
+-        static_cast<u64>(frame->height) != surface_height) {
++    if (static_cast<u64>(frame->GetWidth()) != surface_width ||
++        static_cast<u64>(frame->GetHeight()) != surface_height) {
+         // TODO: Properly support multiple video streams with differing frame dimensions
+         LOG_WARNING(Service_NVDRV, "Frame dimensions {}x{} don't match surface dimensions {}x{}",
+-                    frame->width, frame->height, surface_width, surface_height);
++                    frame->GetWidth(), frame->GetHeight(), surface_width, surface_height);
+     }
+     switch (config.pixel_format) {
+     case VideoPixelFormat::RGBA8:
+     case VideoPixelFormat::BGRA8:
+     case VideoPixelFormat::RGBX8:
+-        WriteRGBFrame(frame, config);
++        WriteRGBFrame(std::move(frame), config);
+         break;
+     case VideoPixelFormat::YUV420:
+-        WriteYUVFrame(frame, config);
++        WriteYUVFrame(std::move(frame), config);
+         break;
+     default:
+         UNIMPLEMENTED_MSG("Unknown video pixel format {:X}", config.pixel_format.Value());
+@@ -110,10 +109,14 @@ void Vic::Execute() {
+     }
+ }
+ 
+-void Vic::WriteRGBFrame(const AVFrame* frame, const VicConfig& config) {
++void Vic::WriteRGBFrame(std::unique_ptr<FFmpeg::Frame> frame, const VicConfig& config) {
+     LOG_TRACE(Service_NVDRV, "Writing RGB Frame");
+ 
+-    if (!scaler_ctx || frame->width != scaler_width || frame->height != scaler_height) {
++    const auto frame_width = frame->GetWidth();
++    const auto frame_height = frame->GetHeight();
++    const auto frame_format = frame->GetPixelFormat();
++
++    if (!scaler_ctx || frame_width != scaler_width || frame_height != scaler_height) {
+         const AVPixelFormat target_format = [pixel_format = config.pixel_format]() {
+             switch (pixel_format) {
+             case VideoPixelFormat::RGBA8:
+@@ -129,27 +132,26 @@ void Vic::WriteRGBFrame(const AVFrame* frame, const VicConfig& config) {
+ 
+         sws_freeContext(scaler_ctx);
+         // Frames are decoded into either YUV420 or NV12 formats. Convert to desired RGB format
+-        scaler_ctx = sws_getContext(frame->width, frame->height,
+-                                    static_cast<AVPixelFormat>(frame->format), frame->width,
+-                                    frame->height, target_format, 0, nullptr, nullptr, nullptr);
+-        scaler_width = frame->width;
+-        scaler_height = frame->height;
++        scaler_ctx = sws_getContext(frame_width, frame_height, frame_format, frame_width,
++                                    frame_height, target_format, 0, nullptr, nullptr, nullptr);
++        scaler_width = frame_width;
++        scaler_height = frame_height;
+         converted_frame_buffer.reset();
+     }
+     if (!converted_frame_buffer) {
+-        const size_t frame_size = frame->width * frame->height * 4;
++        const size_t frame_size = frame_width * frame_height * 4;
+         converted_frame_buffer = AVMallocPtr{static_cast<u8*>(av_malloc(frame_size)), av_free};
+     }
+-    const std::array<int, 4> converted_stride{frame->width * 4, frame->height * 4, 0, 0};
++    const std::array<int, 4> converted_stride{frame_width * 4, frame_height * 4, 0, 0};
+     u8* const converted_frame_buf_addr{converted_frame_buffer.get()};
+-    sws_scale(scaler_ctx, frame->data, frame->linesize, 0, frame->height, &converted_frame_buf_addr,
+-              converted_stride.data());
++    sws_scale(scaler_ctx, frame->GetPlanes(), frame->GetStrides(), 0, frame_height,
++              &converted_frame_buf_addr, converted_stride.data());
+ 
+     // Use the minimum of surface/frame dimensions to avoid buffer overflow.
+     const u32 surface_width = static_cast<u32>(config.surface_width_minus1) + 1;
+     const u32 surface_height = static_cast<u32>(config.surface_height_minus1) + 1;
+-    const u32 width = std::min(surface_width, static_cast<u32>(frame->width));
+-    const u32 height = std::min(surface_height, static_cast<u32>(frame->height));
++    const u32 width = std::min(surface_width, static_cast<u32>(frame_width));
++    const u32 height = std::min(surface_height, static_cast<u32>(frame_height));
+     const u32 blk_kind = static_cast<u32>(config.block_linear_kind);
+     if (blk_kind != 0) {
+         // swizzle pitch linear to block linear
+@@ -169,23 +171,23 @@ void Vic::WriteRGBFrame(const AVFrame* frame, const VicConfig& config) {
+     }
+ }
+ 
+-void Vic::WriteYUVFrame(const AVFrame* frame, const VicConfig& config) {
++void Vic::WriteYUVFrame(std::unique_ptr<FFmpeg::Frame> frame, const VicConfig& config) {
+     LOG_TRACE(Service_NVDRV, "Writing YUV420 Frame");
+ 
+     const std::size_t surface_width = config.surface_width_minus1 + 1;
+     const std::size_t surface_height = config.surface_height_minus1 + 1;
+     const std::size_t aligned_width = (surface_width + 0xff) & ~0xffUL;
+     // Use the minimum of surface/frame dimensions to avoid buffer overflow.
+-    const auto frame_width = std::min(surface_width, static_cast<size_t>(frame->width));
+-    const auto frame_height = std::min(surface_height, static_cast<size_t>(frame->height));
++    const auto frame_width = std::min(surface_width, static_cast<size_t>(frame->GetWidth()));
++    const auto frame_height = std::min(surface_height, static_cast<size_t>(frame->GetHeight()));
+ 
+-    const auto stride = static_cast<size_t>(frame->linesize[0]);
++    const auto stride = static_cast<size_t>(frame->GetStride(0));
+ 
+     luma_buffer.resize_destructive(aligned_width * surface_height);
+     chroma_buffer.resize_destructive(aligned_width * surface_height / 2);
+ 
+     // Populate luma buffer
+-    const u8* luma_src = frame->data[0];
++    const u8* luma_src = frame->GetData(0);
+     for (std::size_t y = 0; y < frame_height; ++y) {
+         const std::size_t src = y * stride;
+         const std::size_t dst = y * aligned_width;
+@@ -196,16 +198,16 @@ void Vic::WriteYUVFrame(const AVFrame* frame, const VicConfig& config) {
+ 
+     // Chroma
+     const std::size_t half_height = frame_height / 2;
+-    const auto half_stride = static_cast<size_t>(frame->linesize[1]);
++    const auto half_stride = static_cast<size_t>(frame->GetStride(1));
+ 
+-    switch (frame->format) {
++    switch (frame->GetPixelFormat()) {
+     case AV_PIX_FMT_YUV420P: {
+         // Frame from FFmpeg software
+         // Populate chroma buffer from both channels with interleaving.
+         const std::size_t half_width = frame_width / 2;
+         u8* chroma_buffer_data = chroma_buffer.data();
+-        const u8* chroma_b_src = frame->data[1];
+-        const u8* chroma_r_src = frame->data[2];
++        const u8* chroma_b_src = frame->GetData(1);
++        const u8* chroma_r_src = frame->GetData(2);
+         for (std::size_t y = 0; y < half_height; ++y) {
+             const std::size_t src = y * half_stride;
+             const std::size_t dst = y * aligned_width;
+@@ -219,7 +221,7 @@ void Vic::WriteYUVFrame(const AVFrame* frame, const VicConfig& config) {
+     case AV_PIX_FMT_NV12: {
+         // Frame from VA-API hardware
+         // This is already interleaved so just copy
+-        const u8* chroma_src = frame->data[1];
++        const u8* chroma_src = frame->GetData(1);
+         for (std::size_t y = 0; y < half_height; ++y) {
+             const std::size_t src = y * stride;
+             const std::size_t dst = y * aligned_width;
+diff --git a/src/video_core/host1x/vic.h b/src/video_core/host1x/vic.h
+index 3d9753047b2c..6c868f0621d4 100644
+--- a/src/video_core/host1x/vic.h
++++ b/src/video_core/host1x/vic.h
+@@ -39,9 +39,9 @@ class Vic {
+ private:
+     void Execute();
+ 
+-    void WriteRGBFrame(const AVFrame* frame, const VicConfig& config);
++    void WriteRGBFrame(std::unique_ptr<FFmpeg::Frame> frame, const VicConfig& config);
+ 
+-    void WriteYUVFrame(const AVFrame* frame, const VicConfig& config);
++    void WriteYUVFrame(std::unique_ptr<FFmpeg::Frame> frame, const VicConfig& config);
+ 
+     Host1x& host1x;
+     std::shared_ptr<Tegra::Host1x::Nvdec> nvdec_processor;

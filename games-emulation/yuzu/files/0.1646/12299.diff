@@ -1,0 +1,1133 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index e2120bdfe2f0..05c103f514e4 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -251,10 +251,16 @@ add_library(core STATIC
+     hle/kernel/k_hardware_timer.h
+     hle/kernel/k_interrupt_manager.cpp
+     hle/kernel/k_interrupt_manager.h
++    hle/kernel/k_light_client_session.cpp
++    hle/kernel/k_light_client_session.h
+     hle/kernel/k_light_condition_variable.cpp
+     hle/kernel/k_light_condition_variable.h
+     hle/kernel/k_light_lock.cpp
+     hle/kernel/k_light_lock.h
++    hle/kernel/k_light_server_session.cpp
++    hle/kernel/k_light_server_session.h
++    hle/kernel/k_light_session.cpp
++    hle/kernel/k_light_session.h
+     hle/kernel/k_memory_block.h
+     hle/kernel/k_memory_block_manager.cpp
+     hle/kernel/k_memory_block_manager.h
+diff --git a/src/core/hle/kernel/k_client_port.cpp b/src/core/hle/kernel/k_client_port.cpp
+index 40e09e532505..11b1b977efe4 100644
+--- a/src/core/hle/kernel/k_client_port.cpp
++++ b/src/core/hle/kernel/k_client_port.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "common/scope_exit.h"
+ #include "core/hle/kernel/k_client_port.h"
++#include "core/hle/kernel/k_light_session.h"
+ #include "core/hle/kernel/k_port.h"
+ #include "core/hle/kernel/k_scheduler.h"
+ #include "core/hle/kernel/k_scoped_resource_reservation.h"
+@@ -63,6 +64,7 @@ Result KClientPort::CreateSession(KClientSession** out) {
+     R_UNLESS(session_reservation.Succeeded(), ResultLimitReached);
+ 
+     // Allocate a session normally.
++    // TODO: Dynamic resource limits
+     session = KSession::Create(m_kernel);
+ 
+     // Check that we successfully created a session.
+@@ -119,4 +121,71 @@ Result KClientPort::CreateSession(KClientSession** out) {
+     R_SUCCEED();
+ }
+ 
++Result KClientPort::CreateLightSession(KLightClientSession** out) {
++    // Declare the session we're going to allocate.
++    KLightSession* session{};
++
++    // Reserve a new session from the resource limit.
++    KScopedResourceReservation session_reservation(GetCurrentProcessPointer(m_kernel),
++                                                   Svc::LimitableResource::SessionCountMax);
++    R_UNLESS(session_reservation.Succeeded(), ResultLimitReached);
++
++    // Allocate a session normally.
++    // TODO: Dynamic resource limits
++    session = KLightSession::Create(m_kernel);
++
++    // Check that we successfully created a session.
++    R_UNLESS(session != nullptr, ResultOutOfResource);
++
++    // Update the session counts.
++    {
++        ON_RESULT_FAILURE {
++            session->Close();
++        };
++
++        // Atomically increment the number of sessions.
++        s32 new_sessions;
++        {
++            const auto max = m_max_sessions;
++            auto cur_sessions = m_num_sessions.load(std::memory_order_acquire);
++            do {
++                R_UNLESS(cur_sessions < max, ResultOutOfSessions);
++                new_sessions = cur_sessions + 1;
++            } while (!m_num_sessions.compare_exchange_weak(cur_sessions, new_sessions,
++                                                           std::memory_order_relaxed));
++        }
++
++        // Atomically update the peak session tracking.
++        {
++            auto peak = m_peak_sessions.load(std::memory_order_acquire);
++            do {
++                if (peak >= new_sessions) {
++                    break;
++                }
++            } while (!m_peak_sessions.compare_exchange_weak(peak, new_sessions,
++                                                            std::memory_order_relaxed));
++        }
++    }
++
++    // Initialize the session.
++    session->Initialize(this, m_parent->GetName());
++
++    // Commit the session reservation.
++    session_reservation.Commit();
++
++    // Register the session.
++    KLightSession::Register(m_kernel, session);
++    ON_RESULT_FAILURE {
++        session->GetClientSession().Close();
++        session->GetServerSession().Close();
++    };
++
++    // Enqueue the session with our parent.
++    R_TRY(m_parent->EnqueueSession(std::addressof(session->GetServerSession())));
++
++    // We succeeded, so set the output.
++    *out = std::addressof(session->GetClientSession());
++    R_SUCCEED();
++}
++
+ } // namespace Kernel
+diff --git a/src/core/hle/kernel/k_client_port.h b/src/core/hle/kernel/k_client_port.h
+index 23db06ddf8ea..28b3326081d1 100644
+--- a/src/core/hle/kernel/k_client_port.h
++++ b/src/core/hle/kernel/k_client_port.h
+@@ -11,6 +11,7 @@
+ 
+ namespace Kernel {
+ 
++class KLightClientSession;
+ class KClientSession;
+ class KernelCore;
+ class KPort;
+@@ -51,6 +52,7 @@ class KClientPort final : public KSynchronizationObject {
+     bool IsSignaled() const override;
+ 
+     Result CreateSession(KClientSession** out);
++    Result CreateLightSession(KLightClientSession** out);
+ 
+ private:
+     std::atomic<s32> m_num_sessions{};
+diff --git a/src/core/hle/kernel/k_light_client_session.cpp b/src/core/hle/kernel/k_light_client_session.cpp
+new file mode 100644
+index 000000000000..8ce3e1ae49d5
+--- /dev/null
++++ b/src/core/hle/kernel/k_light_client_session.cpp
+@@ -0,0 +1,31 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/kernel/k_light_client_session.h"
++#include "core/hle/kernel/k_light_session.h"
++#include "core/hle/kernel/k_thread.h"
++
++namespace Kernel {
++
++KLightClientSession::KLightClientSession(KernelCore& kernel) : KAutoObject(kernel) {}
++
++KLightClientSession::~KLightClientSession() = default;
++
++void KLightClientSession::Destroy() {
++    m_parent->OnClientClosed();
++}
++
++void KLightClientSession::OnServerClosed() {}
++
++Result KLightClientSession::SendSyncRequest(u32* data) {
++    // Get the request thread.
++    KThread* cur_thread = GetCurrentThreadPointer(m_kernel);
++
++    // Set the light data.
++    cur_thread->SetLightSessionData(data);
++
++    // Send the request.
++    R_RETURN(m_parent->OnRequest(cur_thread));
++}
++
++} // namespace Kernel
+diff --git a/src/core/hle/kernel/k_light_client_session.h b/src/core/hle/kernel/k_light_client_session.h
+new file mode 100644
+index 000000000000..881a15cbda48
+--- /dev/null
++++ b/src/core/hle/kernel/k_light_client_session.h
+@@ -0,0 +1,39 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/hle/kernel/k_auto_object.h"
++#include "core/hle/result.h"
++
++namespace Kernel {
++
++class KLightSession;
++
++class KLightClientSession final : public KAutoObject {
++    KERNEL_AUTOOBJECT_TRAITS(KLightClientSession, KAutoObject);
++
++public:
++    explicit KLightClientSession(KernelCore& kernel);
++    ~KLightClientSession();
++
++    void Initialize(KLightSession* parent) {
++        // Set member variables.
++        m_parent = parent;
++    }
++
++    virtual void Destroy() override;
++
++    const KLightSession* GetParent() const {
++        return m_parent;
++    }
++
++    Result SendSyncRequest(u32* data);
++
++    void OnServerClosed();
++
++private:
++    KLightSession* m_parent;
++};
++
++} // namespace Kernel
+diff --git a/src/core/hle/kernel/k_light_server_session.cpp b/src/core/hle/kernel/k_light_server_session.cpp
+new file mode 100644
+index 000000000000..e5ceb01f2a43
+--- /dev/null
++++ b/src/core/hle/kernel/k_light_server_session.cpp
+@@ -0,0 +1,247 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/kernel/k_light_server_session.h"
++#include "core/hle/kernel/k_light_session.h"
++#include "core/hle/kernel/k_thread.h"
++#include "core/hle/kernel/k_thread_queue.h"
++#include "core/hle/kernel/svc_results.h"
++
++namespace Kernel {
++
++namespace {
++
++constexpr u64 InvalidThreadId = std::numeric_limits<u64>::max();
++
++class ThreadQueueImplForKLightServerSessionRequest final : public KThreadQueue {
++private:
++    KThread::WaiterList* m_wait_list;
++
++public:
++    ThreadQueueImplForKLightServerSessionRequest(KernelCore& kernel, KThread::WaiterList* wl)
++        : KThreadQueue(kernel), m_wait_list(wl) {}
++
++    virtual void EndWait(KThread* waiting_thread, Result wait_result) override {
++        // Remove the thread from our wait list.
++        m_wait_list->erase(m_wait_list->iterator_to(*waiting_thread));
++
++        // Invoke the base end wait handler.
++        KThreadQueue::EndWait(waiting_thread, wait_result);
++    }
++
++    virtual void CancelWait(KThread* waiting_thread, Result wait_result,
++                            bool cancel_timer_task) override {
++        // Remove the thread from our wait list.
++        m_wait_list->erase(m_wait_list->iterator_to(*waiting_thread));
++
++        // Invoke the base cancel wait handler.
++        KThreadQueue::CancelWait(waiting_thread, wait_result, cancel_timer_task);
++    }
++};
++
++class ThreadQueueImplForKLightServerSessionReceive final : public KThreadQueue {
++private:
++    KThread** m_server_thread;
++
++public:
++    ThreadQueueImplForKLightServerSessionReceive(KernelCore& kernel, KThread** st)
++        : KThreadQueue(kernel), m_server_thread(st) {}
++
++    virtual void EndWait(KThread* waiting_thread, Result wait_result) override {
++        // Clear the server thread.
++        *m_server_thread = nullptr;
++
++        // Set the waiting thread as not cancelable.
++        waiting_thread->ClearCancellable();
++
++        // Invoke the base end wait handler.
++        KThreadQueue::EndWait(waiting_thread, wait_result);
++    }
++
++    virtual void CancelWait(KThread* waiting_thread, Result wait_result,
++                            bool cancel_timer_task) override {
++        // Clear the server thread.
++        *m_server_thread = nullptr;
++
++        // Set the waiting thread as not cancelable.
++        waiting_thread->ClearCancellable();
++
++        // Invoke the base cancel wait handler.
++        KThreadQueue::CancelWait(waiting_thread, wait_result, cancel_timer_task);
++    }
++};
++
++} // namespace
++
++KLightServerSession::KLightServerSession(KernelCore& kernel) : KAutoObject(kernel) {}
++KLightServerSession::~KLightServerSession() = default;
++
++void KLightServerSession::Destroy() {
++    this->CleanupRequests();
++
++    m_parent->OnServerClosed();
++}
++
++void KLightServerSession::OnClientClosed() {
++    this->CleanupRequests();
++}
++
++Result KLightServerSession::OnRequest(KThread* request_thread) {
++    ThreadQueueImplForKLightServerSessionRequest wait_queue(m_kernel,
++                                                            std::addressof(m_request_list));
++
++    // Send the request.
++    {
++        // Lock the scheduler.
++        KScopedSchedulerLock sl(m_kernel);
++
++        // Check that the server isn't closed.
++        R_UNLESS(!m_parent->IsServerClosed(), ResultSessionClosed);
++
++        // Check that the request thread isn't terminating.
++        R_UNLESS(!request_thread->IsTerminationRequested(), ResultTerminationRequested);
++
++        // Add the request thread to our list.
++        m_request_list.push_back(*request_thread);
++
++        // Begin waiting on the request.
++        request_thread->SetWaitReasonForDebugging(ThreadWaitReasonForDebugging::IPC);
++        request_thread->BeginWait(std::addressof(wait_queue));
++
++        // If we have a server thread, end its wait.
++        if (m_server_thread != nullptr) {
++            m_server_thread->EndWait(ResultSuccess);
++        }
++    }
++
++    // NOTE: Nintendo returns GetCurrentThread().GetWaitResult() here.
++    // This is technically incorrect, although it doesn't cause problems in practice
++    // because this is only ever called with request_thread = GetCurrentThreadPointer().
++    R_RETURN(request_thread->GetWaitResult());
++}
++
++Result KLightServerSession::ReplyAndReceive(u32* data) {
++    // Set the server context.
++    GetCurrentThread(m_kernel).SetLightSessionData(data);
++
++    // Reply, if we need to.
++    if (data[0] & KLightSession::ReplyFlag) {
++        KScopedSchedulerLock sl(m_kernel);
++
++        // Check that we're open.
++        R_UNLESS(!m_parent->IsClientClosed(), ResultSessionClosed);
++        R_UNLESS(!m_parent->IsServerClosed(), ResultSessionClosed);
++
++        // Check that we have a request to reply to.
++        R_UNLESS(m_current_request != nullptr, ResultInvalidState);
++
++        // Check that the server thread id is correct.
++        R_UNLESS(m_server_thread_id == GetCurrentThread(m_kernel).GetId(), ResultInvalidState);
++
++        // If we can reply, do so.
++        if (!m_current_request->IsTerminationRequested()) {
++            std::memcpy(m_current_request->GetLightSessionData(),
++                        GetCurrentThread(m_kernel).GetLightSessionData(), KLightSession::DataSize);
++            m_current_request->EndWait(ResultSuccess);
++        }
++
++        // Close our current request.
++        m_current_request->Close();
++
++        // Clear our current request.
++        m_current_request = nullptr;
++        m_server_thread_id = InvalidThreadId;
++    }
++
++    // Create the wait queue for our receive.
++    ThreadQueueImplForKLightServerSessionReceive wait_queue(m_kernel,
++                                                            std::addressof(m_server_thread));
++
++    // Receive.
++    while (true) {
++        // Try to receive a request.
++        {
++            KScopedSchedulerLock sl(m_kernel);
++
++            // Check that we aren't already receiving.
++            R_UNLESS(m_server_thread == nullptr, ResultInvalidState);
++            R_UNLESS(m_server_thread_id == InvalidThreadId, ResultInvalidState);
++
++            // Check that we're open.
++            R_UNLESS(!m_parent->IsClientClosed(), ResultSessionClosed);
++            R_UNLESS(!m_parent->IsServerClosed(), ResultSessionClosed);
++
++            // Check that we're not terminating.
++            R_UNLESS(!GetCurrentThread(m_kernel).IsTerminationRequested(),
++                     ResultTerminationRequested);
++
++            // If we have a request available, use it.
++            if (auto head = m_request_list.begin(); head != m_request_list.end()) {
++                // Set our current request.
++                m_current_request = std::addressof(*head);
++                m_current_request->Open();
++
++                // Set our server thread id.
++                m_server_thread_id = GetCurrentThread(m_kernel).GetId();
++
++                // Copy the client request data.
++                std::memcpy(GetCurrentThread(m_kernel).GetLightSessionData(),
++                            m_current_request->GetLightSessionData(), KLightSession::DataSize);
++
++                // We successfully received.
++                R_SUCCEED();
++            }
++
++            // We need to wait for a request to come in.
++
++            // Check if we were cancelled.
++            if (GetCurrentThread(m_kernel).IsWaitCancelled()) {
++                GetCurrentThread(m_kernel).ClearWaitCancelled();
++                R_THROW(ResultCancelled);
++            }
++
++            // Mark ourselves as cancellable.
++            GetCurrentThread(m_kernel).SetCancellable();
++
++            // Wait for a request to come in.
++            m_server_thread = GetCurrentThreadPointer(m_kernel);
++            GetCurrentThread(m_kernel).SetWaitReasonForDebugging(ThreadWaitReasonForDebugging::IPC);
++            GetCurrentThread(m_kernel).BeginWait(std::addressof(wait_queue));
++        }
++
++        // We waited to receive a request; if our wait failed, return the failing result.
++        R_TRY(GetCurrentThread(m_kernel).GetWaitResult());
++    }
++}
++
++void KLightServerSession::CleanupRequests() {
++    // Cleanup all pending requests.
++    {
++        KScopedSchedulerLock sl(m_kernel);
++
++        // Handle the current request.
++        if (m_current_request != nullptr) {
++            // Reply to the current request.
++            if (!m_current_request->IsTerminationRequested()) {
++                m_current_request->EndWait(ResultSessionClosed);
++            }
++
++            // Clear our current request.
++            m_current_request->Close();
++            m_current_request = nullptr;
++            m_server_thread_id = InvalidThreadId;
++        }
++
++        // Reply to all other requests.
++        for (auto& thread : m_request_list) {
++            thread.EndWait(ResultSessionClosed);
++        }
++
++        // Wait up our server thread, if we have one.
++        if (m_server_thread != nullptr) {
++            m_server_thread->EndWait(ResultSessionClosed);
++        }
++    }
++}
++
++} // namespace Kernel
+diff --git a/src/core/hle/kernel/k_light_server_session.h b/src/core/hle/kernel/k_light_server_session.h
+new file mode 100644
+index 000000000000..8eca3eab6930
+--- /dev/null
++++ b/src/core/hle/kernel/k_light_server_session.h
+@@ -0,0 +1,49 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/hle/kernel/k_auto_object.h"
++#include "core/hle/kernel/k_thread.h"
++#include "core/hle/result.h"
++
++namespace Kernel {
++
++class KLightSession;
++
++class KLightServerSession final : public KAutoObject,
++                                  public Common::IntrusiveListBaseNode<KLightServerSession> {
++    KERNEL_AUTOOBJECT_TRAITS(KLightServerSession, KAutoObject);
++
++private:
++    KLightSession* m_parent{};
++    KThread::WaiterList m_request_list{};
++    KThread* m_current_request{};
++    u64 m_server_thread_id{std::numeric_limits<u64>::max()};
++    KThread* m_server_thread{};
++
++public:
++    explicit KLightServerSession(KernelCore& kernel);
++    ~KLightServerSession();
++
++    void Initialize(KLightSession* parent) {
++        // Set member variables. */
++        m_parent = parent;
++    }
++
++    virtual void Destroy() override;
++
++    constexpr const KLightSession* GetParent() const {
++        return m_parent;
++    }
++
++    Result OnRequest(KThread* request_thread);
++    Result ReplyAndReceive(u32* data);
++
++    void OnClientClosed();
++
++private:
++    void CleanupRequests();
++};
++
++} // namespace Kernel
+diff --git a/src/core/hle/kernel/k_light_session.cpp b/src/core/hle/kernel/k_light_session.cpp
+new file mode 100644
+index 000000000000..d8b1e695825b
+--- /dev/null
++++ b/src/core/hle/kernel/k_light_session.cpp
+@@ -0,0 +1,81 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/kernel/k_client_port.h"
++#include "core/hle/kernel/k_light_client_session.h"
++#include "core/hle/kernel/k_light_server_session.h"
++#include "core/hle/kernel/k_light_session.h"
++#include "core/hle/kernel/k_process.h"
++
++namespace Kernel {
++
++KLightSession::KLightSession(KernelCore& kernel)
++    : KAutoObjectWithSlabHeapAndContainer(kernel), m_server(kernel), m_client(kernel) {}
++KLightSession::~KLightSession() = default;
++
++void KLightSession::Initialize(KClientPort* client_port, uintptr_t name) {
++    // Increment reference count.
++    // Because reference count is one on creation, this will result
++    // in a reference count of two. Thus, when both server and client are closed
++    // this object will be destroyed.
++    this->Open();
++
++    // Create our sub sessions.
++    KAutoObject::Create(std::addressof(m_server));
++    KAutoObject::Create(std::addressof(m_client));
++
++    // Initialize our sub sessions.
++    m_server.Initialize(this);
++    m_client.Initialize(this);
++
++    // Set state and name.
++    m_state = State::Normal;
++    m_name = name;
++
++    // Set our owner process.
++    m_process = GetCurrentProcessPointer(m_kernel);
++    m_process->Open();
++
++    // Set our port.
++    m_port = client_port;
++    if (m_port != nullptr) {
++        m_port->Open();
++    }
++
++    // Mark initialized.
++    m_initialized = true;
++}
++
++void KLightSession::Finalize() {
++    if (m_port != nullptr) {
++        m_port->OnSessionFinalized();
++        m_port->Close();
++    }
++}
++
++void KLightSession::OnServerClosed() {
++    if (m_state == State::Normal) {
++        m_state = State::ServerClosed;
++        m_client.OnServerClosed();
++    }
++
++    this->Close();
++}
++
++void KLightSession::OnClientClosed() {
++    if (m_state == State::Normal) {
++        m_state = State::ClientClosed;
++        m_server.OnClientClosed();
++    }
++
++    this->Close();
++}
++
++void KLightSession::PostDestroy(uintptr_t arg) {
++    // Release the session count resource the owner process holds.
++    KProcess* owner = reinterpret_cast<KProcess*>(arg);
++    owner->ReleaseResource(Svc::LimitableResource::SessionCountMax, 1);
++    owner->Close();
++}
++
++} // namespace Kernel
+diff --git a/src/core/hle/kernel/k_light_session.h b/src/core/hle/kernel/k_light_session.h
+new file mode 100644
+index 000000000000..f78d8e6899e9
+--- /dev/null
++++ b/src/core/hle/kernel/k_light_session.h
+@@ -0,0 +1,86 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/hle/kernel/k_light_client_session.h"
++#include "core/hle/kernel/k_light_server_session.h"
++#include "core/hle/kernel/slab_helpers.h"
++#include "core/hle/result.h"
++
++namespace Kernel {
++
++class KClientPort;
++class KProcess;
++
++// TODO: SupportDynamicExpansion for SlabHeap
++class KLightSession final
++    : public KAutoObjectWithSlabHeapAndContainer<KLightSession, KAutoObjectWithList> {
++    KERNEL_AUTOOBJECT_TRAITS(KLightSession, KAutoObject);
++
++private:
++    enum class State : u8 {
++        Invalid = 0,
++        Normal = 1,
++        ClientClosed = 2,
++        ServerClosed = 3,
++    };
++
++public:
++    static constexpr size_t DataSize = sizeof(u32) * 7;
++    static constexpr u32 ReplyFlag = (1U << 31);
++
++private:
++    KLightServerSession m_server;
++    KLightClientSession m_client;
++    State m_state{State::Invalid};
++    KClientPort* m_port{};
++    uintptr_t m_name{};
++    KProcess* m_process{};
++    bool m_initialized{};
++
++public:
++    explicit KLightSession(KernelCore& kernel);
++    ~KLightSession();
++
++    void Initialize(KClientPort* client_port, uintptr_t name);
++    void Finalize() override;
++
++    bool IsInitialized() const override {
++        return m_initialized;
++    }
++    uintptr_t GetPostDestroyArgument() const override {
++        return reinterpret_cast<uintptr_t>(m_process);
++    }
++
++    static void PostDestroy(uintptr_t arg);
++
++    void OnServerClosed();
++    void OnClientClosed();
++
++    bool IsServerClosed() const {
++        return m_state != State::Normal;
++    }
++    bool IsClientClosed() const {
++        return m_state != State::Normal;
++    }
++
++    Result OnRequest(KThread* request_thread) {
++        R_RETURN(m_server.OnRequest(request_thread));
++    }
++
++    KLightClientSession& GetClientSession() {
++        return m_client;
++    }
++    KLightServerSession& GetServerSession() {
++        return m_server;
++    }
++    const KLightClientSession& GetClientSession() const {
++        return m_client;
++    }
++    const KLightServerSession& GetServerSession() const {
++        return m_server;
++    }
++};
++
++} // namespace Kernel
+diff --git a/src/core/hle/kernel/k_port.cpp b/src/core/hle/kernel/k_port.cpp
+index 1621ca1d3869..e5f5d8028c51 100644
+--- a/src/core/hle/kernel/k_port.cpp
++++ b/src/core/hle/kernel/k_port.cpp
+@@ -58,4 +58,13 @@ Result KPort::EnqueueSession(KServerSession* session) {
+     R_SUCCEED();
+ }
+ 
++Result KPort::EnqueueSession(KLightServerSession* session) {
++    KScopedSchedulerLock sl{m_kernel};
++
++    R_UNLESS(m_state == State::Normal, ResultPortClosed);
++
++    m_server.EnqueueSession(session);
++    R_SUCCEED();
++}
++
+ } // namespace Kernel
+diff --git a/src/core/hle/kernel/k_port.h b/src/core/hle/kernel/k_port.h
+index 991be27ab96c..26f5f14effd7 100644
+--- a/src/core/hle/kernel/k_port.h
++++ b/src/core/hle/kernel/k_port.h
+@@ -13,6 +13,7 @@
+ 
+ namespace Kernel {
+ 
++class KLightServerSession;
+ class KServerSession;
+ 
+ class KPort final : public KAutoObjectWithSlabHeapAndContainer<KPort, KAutoObjectWithList> {
+@@ -38,6 +39,7 @@ class KPort final : public KAutoObjectWithSlabHeapAndContainer<KPort, KAutoObjec
+     bool IsServerClosed() const;
+ 
+     Result EnqueueSession(KServerSession* session);
++    Result EnqueueSession(KLightServerSession* session);
+ 
+     KClientPort& GetClientPort() {
+         return m_client;
+diff --git a/src/core/hle/kernel/k_server_port.cpp b/src/core/hle/kernel/k_server_port.cpp
+index a29d34bc1f06..bb6632f58ecc 100644
+--- a/src/core/hle/kernel/k_server_port.cpp
++++ b/src/core/hle/kernel/k_server_port.cpp
+@@ -27,12 +27,14 @@ bool KServerPort::IsLight() const {
+ void KServerPort::CleanupSessions() {
+     // Ensure our preconditions are met.
+     if (this->IsLight()) {
+-        UNIMPLEMENTED();
++        ASSERT(m_session_list.empty());
++    } else {
++        ASSERT(m_light_session_list.empty());
+     }
+ 
+     // Cleanup the session list.
+     while (true) {
+-        // Get the last session in the list
++        // Get the last session in the list.
+         KServerSession* session = nullptr;
+         {
+             KScopedSchedulerLock sl{m_kernel};
+@@ -49,6 +51,26 @@ void KServerPort::CleanupSessions() {
+             break;
+         }
+     }
++
++    // Cleanup the light session list.
++    while (true) {
++        // Get the last session in the list.
++        KLightServerSession* session = nullptr;
++        {
++            KScopedSchedulerLock sl{m_kernel};
++            if (!m_light_session_list.empty()) {
++                session = std::addressof(m_light_session_list.front());
++                m_light_session_list.pop_front();
++            }
++        }
++
++        // Close the session.
++        if (session != nullptr) {
++            session->Close();
++        } else {
++            break;
++        }
++    }
+ }
+ 
+ void KServerPort::Destroy() {
+@@ -64,8 +86,7 @@ void KServerPort::Destroy() {
+ 
+ bool KServerPort::IsSignaled() const {
+     if (this->IsLight()) {
+-        UNIMPLEMENTED();
+-        return false;
++        return !m_light_session_list.empty();
+     } else {
+         return !m_session_list.empty();
+     }
+@@ -83,6 +104,18 @@ void KServerPort::EnqueueSession(KServerSession* session) {
+     }
+ }
+ 
++void KServerPort::EnqueueSession(KLightServerSession* session) {
++    ASSERT(this->IsLight());
++
++    KScopedSchedulerLock sl{m_kernel};
++
++    // Add the session to our queue.
++    m_light_session_list.push_back(*session);
++    if (m_light_session_list.size() == 1) {
++        this->NotifyAvailable();
++    }
++}
++
+ KServerSession* KServerPort::AcceptSession() {
+     ASSERT(!this->IsLight());
+ 
+@@ -98,4 +131,19 @@ KServerSession* KServerPort::AcceptSession() {
+     return session;
+ }
+ 
++KLightServerSession* KServerPort::AcceptLightSession() {
++    ASSERT(this->IsLight());
++
++    KScopedSchedulerLock sl{m_kernel};
++
++    // Return the first session in the list.
++    if (m_light_session_list.empty()) {
++        return nullptr;
++    }
++
++    KLightServerSession* session = std::addressof(m_light_session_list.front());
++    m_light_session_list.pop_front();
++    return session;
++}
++
+ } // namespace Kernel
+diff --git a/src/core/hle/kernel/k_server_port.h b/src/core/hle/kernel/k_server_port.h
+index 625280290b7c..72fdb6734af2 100644
+--- a/src/core/hle/kernel/k_server_port.h
++++ b/src/core/hle/kernel/k_server_port.h
+@@ -9,6 +9,7 @@
+ 
+ #include "common/intrusive_list.h"
+ 
++#include "core/hle/kernel/k_light_server_session.h"
+ #include "core/hle/kernel/k_server_session.h"
+ #include "core/hle/kernel/k_synchronization_object.h"
+ 
+@@ -28,8 +29,10 @@ class KServerPort final : public KSynchronizationObject {
+     void Initialize(KPort* parent);
+ 
+     void EnqueueSession(KServerSession* session);
++    void EnqueueSession(KLightServerSession* session);
+ 
+     KServerSession* AcceptSession();
++    KLightServerSession* AcceptLightSession();
+ 
+     const KPort* GetParent() const {
+         return m_parent;
+@@ -43,10 +46,12 @@ class KServerPort final : public KSynchronizationObject {
+ 
+ private:
+     using SessionList = Common::IntrusiveListBaseTraits<KServerSession>::ListType;
++    using LightSessionList = Common::IntrusiveListBaseTraits<KLightServerSession>::ListType;
+ 
+     void CleanupSessions();
+ 
+     SessionList m_session_list{};
++    LightSessionList m_light_session_list{};
+     KPort* m_parent{};
+ };
+ 
+diff --git a/src/core/hle/kernel/k_thread.h b/src/core/hle/kernel/k_thread.h
+index 390db2409720..e9925d231d55 100644
+--- a/src/core/hle/kernel/k_thread.h
++++ b/src/core/hle/kernel/k_thread.h
+@@ -385,6 +385,13 @@ class KThread final : public KAutoObjectWithSlabHeapAndContainer<KThread, KWorke
+         m_cancellable = false;
+     }
+ 
++    u32* GetLightSessionData() const {
++        return m_light_ipc_data;
++    }
++    void SetLightSessionData(u32* data) {
++        m_light_ipc_data = data;
++    }
++
+     bool IsTerminationRequested() const {
+         return m_termination_requested || GetRawState() == ThreadState::Terminated;
+     }
+diff --git a/src/core/hle/kernel/kernel.cpp b/src/core/hle/kernel/kernel.cpp
+index 032c4e093834..8cb05ca0bb65 100644
+--- a/src/core/hle/kernel/kernel.cpp
++++ b/src/core/hle/kernel/kernel.cpp
+@@ -1340,6 +1340,7 @@ struct KernelCore::SlabHeapContainer {
+     KSlabHeap<KProcess> process;
+     KSlabHeap<KResourceLimit> resource_limit;
+     KSlabHeap<KSession> session;
++    KSlabHeap<KLightSession> light_session;
+     KSlabHeap<KSharedMemory> shared_memory;
+     KSlabHeap<KSharedMemoryInfo> shared_memory_info;
+     KSlabHeap<KThread> thread;
+@@ -1370,6 +1371,8 @@ KSlabHeap<T>& KernelCore::SlabHeap() {
+         return slab_heap_container->resource_limit;
+     } else if constexpr (std::is_same_v<T, KSession>) {
+         return slab_heap_container->session;
++    } else if constexpr (std::is_same_v<T, KLightSession>) {
++        return slab_heap_container->light_session;
+     } else if constexpr (std::is_same_v<T, KSharedMemory>) {
+         return slab_heap_container->shared_memory;
+     } else if constexpr (std::is_same_v<T, KSharedMemoryInfo>) {
+@@ -1407,6 +1410,7 @@ template KSlabHeap<KPort>& KernelCore::SlabHeap();
+ template KSlabHeap<KProcess>& KernelCore::SlabHeap();
+ template KSlabHeap<KResourceLimit>& KernelCore::SlabHeap();
+ template KSlabHeap<KSession>& KernelCore::SlabHeap();
++template KSlabHeap<KLightSession>& KernelCore::SlabHeap();
+ template KSlabHeap<KSharedMemory>& KernelCore::SlabHeap();
+ template KSlabHeap<KSharedMemoryInfo>& KernelCore::SlabHeap();
+ template KSlabHeap<KThread>& KernelCore::SlabHeap();
+diff --git a/src/core/hle/kernel/svc/svc_light_ipc.cpp b/src/core/hle/kernel/svc/svc_light_ipc.cpp
+index d757d5af2813..4772cbda176d 100644
+--- a/src/core/hle/kernel/svc/svc_light_ipc.cpp
++++ b/src/core/hle/kernel/svc/svc_light_ipc.cpp
+@@ -1,21 +1,40 @@
+ // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#include "core/arm/arm_interface.h"
+ #include "core/core.h"
++#include "core/hle/kernel/k_light_client_session.h"
++#include "core/hle/kernel/k_light_server_session.h"
++#include "core/hle/kernel/k_process.h"
++#include "core/hle/kernel/k_thread.h"
+ #include "core/hle/kernel/svc.h"
+ #include "core/hle/kernel/svc_results.h"
+ 
+ namespace Kernel::Svc {
+ 
+ Result SendSyncRequestLight(Core::System& system, Handle session_handle, u32* args) {
+-    UNIMPLEMENTED();
+-    R_THROW(ResultNotImplemented);
++    // Get the light client session from its handle.
++    KScopedAutoObject session = GetCurrentProcess(system.Kernel())
++                                    .GetHandleTable()
++                                    .GetObject<KLightClientSession>(session_handle);
++    R_UNLESS(session.IsNotNull(), ResultInvalidHandle);
++
++    // Send the request.
++    R_TRY(session->SendSyncRequest(args));
++
++    R_SUCCEED();
+ }
+ 
+ Result ReplyAndReceiveLight(Core::System& system, Handle session_handle, u32* args) {
+-    UNIMPLEMENTED();
+-    R_THROW(ResultNotImplemented);
++    // Get the light server session from its handle.
++    KScopedAutoObject session = GetCurrentProcess(system.Kernel())
++                                    .GetHandleTable()
++                                    .GetObject<KLightServerSession>(session_handle);
++    R_UNLESS(session.IsNotNull(), ResultInvalidHandle);
++
++    // Handle the request.
++    R_TRY(session->ReplyAndReceive(args));
++
++    R_SUCCEED();
+ }
+ 
+ Result SendSyncRequestLight64(Core::System& system, Handle session_handle, u32* args) {
+diff --git a/src/core/hle/kernel/svc/svc_port.cpp b/src/core/hle/kernel/svc/svc_port.cpp
+index abba757c7102..737749f7dd5c 100644
+--- a/src/core/hle/kernel/svc/svc_port.cpp
++++ b/src/core/hle/kernel/svc/svc_port.cpp
+@@ -5,6 +5,7 @@
+ #include "core/core.h"
+ #include "core/hle/kernel/k_client_port.h"
+ #include "core/hle/kernel/k_client_session.h"
++#include "core/hle/kernel/k_light_client_session.h"
+ #include "core/hle/kernel/k_object_name.h"
+ #include "core/hle/kernel/k_port.h"
+ #include "core/hle/kernel/k_process.h"
+@@ -51,13 +52,73 @@ Result ConnectToNamedPort(Core::System& system, Handle* out, u64 user_name) {
+ 
+ Result CreatePort(Core::System& system, Handle* out_server, Handle* out_client,
+                   int32_t max_sessions, bool is_light, uint64_t name) {
+-    UNIMPLEMENTED();
+-    R_THROW(ResultNotImplemented);
++    auto& kernel = system.Kernel();
++
++    // Ensure max sessions is valid.
++    R_UNLESS(max_sessions > 0, ResultOutOfRange);
++
++    // Get the current handle table.
++    auto& handle_table = GetCurrentProcess(kernel).GetHandleTable();
++
++    // Create a new port.
++    KPort* port = KPort::Create(kernel);
++    R_UNLESS(port != nullptr, ResultOutOfResource);
++
++    // Initialize the port.
++    port->Initialize(max_sessions, is_light, name);
++
++    // Ensure that we clean up the port (and its only references are handle table) on function end.
++    SCOPE_EXIT({
++        port->GetServerPort().Close();
++        port->GetClientPort().Close();
++    });
++
++    // Register the port.
++    KPort::Register(kernel, port);
++
++    // Add the client to the handle table.
++    R_TRY(handle_table.Add(out_client, std::addressof(port->GetClientPort())));
++
++    // Ensure that we maintain a clean handle state on exit.
++    ON_RESULT_FAILURE {
++        handle_table.Remove(*out_client);
++    };
++
++    // Add the server to the handle table.
++    R_RETURN(handle_table.Add(out_server, std::addressof(port->GetServerPort())));
+ }
+ 
+-Result ConnectToPort(Core::System& system, Handle* out_handle, Handle port) {
+-    UNIMPLEMENTED();
+-    R_THROW(ResultNotImplemented);
++Result ConnectToPort(Core::System& system, Handle* out, Handle port) {
++    // Get the current handle table.
++    auto& handle_table = GetCurrentProcess(system.Kernel()).GetHandleTable();
++
++    // Get the client port.
++    KScopedAutoObject client_port = handle_table.GetObject<KClientPort>(port);
++    R_UNLESS(client_port.IsNotNull(), ResultInvalidHandle);
++
++    // Reserve a handle for the port.
++    // NOTE: Nintendo really does write directly to the output handle here.
++    R_TRY(handle_table.Reserve(out));
++    ON_RESULT_FAILURE {
++        handle_table.Unreserve(*out);
++    };
++
++    // Create the session.
++    KAutoObject* session;
++    if (client_port->IsLight()) {
++        R_TRY(client_port->CreateLightSession(
++            reinterpret_cast<KLightClientSession**>(std::addressof(session))));
++    } else {
++        R_TRY(client_port->CreateSession(
++            reinterpret_cast<KClientSession**>(std::addressof(session))));
++    }
++
++    // Register the session.
++    handle_table.Register(*out, session);
++    session->Close();
++
++    // We succeeded.
++    R_SUCCEED();
+ }
+ 
+ Result ManageNamedPort(Core::System& system, Handle* out_server_handle, uint64_t user_name,
+diff --git a/src/core/hle/kernel/svc/svc_session.cpp b/src/core/hle/kernel/svc/svc_session.cpp
+index 01b8a52addc4..2f5905f32919 100644
+--- a/src/core/hle/kernel/svc/svc_session.cpp
++++ b/src/core/hle/kernel/svc/svc_session.cpp
+@@ -3,8 +3,10 @@
+ 
+ #include "common/scope_exit.h"
+ #include "core/core.h"
++#include "core/hle/kernel/k_light_session.h"
+ #include "core/hle/kernel/k_process.h"
+ #include "core/hle/kernel/k_scoped_resource_reservation.h"
++#include "core/hle/kernel/k_server_port.h"
+ #include "core/hle/kernel/k_session.h"
+ #include "core/hle/kernel/svc.h"
+ 
+@@ -20,7 +22,7 @@ Result CreateSession(Core::System& system, Handle* out_server, Handle* out_clien
+     T* session;
+ 
+     // Reserve a new session from the process resource limit.
+-    // FIXME: LimitableResource_SessionCountMax
++    // TODO: Dynamic resource limits
+     KScopedResourceReservation session_reservation(std::addressof(process),
+                                                    LimitableResource::SessionCountMax);
+     if (session_reservation.Succeeded()) {
+@@ -92,16 +94,42 @@ Result CreateSession(Core::System& system, Handle* out_server, Handle* out_clien
+ Result CreateSession(Core::System& system, Handle* out_server, Handle* out_client, bool is_light,
+                      u64 name) {
+     if (is_light) {
+-        // return CreateSession<KLightSession>(system, out_server, out_client, name);
+-        R_THROW(ResultNotImplemented);
++        R_RETURN(CreateSession<KLightSession>(system, out_server, out_client, name));
+     } else {
+         R_RETURN(CreateSession<KSession>(system, out_server, out_client, name));
+     }
+ }
+ 
+-Result AcceptSession(Core::System& system, Handle* out_handle, Handle port_handle) {
+-    UNIMPLEMENTED();
+-    R_THROW(ResultNotImplemented);
++Result AcceptSession(Core::System& system, Handle* out, Handle port_handle) {
++    // Get the current handle table.
++    auto& handle_table = GetCurrentProcess(system.Kernel()).GetHandleTable();
++
++    // Get the server port.
++    KScopedAutoObject port = handle_table.GetObject<KServerPort>(port_handle);
++    R_UNLESS(port.IsNotNull(), ResultInvalidHandle);
++
++    // Reserve an entry for the new session.
++    R_TRY(handle_table.Reserve(out));
++    ON_RESULT_FAILURE {
++        handle_table.Unreserve(*out);
++    };
++
++    // Accept the session.
++    KAutoObject* session;
++    if (port->IsLight()) {
++        session = port->AcceptLightSession();
++    } else {
++        session = port->AcceptSession();
++    }
++
++    // Ensure we accepted successfully.
++    R_UNLESS(session != nullptr, ResultNotFound);
++
++    // Register the session.
++    handle_table.Register(*out, session);
++    session->Close();
++
++    R_SUCCEED();
+ }
+ 
+ Result CreateSession64(Core::System& system, Handle* out_server_session_handle,

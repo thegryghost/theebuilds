@@ -1,0 +1,222 @@
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index fa52734025d0..9f4883afcfc5 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -1,8 +1,10 @@
+ // SPDX-FileCopyrightText: 2015 Citra Emulator Project
++// SPDX-FileCopyrightText: 2018 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include <algorithm>
+ #include <cstring>
++#include <mutex>
+ #include <span>
+ 
+ #include "common/assert.h"
+@@ -10,6 +12,7 @@
+ #include "common/common_types.h"
+ #include "common/logging/log.h"
+ #include "common/page_table.h"
++#include "common/scope_exit.h"
+ #include "common/settings.h"
+ #include "common/swap.h"
+ #include "core/core.h"
+@@ -318,7 +321,7 @@ struct Memory::Impl {
+             [&](const Common::ProcessAddress current_vaddr, const std::size_t copy_amount,
+                 u8* const host_ptr) {
+                 if constexpr (!UNSAFE) {
+-                    system.GPU().InvalidateRegion(GetInteger(current_vaddr), copy_amount);
++                    HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
+                 }
+                 std::memcpy(host_ptr, src_buffer, copy_amount);
+             },
+@@ -351,7 +354,7 @@ struct Memory::Impl {
+             },
+             [&](const Common::ProcessAddress current_vaddr, const std::size_t copy_amount,
+                 u8* const host_ptr) {
+-                system.GPU().InvalidateRegion(GetInteger(current_vaddr), copy_amount);
++                HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
+                 std::memset(host_ptr, 0, copy_amount);
+             },
+             [](const std::size_t copy_amount) {});
+@@ -420,7 +423,7 @@ struct Memory::Impl {
+                                  const std::size_t block_size) {
+             // dc cvac: Store to point of coherency
+             // CPU flush -> GPU invalidate
+-            system.GPU().InvalidateRegion(GetInteger(current_vaddr), block_size);
++            HandleRasterizerWrite(GetInteger(current_vaddr), block_size);
+         };
+         return PerformCacheOperation(dest_addr, size, on_rasterizer);
+     }
+@@ -430,7 +433,7 @@ struct Memory::Impl {
+                                  const std::size_t block_size) {
+             // dc civac: Store to point of coherency, and invalidate from cache
+             // CPU flush -> GPU invalidate
+-            system.GPU().InvalidateRegion(GetInteger(current_vaddr), block_size);
++            HandleRasterizerWrite(GetInteger(current_vaddr), block_size);
+         };
+         return PerformCacheOperation(dest_addr, size, on_rasterizer);
+     }
+@@ -767,7 +770,18 @@ struct Memory::Impl {
+     }
+ 
+     void HandleRasterizerWrite(VAddr address, size_t size) {
+-        const size_t core = system.GetCurrentHostThreadID();
++        constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
++        const size_t core = std::min(system.GetCurrentHostThreadID(),
++                                     sys_core); // any other calls threads go to syscore.
++        // Guard on sys_core;
++        if (core == sys_core) [[unlikely]] {
++            sys_core_guard.lock();
++        }
++        SCOPE_EXIT({
++            if (core == sys_core) [[unlikely]] {
++                sys_core_guard.unlock();
++            }
++        });
+         auto& current_area = rasterizer_write_areas[core];
+         VAddr subaddress = address >> YUZU_PAGEBITS;
+         bool do_collection = current_area.last_address == subaddress;
+@@ -799,6 +813,7 @@ struct Memory::Impl {
+         rasterizer_read_areas{};
+     std::array<GPUDirtyState, Core::Hardware::NUM_CPU_CORES> rasterizer_write_areas{};
+     std::span<Core::GPUDirtyMemoryManager> gpu_dirty_managers;
++    std::mutex sys_core_guard;
+ };
+ 
+ Memory::Memory(Core::System& system_) : system{system_} {
+diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
+index c0e6471fed18..805a899008ce 100644
+--- a/src/video_core/fence_manager.h
++++ b/src/video_core/fence_manager.h
+@@ -86,10 +86,7 @@ class FenceManager {
+             uncommitted_operations.emplace_back(std::move(func));
+         }
+         pending_operations.emplace_back(std::move(uncommitted_operations));
+-        {
+-            std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+-            QueueFence(new_fence);
+-        }
++        QueueFence(new_fence);
+         if (!delay_fence) {
+             func();
+         }
+diff --git a/src/video_core/renderer_opengl/gl_rasterizer.cpp b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+index 27e2de1bf000..9995b6dd4fd4 100644
+--- a/src/video_core/renderer_opengl/gl_rasterizer.cpp
++++ b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+@@ -555,7 +555,7 @@ void RasterizerOpenGL::OnCacheInvalidation(VAddr addr, u64 size) {
+     }
+     {
+         std::scoped_lock lock{buffer_cache.mutex};
+-        buffer_cache.CachedWriteMemory(addr, size);
++        buffer_cache.WriteMemory(addr, size);
+     }
+     shader_cache.InvalidateRegion(addr, size);
+ }
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+index 7e7a80740274..c4c30d8071dd 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -132,16 +132,12 @@ void RendererVulkan::SwapBuffers(const Tegra::FramebufferConfig* framebuffer) {
+     const bool use_accelerated =
+         rasterizer.AccelerateDisplay(*framebuffer, framebuffer_addr, framebuffer->stride);
+     const bool is_srgb = use_accelerated && screen_info.is_srgb;
++    RenderScreenshot(*framebuffer, use_accelerated);
+ 
+-    {
+-        std::scoped_lock lock{rasterizer.LockCaches()};
+-        RenderScreenshot(*framebuffer, use_accelerated);
+-
+-        Frame* frame = present_manager.GetRenderFrame();
+-        blit_screen.DrawToSwapchain(frame, *framebuffer, use_accelerated, is_srgb);
+-        scheduler.Flush(*frame->render_ready);
+-        present_manager.Present(frame);
+-    }
++    Frame* frame = present_manager.GetRenderFrame();
++    blit_screen.DrawToSwapchain(frame, *framebuffer, use_accelerated, is_srgb);
++    scheduler.Flush(*frame->render_ready);
++    present_manager.Present(frame);
+ 
+     gpu.RendererFrameEndNotify();
+     rasterizer.TickFrame();
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index c0e8431e4c53..e0ab1eaacdc8 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -199,7 +199,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     if (!pipeline) {
+         return;
+     }
+-    std::scoped_lock lock{LockCaches()};
++    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+     // update engine as channel may be different.
+     pipeline->SetEngine(maxwell3d, gpu_memory);
+     pipeline->Configure(is_indexed);
+@@ -621,7 +621,7 @@ void RasterizerVulkan::OnCacheInvalidation(VAddr addr, u64 size) {
+     }
+     {
+         std::scoped_lock lock{buffer_cache.mutex};
+-        buffer_cache.CachedWriteMemory(addr, size);
++        buffer_cache.WriteMemory(addr, size);
+     }
+     pipeline_cache.InvalidateRegion(addr, size);
+ }
+@@ -710,7 +710,6 @@ void RasterizerVulkan::TiledCacheBarrier() {
+ }
+ 
+ void RasterizerVulkan::FlushCommands() {
+-    std::scoped_lock lock{LockCaches()};
+     if (draw_counter == 0) {
+         return;
+     }
+@@ -808,7 +807,6 @@ void RasterizerVulkan::FlushWork() {
+     if ((++draw_counter & 7) != 7) {
+         return;
+     }
+-    std::scoped_lock lock{LockCaches()};
+     if (draw_counter < DRAWS_TO_DISPATCH) {
+         // Send recorded tasks to the worker thread
+         scheduler.DispatchWork();
+@@ -1507,7 +1505,7 @@ void RasterizerVulkan::UpdateVertexInput(Tegra::Engines::Maxwell3D::Regs& regs)
+ void RasterizerVulkan::InitializeChannel(Tegra::Control::ChannelState& channel) {
+     CreateChannel(channel);
+     {
+-        std::scoped_lock lock{LockCaches()};
++        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+         texture_cache.CreateChannel(channel);
+         buffer_cache.CreateChannel(channel);
+     }
+@@ -1520,7 +1518,7 @@ void RasterizerVulkan::BindChannel(Tegra::Control::ChannelState& channel) {
+     const s32 channel_id = channel.bind_id;
+     BindToChannel(channel_id);
+     {
+-        std::scoped_lock lock{LockCaches()};
++        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+         texture_cache.BindToChannel(channel_id);
+         buffer_cache.BindToChannel(channel_id);
+     }
+@@ -1533,7 +1531,7 @@ void RasterizerVulkan::BindChannel(Tegra::Control::ChannelState& channel) {
+ void RasterizerVulkan::ReleaseChannel(s32 channel_id) {
+     EraseChannel(channel_id);
+     {
+-        std::scoped_lock lock{LockCaches()};
++        std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
+         texture_cache.EraseChannel(channel_id);
+         buffer_cache.EraseChannel(channel_id);
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.h b/src/video_core/renderer_vulkan/vk_rasterizer.h
+index ce3dfbaab832..ad069556cf47 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.h
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.h
+@@ -133,10 +133,6 @@ class RasterizerVulkan final : public VideoCore::RasterizerAccelerated,
+ 
+     void ReleaseChannel(s32 channel_id) override;
+ 
+-    std::scoped_lock<std::recursive_mutex, std::recursive_mutex> LockCaches() {
+-        return std::scoped_lock{buffer_cache.mutex, texture_cache.mutex};
+-    }
+-
+ private:
+     static constexpr size_t MAX_TEXTURES = 192;
+     static constexpr size_t MAX_IMAGES = 48;

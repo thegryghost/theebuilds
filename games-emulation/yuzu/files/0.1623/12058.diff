@@ -1,0 +1,26 @@
+diff --git a/src/audio_core/adsp/apps/opus/opus_multistream_decode_object.cpp b/src/audio_core/adsp/apps/opus/opus_multistream_decode_object.cpp
+index 7f1ed04509ea..05cf3975dbae 100644
+--- a/src/audio_core/adsp/apps/opus/opus_multistream_decode_object.cpp
++++ b/src/audio_core/adsp/apps/opus/opus_multistream_decode_object.cpp
+@@ -12,7 +12,7 @@ bool IsValidChannelCount(u32 channel_count) {
+ }
+ 
+ bool IsValidStreamCounts(u32 total_stream_count, u32 stereo_stream_count) {
+-    return total_stream_count > 0 && stereo_stream_count > 0 &&
++    return total_stream_count > 0 && static_cast<s32>(stereo_stream_count) >= 0 &&
+            stereo_stream_count <= total_stream_count && IsValidChannelCount(total_stream_count);
+ }
+ } // namespace
+diff --git a/src/audio_core/opus/decoder.cpp b/src/audio_core/opus/decoder.cpp
+index c6fd45f47410..b7fed5304326 100644
+--- a/src/audio_core/opus/decoder.cpp
++++ b/src/audio_core/opus/decoder.cpp
+@@ -148,7 +148,7 @@ Result OpusDecoder::DecodeInterleavedForMultiStream(u32* out_data_size, u64* out
+     auto* header_p{reinterpret_cast<const OpusPacketHeader*>(input_data.data())};
+     OpusPacketHeader header{ReverseHeader(*header_p)};
+ 
+-    LOG_ERROR(Service_Audio, "header size 0x{:X} input data size 0x{:X} in_data size 0x{:X}",
++    LOG_TRACE(Service_Audio, "header size 0x{:X} input data size 0x{:X} in_data size 0x{:X}",
+               header.size, input_data.size_bytes(), in_data.size_bytes());
+ 
+     R_UNLESS(in_data.size_bytes() >= header.size &&

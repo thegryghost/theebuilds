@@ -1,0 +1,3458 @@
+diff --git a/.codespellrc b/.codespellrc
+index 3336d31fec40..d1f9984496f3 100644
+--- a/.codespellrc
++++ b/.codespellrc
+@@ -3,4 +3,4 @@
+ 
+ [codespell]
+ skip = ./.git,./build,./dist,./Doxyfile,./externals,./LICENSES,./src/android/app/src/main/res
+-ignore-words-list = aci,allright,ba,canonicalizations,deques,froms,hda,inout,lod,masia,nam,nax,nd,optin,pullrequests,pullrequest,te,transfered,unstall,uscaled,vas,zink
++ignore-words-list = aci,allright,ba,canonicalizations,deques,froms,hda,inout,lod,masia,nam,nax,nce,nd,optin,pullrequests,pullrequest,te,transfered,unstall,uscaled,vas,zink
+diff --git a/.gitmodules b/.gitmodules
+index b72a2ec8c87f..0ec1fae0b7fa 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -61,3 +61,6 @@
+ [submodule "breakpad"]
+ 	path = externals/breakpad
+ 	url = https://github.com/yuzu-emu/breakpad.git
++[submodule "oaknut"]
++	path = externals/oaknut
++	url = https://github.com/merryhime/oaknut
+diff --git a/externals/CMakeLists.txt b/externals/CMakeLists.txt
+index be8b0b5e8206..4e4c2a29954b 100644
+--- a/externals/CMakeLists.txt
++++ b/externals/CMakeLists.txt
+@@ -20,6 +20,10 @@ if ((ARCHITECTURE_x86 OR ARCHITECTURE_x86_64) AND NOT TARGET xbyak::xbyak)
+ endif()
+ 
+ # Dynarmic
++if (ARCHITECTURE_arm64 AND NOT TARGET merry::oaknut)
++    add_subdirectory(oaknut)
++endif()
++
+ if ((ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64) AND NOT TARGET dynarmic::dynarmic)
+     set(DYNARMIC_IGNORE_ASSERTS ON)
+     add_subdirectory(dynarmic)
+diff --git a/externals/oaknut b/externals/oaknut
+new file mode 160000
+index 000000000000..316d8869e8d5
+--- /dev/null
++++ b/externals/oaknut
+@@ -0,0 +1 @@
++Subproject commit 316d8869e8d5dcacfbbea6e9891cd3823dfe5990
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/IntSetting.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/IntSetting.kt
+index 15136212437b..ef10b209fd7f 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/IntSetting.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/IntSetting.kt
+@@ -10,6 +10,7 @@ enum class IntSetting(
+     override val category: Settings.Category,
+     override val androidDefault: Int? = null
+ ) : AbstractIntSetting {
++    CPU_BACKEND("cpu_backend", Settings.Category.Cpu),
+     CPU_ACCURACY("cpu_accuracy", Settings.Category.Cpu),
+     REGION_INDEX("region_index", Settings.Category.System),
+     LANGUAGE_INDEX("language_index", Settings.Category.System),
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/view/SettingsItem.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/view/SettingsItem.kt
+index b3b3fc2099b6..654409a7e2b0 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/view/SettingsItem.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/model/view/SettingsItem.kt
+@@ -77,6 +77,15 @@ abstract class SettingsItem(
+                     "%"
+                 )
+             )
++            put(
++                SingleChoiceSetting(
++                    IntSetting.CPU_BACKEND,
++                    R.string.cpu_backend,
++                    0,
++                    R.array.cpuBackendNames,
++                    R.array.cpuBackendValues
++                )
++            )
+             put(
+                 SingleChoiceSetting(
+                     IntSetting.CPU_ACCURACY,
+diff --git a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/ui/SettingsFragmentPresenter.kt b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/ui/SettingsFragmentPresenter.kt
+index 8b71e32f3d62..7425728c6028 100644
+--- a/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/ui/SettingsFragmentPresenter.kt
++++ b/src/android/app/src/main/java/org/yuzu/yuzu_emu/features/settings/ui/SettingsFragmentPresenter.kt
+@@ -269,6 +269,7 @@ class SettingsFragmentPresenter(
+             add(BooleanSetting.RENDERER_DEBUG.key)
+ 
+             add(HeaderSetting(R.string.cpu))
++            add(IntSetting.CPU_BACKEND.key)
+             add(IntSetting.CPU_ACCURACY.key)
+             add(BooleanSetting.CPU_DEBUG_MODE.key)
+             add(SettingsItem.FASTMEM_COMBINED)
+diff --git a/src/android/app/src/main/jni/config.cpp b/src/android/app/src/main/jni/config.cpp
+index 81120ab0f1b2..8ab2bb91dea8 100644
+--- a/src/android/app/src/main/jni/config.cpp
++++ b/src/android/app/src/main/jni/config.cpp
+@@ -177,6 +177,7 @@ void Config::ReadValues() {
+     ReadSetting("Core", Settings::values.memory_layout_mode);
+ 
+     // Cpu
++    ReadSetting("Cpu", Settings::values.cpu_backend);
+     ReadSetting("Cpu", Settings::values.cpu_accuracy);
+     ReadSetting("Cpu", Settings::values.cpu_debug_mode);
+     ReadSetting("Cpu", Settings::values.cpuopt_page_tables);
+diff --git a/src/android/app/src/main/jni/default_ini.h b/src/android/app/src/main/jni/default_ini.h
+index d81422a748a1..d1f45b269f92 100644
+--- a/src/android/app/src/main/jni/default_ini.h
++++ b/src/android/app/src/main/jni/default_ini.h
+@@ -153,6 +153,10 @@ use_multi_core =
+ use_unsafe_extended_memory_layout =
+ 
+ [Cpu]
++Selects the preferred CPU backend for executing ARM instructions
++# 0 (default): Dynarmic, 1: NCE
++cpu_backend =
++
+ # Adjusts various optimizations.
+ # Auto-select mode enables choice unsafe optimizations.
+ # Accurate enables only safe optimizations.
+diff --git a/src/android/app/src/main/res/values/arrays.xml b/src/android/app/src/main/res/values/arrays.xml
+index 51bcc49a38c7..2756e5cc9354 100644
+--- a/src/android/app/src/main/res/values/arrays.xml
++++ b/src/android/app/src/main/res/values/arrays.xml
+@@ -175,6 +175,16 @@
+         <item>2</item>
+     </integer-array>
+ 
++    <string-array name="cpuBackendNames">
++        <item>@string/cpu_backend_dynarmic</item>
++        <item>@string/cpu_backend_nce</item>
++    </string-array>
++
++    <integer-array name="cpuBackendValues">
++        <item>0</item>
++        <item>1</item>
++    </integer-array>
++
+     <string-array name="cpuAccuracyNames">
+         <item>@string/auto</item>
+         <item>@string/cpu_accuracy_accurate</item>
+diff --git a/src/android/app/src/main/res/values/strings.xml b/src/android/app/src/main/res/values/strings.xml
+index 98c3f20f87c4..39d61bac8d06 100644
+--- a/src/android/app/src/main/res/values/strings.xml
++++ b/src/android/app/src/main/res/values/strings.xml
+@@ -184,6 +184,7 @@
+     <string name="frame_limit_enable_description">Limits emulation speed to a specified percentage of normal speed.</string>
+     <string name="frame_limit_slider">Limit speed percent</string>
+     <string name="frame_limit_slider_description">Specifies the percentage to limit emulation speed. 100% is the normal speed. Values higher or lower will increase or decrease the speed limit.</string>
++    <string name="cpu_backend">CPU Backend</string>
+     <string name="cpu_accuracy">CPU accuracy</string>
+     <string name="value_with_units">%1$s%2$s</string>
+ 
+@@ -414,6 +415,10 @@
+     <string name="ratio_force_sixteen_ten">Force 16:10</string>
+     <string name="ratio_stretch">Stretch to window</string>
+ 
++    <!-- CPU Backend -->
++    <string name="cpu_backend_dynarmic">Dynarmic (Slow)</string>
++    <string name="cpu_backend_nce">Native code execution (NCE)</string>
++
+     <!-- CPU Accuracy -->
+     <string name="cpu_accuracy_accurate">Accurate</string>
+     <string name="cpu_accuracy_unsafe">Unsafe</string>
+diff --git a/src/common/CMakeLists.txt b/src/common/CMakeLists.txt
+index e216eb3deef8..98fd5f1e41e2 100644
+--- a/src/common/CMakeLists.txt
++++ b/src/common/CMakeLists.txt
+@@ -52,6 +52,7 @@ add_library(common STATIC
+     fiber.cpp
+     fiber.h
+     fixed_point.h
++    free_region_manager.h
+     fs/file.cpp
+     fs/file.h
+     fs/fs.cpp
+@@ -166,6 +167,13 @@ if (WIN32)
+   target_link_libraries(common PRIVATE ntdll)
+ endif()
+ 
++if (NOT WIN32)
++  target_sources(common PRIVATE
++    signal_chain.cpp
++    signal_chain.h
++  )
++endif()
++
+ if(ANDROID)
+     target_sources(common
+         PRIVATE
+diff --git a/src/common/free_region_manager.h b/src/common/free_region_manager.h
+new file mode 100644
+index 000000000000..2e590d6094c1
+--- /dev/null
++++ b/src/common/free_region_manager.h
+@@ -0,0 +1,55 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <mutex>
++#include <boost/icl/interval_set.hpp>
++
++namespace Common {
++
++class FreeRegionManager {
++public:
++    explicit FreeRegionManager() = default;
++    ~FreeRegionManager() = default;
++
++    void SetAddressSpace(void* start, size_t size) {
++        this->FreeBlock(start, size);
++    }
++
++    std::pair<void*, size_t> FreeBlock(void* block_ptr, size_t size) {
++        std::scoped_lock lk(m_mutex);
++
++        // Check to see if we are adjacent to any regions.
++        auto start_address = reinterpret_cast<uintptr_t>(block_ptr);
++        auto end_address = start_address + size;
++        auto it = m_free_regions.find({start_address - 1, end_address + 1});
++
++        // If we are, join with them, ensuring we stay in bounds.
++        if (it != m_free_regions.end()) {
++            start_address = std::min(start_address, it->lower());
++            end_address = std::max(end_address, it->upper());
++        }
++
++        // Free the relevant region.
++        m_free_regions.insert({start_address, end_address});
++
++        // Return the adjusted pointers.
++        block_ptr = reinterpret_cast<void*>(start_address);
++        size = end_address - start_address;
++        return {block_ptr, size};
++    }
++
++    void AllocateBlock(void* block_ptr, size_t size) {
++        std::scoped_lock lk(m_mutex);
++
++        auto address = reinterpret_cast<uintptr_t>(block_ptr);
++        m_free_regions.subtract({address, address + size});
++    }
++
++private:
++    std::mutex m_mutex;
++    boost::icl::interval_set<uintptr_t> m_free_regions;
++};
++
++} // namespace Common
+diff --git a/src/common/host_memory.cpp b/src/common/host_memory.cpp
+index ba22595e06a9..f14077750606 100644
+--- a/src/common/host_memory.cpp
++++ b/src/common/host_memory.cpp
+@@ -21,15 +21,18 @@
+ #include <boost/icl/interval_set.hpp>
+ #include <fcntl.h>
+ #include <sys/mman.h>
++#include <sys/random.h>
+ #include <unistd.h>
+ #include "common/scope_exit.h"
+ 
+ #endif // ^^^ Linux ^^^
+ 
+ #include <mutex>
++#include <random>
+ 
+ #include "common/alignment.h"
+ #include "common/assert.h"
++#include "common/free_region_manager.h"
+ #include "common/host_memory.h"
+ #include "common/logging/log.h"
+ 
+@@ -141,7 +144,7 @@ class HostMemory::Impl {
+         Release();
+     }
+ 
+-    void Map(size_t virtual_offset, size_t host_offset, size_t length) {
++    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {
+         std::unique_lock lock{placeholder_mutex};
+         if (!IsNiechePlaceholder(virtual_offset, length)) {
+             Split(virtual_offset, length);
+@@ -160,7 +163,7 @@ class HostMemory::Impl {
+         }
+     }
+ 
+-    void Protect(size_t virtual_offset, size_t length, bool read, bool write) {
++    void Protect(size_t virtual_offset, size_t length, bool read, bool write, bool execute) {
+         DWORD new_flags{};
+         if (read && write) {
+             new_flags = PAGE_READWRITE;
+@@ -186,6 +189,11 @@ class HostMemory::Impl {
+         }
+     }
+ 
++    void EnableDirectMappedAddress() {
++        // TODO
++        UNREACHABLE();
++    }
++
+     const size_t backing_size; ///< Size of the backing memory in bytes
+     const size_t virtual_size; ///< Size of the virtual address placeholder in bytes
+ 
+@@ -353,6 +361,64 @@ class HostMemory::Impl {
+ 
+ #elif defined(__linux__) || defined(__FreeBSD__) // ^^^ Windows ^^^ vvv Linux vvv
+ 
++#ifdef ARCHITECTURE_arm64
++
++static uint64_t GetRandomU64() {
++    uint64_t ret;
++    ASSERT(getrandom(&ret, sizeof(ret), 0) == 0);
++    return ret;
++}
++
++static void* ChooseVirtualBase(size_t virtual_size) {
++    constexpr uintptr_t Map39BitSize = (1ULL << 39);
++    constexpr uintptr_t Map36BitSize = (1ULL << 36);
++
++    // Seed the MT with some initial strong randomness.
++    //
++    // This is not a cryptographic application, we just want something more
++    // random than the current time.
++    std::mt19937_64 rng(GetRandomU64());
++
++    // We want to ensure we are allocating at an address aligned to the L2 block size.
++    // For Qualcomm devices, we must also allocate memory above 36 bits.
++    const size_t lower = Map36BitSize / HugePageSize;
++    const size_t upper = (Map39BitSize - virtual_size) / HugePageSize;
++    const size_t range = upper - lower;
++
++    // Try up to 64 times to allocate memory at random addresses in the range.
++    for (int i = 0; i < 64; i++) {
++        // Calculate a possible location.
++        uintptr_t hint_address = ((rng() % range) + lower) * HugePageSize;
++
++        // Try to map.
++        // Note: we may be able to take advantage of MAP_FIXED_NOREPLACE here.
++        void* map_pointer =
++            mmap(reinterpret_cast<void*>(hint_address), virtual_size, PROT_READ | PROT_WRITE,
++                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
++
++        // If we successfully mapped, we're done.
++        if (reinterpret_cast<uintptr_t>(map_pointer) == hint_address) {
++            return map_pointer;
++        }
++
++        // Unmap if necessary, and try again.
++        if (map_pointer != MAP_FAILED) {
++            munmap(map_pointer, virtual_size);
++        }
++    }
++
++    return MAP_FAILED;
++}
++
++#else
++
++static void* ChooseVirtualBase(size_t virtual_size) {
++    return mmap(nullptr, virtual_size, PROT_READ | PROT_WRITE,
++                MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
++}
++
++#endif
++
+ class HostMemory::Impl {
+ public:
+     explicit Impl(size_t backing_size_, size_t virtual_size_)
+@@ -415,8 +481,7 @@ class HostMemory::Impl {
+             }
+         }
+ #else
+-        virtual_base = static_cast<u8*>(mmap(nullptr, virtual_size, PROT_NONE,
+-                                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0));
++        virtual_base = virtual_map_base = static_cast<u8*>(ChooseVirtualBase(virtual_size));
+         if (virtual_base == MAP_FAILED) {
+             LOG_CRITICAL(HW_Memory, "mmap failed: {}", strerror(errno));
+             throw std::bad_alloc{};
+@@ -424,7 +489,7 @@ class HostMemory::Impl {
+         madvise(virtual_base, virtual_size, MADV_HUGEPAGE);
+ #endif
+ 
+-        placeholders.add({0, virtual_size});
++        free_manager.SetAddressSpace(virtual_base, virtual_size);
+         good = true;
+     }
+ 
+@@ -432,14 +497,29 @@ class HostMemory::Impl {
+         Release();
+     }
+ 
+-    void Map(size_t virtual_offset, size_t host_offset, size_t length) {
+-        {
+-            std::scoped_lock lock{placeholder_mutex};
+-            placeholders.subtract({virtual_offset, virtual_offset + length});
++    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {
++        // Intersect the range with our address space.
++        AdjustMap(&virtual_offset, &length);
++
++        // We are removing a placeholder.
++        free_manager.AllocateBlock(virtual_base + virtual_offset, length);
++
++        // Deduce mapping protection flags.
++        int flags = PROT_NONE;
++        if (True(perms & MemoryPermission::Read)) {
++            flags |= PROT_READ;
++        }
++        if (True(perms & MemoryPermission::Write)) {
++            flags |= PROT_WRITE;
++        }
++#ifdef ARCHITECTURE_arm64
++        if (True(perms & MemoryPermission::Execute)) {
++            flags |= PROT_EXEC;
+         }
++#endif
+ 
+-        void* ret = mmap(virtual_base + virtual_offset, length, PROT_READ | PROT_WRITE,
+-                         MAP_SHARED | MAP_FIXED, fd, host_offset);
++        void* ret = mmap(virtual_base + virtual_offset, length, flags, MAP_SHARED | MAP_FIXED, fd,
++                         host_offset);
+         ASSERT_MSG(ret != MAP_FAILED, "mmap failed: {}", strerror(errno));
+     }
+ 
+@@ -447,47 +527,54 @@ class HostMemory::Impl {
+         // The method name is wrong. We're still talking about the virtual range.
+         // We don't want to unmap, we want to reserve this memory.
+ 
+-        {
+-            std::scoped_lock lock{placeholder_mutex};
+-            auto it = placeholders.find({virtual_offset - 1, virtual_offset + length + 1});
++        // Intersect the range with our address space.
++        AdjustMap(&virtual_offset, &length);
+ 
+-            if (it != placeholders.end()) {
+-                size_t prev_upper = virtual_offset + length;
+-                virtual_offset = std::min(virtual_offset, it->lower());
+-                length = std::max(it->upper(), prev_upper) - virtual_offset;
+-            }
++        // Merge with any adjacent placeholder mappings.
++        auto [merged_pointer, merged_size] =
++            free_manager.FreeBlock(virtual_base + virtual_offset, length);
+ 
+-            placeholders.add({virtual_offset, virtual_offset + length});
+-        }
+-
+-        void* ret = mmap(virtual_base + virtual_offset, length, PROT_NONE,
++        void* ret = mmap(merged_pointer, merged_size, PROT_NONE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+         ASSERT_MSG(ret != MAP_FAILED, "mmap failed: {}", strerror(errno));
+     }
+ 
+-    void Protect(size_t virtual_offset, size_t length, bool read, bool write) {
+-        int flags = 0;
++    void Protect(size_t virtual_offset, size_t length, bool read, bool write, bool execute) {
++        // Intersect the range with our address space.
++        AdjustMap(&virtual_offset, &length);
++
++        int flags = PROT_NONE;
+         if (read) {
+             flags |= PROT_READ;
+         }
+         if (write) {
+             flags |= PROT_WRITE;
+         }
++#ifdef ARCHITECTURE_arm64
++        if (execute) {
++            flags |= PROT_EXEC;
++        }
++#endif
+         int ret = mprotect(virtual_base + virtual_offset, length, flags);
+         ASSERT_MSG(ret == 0, "mprotect failed: {}", strerror(errno));
+     }
+ 
++    void EnableDirectMappedAddress() {
++        virtual_base = nullptr;
++    }
++
+     const size_t backing_size; ///< Size of the backing memory in bytes
+     const size_t virtual_size; ///< Size of the virtual address placeholder in bytes
+ 
+     u8* backing_base{reinterpret_cast<u8*>(MAP_FAILED)};
+     u8* virtual_base{reinterpret_cast<u8*>(MAP_FAILED)};
++    u8* virtual_map_base{reinterpret_cast<u8*>(MAP_FAILED)};
+ 
+ private:
+     /// Release all resources in the object
+     void Release() {
+-        if (virtual_base != MAP_FAILED) {
+-            int ret = munmap(virtual_base, virtual_size);
++        if (virtual_map_base != MAP_FAILED) {
++            int ret = munmap(virtual_map_base, virtual_size);
+             ASSERT_MSG(ret == 0, "munmap failed: {}", strerror(errno));
+         }
+ 
+@@ -502,10 +589,29 @@ class HostMemory::Impl {
+         }
+     }
+ 
+-    int fd{-1}; // memfd file descriptor, -1 is the error value of memfd_create
++    void AdjustMap(size_t* virtual_offset, size_t* length) {
++        if (virtual_base != nullptr) {
++            return;
++        }
++
++        // If we are direct mapped, we want to make sure we are operating on a region
++        // that is in range of our virtual mapping.
++        size_t intended_start = *virtual_offset;
++        size_t intended_end = intended_start + *length;
++        size_t address_space_start = reinterpret_cast<size_t>(virtual_map_base);
++        size_t address_space_end = address_space_start + virtual_size;
++
++        if (address_space_start > intended_end || intended_start > address_space_end) {
++            *virtual_offset = 0;
++            *length = 0;
++        } else {
++            *virtual_offset = std::max(intended_start, address_space_start);
++            *length = std::min(intended_end, address_space_end) - *virtual_offset;
++        }
++    }
+ 
+-    boost::icl::interval_set<size_t> placeholders; ///< Mapped placeholders
+-    std::mutex placeholder_mutex;                  ///< Mutex for placeholders
++    int fd{-1}; // memfd file descriptor, -1 is the error value of memfd_create
++    FreeRegionManager free_manager{};
+ };
+ 
+ #else // ^^^ Linux ^^^ vvv Generic vvv
+@@ -518,11 +624,11 @@ class HostMemory::Impl {
+         throw std::bad_alloc{};
+     }
+ 
+-    void Map(size_t virtual_offset, size_t host_offset, size_t length) {}
++    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perm) {}
+ 
+     void Unmap(size_t virtual_offset, size_t length) {}
+ 
+-    void Protect(size_t virtual_offset, size_t length, bool read, bool write) {}
++    void Protect(size_t virtual_offset, size_t length, bool read, bool write, bool execute) {}
+ 
+     u8* backing_base{nullptr};
+     u8* virtual_base{nullptr};
+@@ -535,15 +641,16 @@ HostMemory::HostMemory(size_t backing_size_, size_t virtual_size_)
+     try {
+         // Try to allocate a fastmem arena.
+         // The implementation will fail with std::bad_alloc on errors.
+-        impl = std::make_unique<HostMemory::Impl>(AlignUp(backing_size, PageAlignment),
+-                                                  AlignUp(virtual_size, PageAlignment) +
+-                                                      3 * HugePageSize);
++        impl =
++            std::make_unique<HostMemory::Impl>(AlignUp(backing_size, PageAlignment),
++                                               AlignUp(virtual_size, PageAlignment) + HugePageSize);
+         backing_base = impl->backing_base;
+         virtual_base = impl->virtual_base;
+ 
+         if (virtual_base) {
+-            virtual_base += 2 * HugePageSize - 1;
+-            virtual_base -= reinterpret_cast<size_t>(virtual_base) & (HugePageSize - 1);
++            // Ensure the virtual base is aligned to the L2 block size.
++            virtual_base = reinterpret_cast<u8*>(
++                Common::AlignUp(reinterpret_cast<uintptr_t>(virtual_base), HugePageSize));
+             virtual_base_offset = virtual_base - impl->virtual_base;
+         }
+ 
+@@ -562,7 +669,8 @@ HostMemory::HostMemory(HostMemory&&) noexcept = default;
+ 
+ HostMemory& HostMemory::operator=(HostMemory&&) noexcept = default;
+ 
+-void HostMemory::Map(size_t virtual_offset, size_t host_offset, size_t length) {
++void HostMemory::Map(size_t virtual_offset, size_t host_offset, size_t length,
++                     MemoryPermission perms) {
+     ASSERT(virtual_offset % PageAlignment == 0);
+     ASSERT(host_offset % PageAlignment == 0);
+     ASSERT(length % PageAlignment == 0);
+@@ -571,7 +679,7 @@ void HostMemory::Map(size_t virtual_offset, size_t host_offset, size_t length) {
+     if (length == 0 || !virtual_base || !impl) {
+         return;
+     }
+-    impl->Map(virtual_offset + virtual_base_offset, host_offset, length);
++    impl->Map(virtual_offset + virtual_base_offset, host_offset, length, perms);
+ }
+ 
+ void HostMemory::Unmap(size_t virtual_offset, size_t length) {
+@@ -584,14 +692,22 @@ void HostMemory::Unmap(size_t virtual_offset, size_t length) {
+     impl->Unmap(virtual_offset + virtual_base_offset, length);
+ }
+ 
+-void HostMemory::Protect(size_t virtual_offset, size_t length, bool read, bool write) {
++void HostMemory::Protect(size_t virtual_offset, size_t length, bool read, bool write,
++                         bool execute) {
+     ASSERT(virtual_offset % PageAlignment == 0);
+     ASSERT(length % PageAlignment == 0);
+     ASSERT(virtual_offset + length <= virtual_size);
+     if (length == 0 || !virtual_base || !impl) {
+         return;
+     }
+-    impl->Protect(virtual_offset + virtual_base_offset, length, read, write);
++    impl->Protect(virtual_offset + virtual_base_offset, length, read, write, execute);
++}
++
++void HostMemory::EnableDirectMappedAddress() {
++    if (impl) {
++        impl->EnableDirectMappedAddress();
++        virtual_size += reinterpret_cast<uintptr_t>(virtual_base);
++    }
+ }
+ 
+ } // namespace Common
+diff --git a/src/common/host_memory.h b/src/common/host_memory.h
+index 447975ded791..cebfacab28ca 100644
+--- a/src/common/host_memory.h
++++ b/src/common/host_memory.h
+@@ -4,11 +4,20 @@
+ #pragma once
+ 
+ #include <memory>
++#include "common/common_funcs.h"
+ #include "common/common_types.h"
+ #include "common/virtual_buffer.h"
+ 
+ namespace Common {
+ 
++enum class MemoryPermission : u32 {
++    Read = 1 << 0,
++    Write = 1 << 1,
++    ReadWrite = Read | Write,
++    Execute = 1 << 2,
++};
++DECLARE_ENUM_FLAG_OPERATORS(MemoryPermission)
++
+ /**
+  * A low level linear memory buffer, which supports multiple mappings
+  * Its purpose is to rebuild a given sparse memory layout, including mirrors.
+@@ -31,11 +40,13 @@ class HostMemory {
+     HostMemory(HostMemory&& other) noexcept;
+     HostMemory& operator=(HostMemory&& other) noexcept;
+ 
+-    void Map(size_t virtual_offset, size_t host_offset, size_t length);
++    void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms);
+ 
+     void Unmap(size_t virtual_offset, size_t length);
+ 
+-    void Protect(size_t virtual_offset, size_t length, bool read, bool write);
++    void Protect(size_t virtual_offset, size_t length, bool read, bool write, bool execute = false);
++
++    void EnableDirectMappedAddress();
+ 
+     [[nodiscard]] u8* BackingBasePointer() noexcept {
+         return backing_base;
+diff --git a/src/common/settings.cpp b/src/common/settings.cpp
+index 51717be06fab..fd5f01c79c90 100644
+--- a/src/common/settings.cpp
++++ b/src/common/settings.cpp
+@@ -41,6 +41,7 @@ SWITCHABLE(AspectRatio, true);
+ SWITCHABLE(AstcDecodeMode, true);
+ SWITCHABLE(AstcRecompression, true);
+ SWITCHABLE(AudioMode, true);
++SWITCHABLE(CpuBackend, true);
+ SWITCHABLE(CpuAccuracy, true);
+ SWITCHABLE(FullscreenMode, true);
+ SWITCHABLE(GpuAccuracy, true);
+@@ -155,6 +156,22 @@ bool IsFastmemEnabled() {
+     return true;
+ }
+ 
++static bool is_nce_enabled = false;
++
++void SetNceEnabled(bool is_39bit) {
++    const bool is_nce_selected = values.cpu_backend.GetValue() == CpuBackend::Nce;
++    is_nce_enabled = is_nce_selected && is_39bit;
++    if (is_nce_selected && !is_nce_enabled) {
++        LOG_WARNING(
++            Common,
++            "Program does not utilize 39-bit address space, unable to natively execute code");
++    }
++}
++
++bool IsNceEnabled() {
++    return is_nce_enabled;
++}
++
+ bool IsDockedMode() {
+     return values.use_docked_mode.GetValue() == Settings::ConsoleMode::Docked;
+ }
+diff --git a/src/common/settings.h b/src/common/settings.h
+index e899f1ae686c..3c15ec3400a1 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -63,6 +63,7 @@ SWITCHABLE(AspectRatio, true);
+ SWITCHABLE(AstcDecodeMode, true);
+ SWITCHABLE(AstcRecompression, true);
+ SWITCHABLE(AudioMode, true);
++SWITCHABLE(CpuBackend, true);
+ SWITCHABLE(CpuAccuracy, true);
+ SWITCHABLE(FullscreenMode, true);
+ SWITCHABLE(GpuAccuracy, true);
+@@ -179,6 +180,14 @@ struct Values {
+                                              &use_speed_limit};
+ 
+     // Cpu
++    SwitchableSetting<CpuBackend, true> cpu_backend{
++        linkage,         CpuBackend::Dynarmic, CpuBackend::Dynarmic,
++#ifdef ARCHITECTURE_arm64
++        CpuBackend::Nce,
++#else
++                                                    CpuBackend::Dynarmic,
++#endif
++        "cpu_backend",   Category::Cpu};
+     SwitchableSetting<CpuAccuracy, true> cpu_accuracy{linkage,           CpuAccuracy::Auto,
+                                                       CpuAccuracy::Auto, CpuAccuracy::Paranoid,
+                                                       "cpu_accuracy",    Category::Cpu};
+@@ -534,6 +543,8 @@ bool IsGPULevelExtreme();
+ bool IsGPULevelHigh();
+ 
+ bool IsFastmemEnabled();
++void SetNceEnabled(bool is_64bit);
++bool IsNceEnabled();
+ 
+ bool IsDockedMode();
+ 
+diff --git a/src/common/settings_enums.h b/src/common/settings_enums.h
+index 11429d7a8d1b..d6351e57e9e5 100644
+--- a/src/common/settings_enums.h
++++ b/src/common/settings_enums.h
+@@ -129,6 +129,8 @@ ENUM(ShaderBackend, Glsl, Glasm, SpirV);
+ 
+ ENUM(GpuAccuracy, Normal, High, Extreme);
+ 
++ENUM(CpuBackend, Dynarmic, Nce);
++
+ ENUM(CpuAccuracy, Auto, Accurate, Unsafe, Paranoid);
+ 
+ ENUM(MemoryLayout, Memory_4Gb, Memory_6Gb, Memory_8Gb);
+diff --git a/src/common/signal_chain.cpp b/src/common/signal_chain.cpp
+new file mode 100644
+index 000000000000..2e4fecc482ac
+--- /dev/null
++++ b/src/common/signal_chain.cpp
+@@ -0,0 +1,42 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <dlfcn.h>
++
++#include "common/assert.h"
++#include "common/dynamic_library.h"
++#include "common/scope_exit.h"
++#include "common/signal_chain.h"
++
++namespace Common {
++
++template <typename T>
++T* LookupLibcSymbol(const char* name) {
++#if defined(__BIONIC__)
++    Common::DynamicLibrary provider("libc.so");
++    if (!provider.IsOpen()) {
++        UNREACHABLE_MSG("Failed to open libc!");
++    }
++#else
++    // For other operating environments, we assume the symbol is not overridden.
++    const char* base = nullptr;
++    Common::DynamicLibrary provider(base);
++#endif
++
++    void* sym = provider.GetSymbolAddress(name);
++    if (sym == nullptr) {
++        sym = dlsym(RTLD_DEFAULT, name);
++    }
++    if (sym == nullptr) {
++        UNREACHABLE_MSG("Unable to find symbol {}!", name);
++    }
++
++    return reinterpret_cast<T*>(sym);
++}
++
++int SigAction(int signum, const struct sigaction* act, struct sigaction* oldact) {
++    static auto libc_sigaction = LookupLibcSymbol<decltype(sigaction)>("sigaction");
++    return libc_sigaction(signum, act, oldact);
++}
++
++} // namespace Common
+diff --git a/src/common/signal_chain.h b/src/common/signal_chain.h
+new file mode 100644
+index 000000000000..8d06a1bd1a08
+--- /dev/null
++++ b/src/common/signal_chain.h
+@@ -0,0 +1,19 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#ifndef _WIN32
++
++#include <signal.h>
++
++namespace Common {
++
++// Android's ART overrides sigaction with its own wrapper. This is problematic for SIGSEGV
++// in particular, because ART's handler accesses tpidr_el0, which conflicts with NCE.
++// This extracts the libc symbol and calls it directly.
++int SigAction(int signum, const struct sigaction* act, struct sigaction* oldact);
++
++} // namespace Common
++
++#endif
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 5978906555c4..ba7aeec02108 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -921,6 +921,22 @@ if (ENABLE_WEB_SERVICE)
+     target_link_libraries(core PRIVATE web_service)
+ endif()
+ 
++if (ARCHITECTURE_arm64)
++    enable_language(C ASM)
++    set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
++
++    target_sources(core PRIVATE
++        arm/nce/arm_nce.cpp
++        arm/nce/arm_nce.h
++        arm/nce/arm_nce.s
++        arm/nce/guest_context.h
++        arm/nce/patch.cpp
++        arm/nce/patch.h
++        arm/nce/instructions.h
++    )
++    target_link_libraries(core PRIVATE merry::oaknut)
++endif()
++
+ if (ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64)
+     target_sources(core PRIVATE
+         arm/dynarmic/arm_dynarmic.h
+diff --git a/src/core/arm/arm_interface.h b/src/core/arm/arm_interface.h
+index 3d866ff6f460..a9d9ac09d3f4 100644
+--- a/src/core/arm/arm_interface.h
++++ b/src/core/arm/arm_interface.h
+@@ -81,6 +81,9 @@ class ARM_Interface {
+     // thread context to be 800 bytes in size.
+     static_assert(sizeof(ThreadContext64) == 0x320);
+ 
++    /// Perform any backend-specific initialization.
++    virtual void Initialize() {}
++
+     /// Runs the CPU until an event happens
+     void Run();
+ 
+diff --git a/src/core/arm/nce/arm_nce.cpp b/src/core/arm/nce/arm_nce.cpp
+new file mode 100644
+index 000000000000..fd82f3b0e197
+--- /dev/null
++++ b/src/core/arm/nce/arm_nce.cpp
+@@ -0,0 +1,394 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include <cinttypes>
++#include <memory>
++
++#include "common/signal_chain.h"
++#include "core/arm/nce/arm_nce.h"
++#include "core/arm/nce/patch.h"
++#include "core/core.h"
++#include "core/memory.h"
++
++#include "core/hle/kernel/k_process.h"
++
++#include <signal.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++namespace Core {
++
++namespace {
++
++struct sigaction g_orig_action;
++
++// Verify assembly offsets.
++using NativeExecutionParameters = Kernel::KThread::NativeExecutionParameters;
++static_assert(offsetof(NativeExecutionParameters, native_context) == TpidrEl0NativeContext);
++static_assert(offsetof(NativeExecutionParameters, lock) == TpidrEl0Lock);
++static_assert(offsetof(NativeExecutionParameters, magic) == TpidrEl0TlsMagic);
++
++fpsimd_context* GetFloatingPointState(mcontext_t& host_ctx) {
++    _aarch64_ctx* header = reinterpret_cast<_aarch64_ctx*>(&host_ctx.__reserved);
++    while (header->magic != FPSIMD_MAGIC) {
++        header = reinterpret_cast<_aarch64_ctx*>(reinterpret_cast<char*>(header) + header->size);
++    }
++    return reinterpret_cast<fpsimd_context*>(header);
++}
++
++} // namespace
++
++void* ARM_NCE::RestoreGuestContext(void* raw_context) {
++    // Retrieve the host context.
++    auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
++
++    // Thread-local parameters will be located in x9.
++    auto* tpidr = reinterpret_cast<NativeExecutionParameters*>(host_ctx.regs[9]);
++    auto* guest_ctx = static_cast<GuestContext*>(tpidr->native_context);
++
++    // Retrieve the host floating point state.
++    auto* fpctx = GetFloatingPointState(host_ctx);
++
++    // Save host callee-saved registers.
++    std::memcpy(guest_ctx->host_ctx.host_saved_vregs.data(), &fpctx->vregs[8],
++                sizeof(guest_ctx->host_ctx.host_saved_vregs));
++    std::memcpy(guest_ctx->host_ctx.host_saved_regs.data(), &host_ctx.regs[19],
++                sizeof(guest_ctx->host_ctx.host_saved_regs));
++
++    // Save stack pointer.
++    guest_ctx->host_ctx.host_sp = host_ctx.sp;
++
++    // Restore all guest state except tpidr_el0.
++    host_ctx.sp = guest_ctx->sp;
++    host_ctx.pc = guest_ctx->pc;
++    host_ctx.pstate = guest_ctx->pstate;
++    fpctx->fpcr = guest_ctx->fpcr;
++    fpctx->fpsr = guest_ctx->fpsr;
++    std::memcpy(host_ctx.regs, guest_ctx->cpu_registers.data(), sizeof(host_ctx.regs));
++    std::memcpy(fpctx->vregs, guest_ctx->vector_registers.data(), sizeof(fpctx->vregs));
++
++    // Return the new thread-local storage pointer.
++    return tpidr;
++}
++
++void ARM_NCE::SaveGuestContext(GuestContext* guest_ctx, void* raw_context) {
++    // Retrieve the host context.
++    auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
++
++    // Retrieve the host floating point state.
++    auto* fpctx = GetFloatingPointState(host_ctx);
++
++    // Save all guest registers except tpidr_el0.
++    std::memcpy(guest_ctx->cpu_registers.data(), host_ctx.regs, sizeof(host_ctx.regs));
++    std::memcpy(guest_ctx->vector_registers.data(), fpctx->vregs, sizeof(fpctx->vregs));
++    guest_ctx->fpsr = fpctx->fpsr;
++    guest_ctx->fpcr = fpctx->fpcr;
++    guest_ctx->pstate = static_cast<u32>(host_ctx.pstate);
++    guest_ctx->pc = host_ctx.pc;
++    guest_ctx->sp = host_ctx.sp;
++
++    // Restore stack pointer.
++    host_ctx.sp = guest_ctx->host_ctx.host_sp;
++
++    // Restore host callee-saved registers.
++    std::memcpy(&host_ctx.regs[19], guest_ctx->host_ctx.host_saved_regs.data(),
++                sizeof(guest_ctx->host_ctx.host_saved_regs));
++    std::memcpy(&fpctx->vregs[8], guest_ctx->host_ctx.host_saved_vregs.data(),
++                sizeof(guest_ctx->host_ctx.host_saved_vregs));
++
++    // Return from the call on exit by setting pc to x30.
++    host_ctx.pc = guest_ctx->host_ctx.host_saved_regs[11];
++
++    // Clear esr_el1 and return it.
++    host_ctx.regs[0] = guest_ctx->esr_el1.exchange(0);
++}
++
++bool ARM_NCE::HandleGuestFault(GuestContext* guest_ctx, void* raw_info, void* raw_context) {
++    auto& host_ctx = static_cast<ucontext_t*>(raw_context)->uc_mcontext;
++    auto* info = static_cast<siginfo_t*>(raw_info);
++
++    // Try to handle an invalid access.
++    // TODO: handle accesses which split a page?
++    const Common::ProcessAddress addr =
++        (reinterpret_cast<u64>(info->si_addr) & ~Memory::YUZU_PAGEMASK);
++    if (guest_ctx->system->ApplicationMemory().InvalidateNCE(addr, Memory::YUZU_PAGESIZE)) {
++        // We handled the access successfully and are returning to guest code.
++        return true;
++    }
++
++    // We can't handle the access, so trigger an exception.
++    const bool is_prefetch_abort = host_ctx.pc == reinterpret_cast<u64>(info->si_addr);
++    guest_ctx->esr_el1.fetch_or(
++        static_cast<u64>(is_prefetch_abort ? HaltReason::PrefetchAbort : HaltReason::DataAbort));
++
++    // Forcibly mark the context as locked. We are still running.
++    // We may race with SignalInterrupt here:
++    // - If we lose the race, then SignalInterrupt will send us a signal we are masking,
++    //   and it will do nothing when it is unmasked, as we have already left guest code.
++    // - If we win the race, then SignalInterrupt will wait for us to unlock first.
++    auto& thread_params = guest_ctx->parent->running_thread->GetNativeExecutionParameters();
++    thread_params.lock.store(SpinLockLocked);
++
++    // Return to host.
++    SaveGuestContext(guest_ctx, raw_context);
++    return false;
++}
++
++void ARM_NCE::HandleHostFault(int sig, void* raw_info, void* raw_context) {
++    return g_orig_action.sa_sigaction(sig, static_cast<siginfo_t*>(raw_info), raw_context);
++}
++
++HaltReason ARM_NCE::RunJit() {
++    // Get the thread parameters.
++    // TODO: pass the current thread down from ::Run
++    auto* thread = Kernel::GetCurrentThreadPointer(system.Kernel());
++    auto* thread_params = &thread->GetNativeExecutionParameters();
++
++    {
++        // Lock our core context.
++        std::scoped_lock lk{lock};
++
++        // We should not be running.
++        ASSERT(running_thread == nullptr);
++
++        // Check if we need to run. If we have already been halted, we are done.
++        u64 halt = guest_ctx.esr_el1.exchange(0);
++        if (halt != 0) {
++            return static_cast<HaltReason>(halt);
++        }
++
++        // Mark that we are running.
++        running_thread = thread;
++
++        // Acquire the lock on the thread parameters.
++        // This allows us to force synchronization with SignalInterrupt.
++        LockThreadParameters(thread_params);
++    }
++
++    // Assign current members.
++    guest_ctx.parent = this;
++    thread_params->native_context = &guest_ctx;
++    thread_params->tpidr_el0 = guest_ctx.tpidr_el0;
++    thread_params->tpidrro_el0 = guest_ctx.tpidrro_el0;
++    thread_params->is_running = true;
++
++    HaltReason halt{};
++
++    // TODO: finding and creating the post handler needs to be locked
++    // to deal with dynamic loading of NROs.
++    const auto& post_handlers = system.ApplicationProcess()->GetPostHandlers();
++    if (auto it = post_handlers.find(guest_ctx.pc); it != post_handlers.end()) {
++        halt = ReturnToRunCodeByTrampoline(thread_params, &guest_ctx, it->second);
++    } else {
++        halt = ReturnToRunCodeByExceptionLevelChange(thread_id, thread_params);
++    }
++
++    // Unload members.
++    // The thread does not change, so we can persist the old reference.
++    guest_ctx.tpidr_el0 = thread_params->tpidr_el0;
++    thread_params->native_context = nullptr;
++    thread_params->is_running = false;
++
++    // Unlock the thread parameters.
++    UnlockThreadParameters(thread_params);
++
++    {
++        // Lock the core context.
++        std::scoped_lock lk{lock};
++
++        // On exit, we no longer have an active thread.
++        running_thread = nullptr;
++    }
++
++    // Return the halt reason.
++    return halt;
++}
++
++HaltReason ARM_NCE::StepJit() {
++    return HaltReason::StepThread;
++}
++
++u32 ARM_NCE::GetSvcNumber() const {
++    return guest_ctx.svc_swi;
++}
++
++ARM_NCE::ARM_NCE(System& system_, bool uses_wall_clock_, std::size_t core_index_)
++    : ARM_Interface{system_, uses_wall_clock_}, core_index{core_index_} {
++    guest_ctx.system = &system_;
++}
++
++ARM_NCE::~ARM_NCE() = default;
++
++void ARM_NCE::Initialize() {
++    thread_id = gettid();
++
++    // Setup our signals
++    static std::once_flag flag;
++    std::call_once(flag, [] {
++        using HandlerType = decltype(sigaction::sa_sigaction);
++
++        sigset_t signal_mask;
++        sigemptyset(&signal_mask);
++        sigaddset(&signal_mask, ReturnToRunCodeByExceptionLevelChangeSignal);
++        sigaddset(&signal_mask, BreakFromRunCodeSignal);
++        sigaddset(&signal_mask, GuestFaultSignal);
++
++        struct sigaction return_to_run_code_action {};
++        return_to_run_code_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
++        return_to_run_code_action.sa_sigaction = reinterpret_cast<HandlerType>(
++            &ARM_NCE::ReturnToRunCodeByExceptionLevelChangeSignalHandler);
++        return_to_run_code_action.sa_mask = signal_mask;
++        Common::SigAction(ReturnToRunCodeByExceptionLevelChangeSignal, &return_to_run_code_action,
++                          nullptr);
++
++        struct sigaction break_from_run_code_action {};
++        break_from_run_code_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
++        break_from_run_code_action.sa_sigaction =
++            reinterpret_cast<HandlerType>(&ARM_NCE::BreakFromRunCodeSignalHandler);
++        break_from_run_code_action.sa_mask = signal_mask;
++        Common::SigAction(BreakFromRunCodeSignal, &break_from_run_code_action, nullptr);
++
++        struct sigaction fault_action {};
++        fault_action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
++        fault_action.sa_sigaction =
++            reinterpret_cast<HandlerType>(&ARM_NCE::GuestFaultSignalHandler);
++        fault_action.sa_mask = signal_mask;
++        Common::SigAction(GuestFaultSignal, &fault_action, &g_orig_action);
++
++        // Simplify call for g_orig_action.
++        // These fields occupy the same space in memory, so this should be a no-op in practice.
++        if (!(g_orig_action.sa_flags & SA_SIGINFO)) {
++            g_orig_action.sa_sigaction =
++                reinterpret_cast<decltype(g_orig_action.sa_sigaction)>(g_orig_action.sa_handler);
++        }
++    });
++}
++
++void ARM_NCE::SetPC(u64 pc) {
++    guest_ctx.pc = pc;
++}
++
++u64 ARM_NCE::GetPC() const {
++    return guest_ctx.pc;
++}
++
++u64 ARM_NCE::GetSP() const {
++    return guest_ctx.sp;
++}
++
++u64 ARM_NCE::GetReg(int index) const {
++    return guest_ctx.cpu_registers[index];
++}
++
++void ARM_NCE::SetReg(int index, u64 value) {
++    guest_ctx.cpu_registers[index] = value;
++}
++
++u128 ARM_NCE::GetVectorReg(int index) const {
++    return guest_ctx.vector_registers[index];
++}
++
++void ARM_NCE::SetVectorReg(int index, u128 value) {
++    guest_ctx.vector_registers[index] = value;
++}
++
++u32 ARM_NCE::GetPSTATE() const {
++    return guest_ctx.pstate;
++}
++
++void ARM_NCE::SetPSTATE(u32 pstate) {
++    guest_ctx.pstate = pstate;
++}
++
++u64 ARM_NCE::GetTlsAddress() const {
++    return guest_ctx.tpidrro_el0;
++}
++
++void ARM_NCE::SetTlsAddress(u64 address) {
++    guest_ctx.tpidrro_el0 = address;
++}
++
++u64 ARM_NCE::GetTPIDR_EL0() const {
++    return guest_ctx.tpidr_el0;
++}
++
++void ARM_NCE::SetTPIDR_EL0(u64 value) {
++    guest_ctx.tpidr_el0 = value;
++}
++
++void ARM_NCE::SaveContext(ThreadContext64& ctx) const {
++    ctx.cpu_registers = guest_ctx.cpu_registers;
++    ctx.sp = guest_ctx.sp;
++    ctx.pc = guest_ctx.pc;
++    ctx.pstate = guest_ctx.pstate;
++    ctx.vector_registers = guest_ctx.vector_registers;
++    ctx.fpcr = guest_ctx.fpcr;
++    ctx.fpsr = guest_ctx.fpsr;
++    ctx.tpidr = guest_ctx.tpidr_el0;
++}
++
++void ARM_NCE::LoadContext(const ThreadContext64& ctx) {
++    guest_ctx.cpu_registers = ctx.cpu_registers;
++    guest_ctx.sp = ctx.sp;
++    guest_ctx.pc = ctx.pc;
++    guest_ctx.pstate = ctx.pstate;
++    guest_ctx.vector_registers = ctx.vector_registers;
++    guest_ctx.fpcr = ctx.fpcr;
++    guest_ctx.fpsr = ctx.fpsr;
++    guest_ctx.tpidr_el0 = ctx.tpidr;
++}
++
++void ARM_NCE::SignalInterrupt() {
++    // Lock core context.
++    std::scoped_lock lk{lock};
++
++    // Add break loop condition.
++    guest_ctx.esr_el1.fetch_or(static_cast<u64>(HaltReason::BreakLoop));
++
++    // If there is no thread running, we are done.
++    if (running_thread == nullptr) {
++        return;
++    }
++
++    // Lock the thread context.
++    auto* params = &running_thread->GetNativeExecutionParameters();
++    LockThreadParameters(params);
++
++    if (params->is_running) {
++        // We should signal to the running thread.
++        // The running thread will unlock the thread context.
++        syscall(SYS_tkill, thread_id, BreakFromRunCodeSignal);
++    } else {
++        // If the thread is no longer running, we have nothing to do.
++        UnlockThreadParameters(params);
++    }
++}
++
++void ARM_NCE::ClearInterrupt() {
++    guest_ctx.esr_el1 = {};
++}
++
++void ARM_NCE::ClearInstructionCache() {
++    // TODO: This is not possible to implement correctly on Linux because
++    // we do not have any access to ic iallu.
++
++    // Require accesses to complete.
++    std::atomic_thread_fence(std::memory_order_seq_cst);
++}
++
++void ARM_NCE::InvalidateCacheRange(u64 addr, std::size_t size) {
++    // Clean cache.
++    auto* ptr = reinterpret_cast<char*>(addr);
++    __builtin___clear_cache(ptr, ptr + size);
++}
++
++void ARM_NCE::ClearExclusiveState() {
++    // No-op.
++}
++
++void ARM_NCE::PageTableChanged(Common::PageTable& page_table,
++                               std::size_t new_address_space_size_in_bits) {
++    // No-op. Page table is never used.
++}
++
++} // namespace Core
+diff --git a/src/core/arm/nce/arm_nce.h b/src/core/arm/nce/arm_nce.h
+new file mode 100644
+index 000000000000..5fbd6dbf380b
+--- /dev/null
++++ b/src/core/arm/nce/arm_nce.h
+@@ -0,0 +1,108 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <atomic>
++#include <memory>
++#include <span>
++#include <unordered_map>
++#include <vector>
++
++#include "core/arm/arm_interface.h"
++#include "core/arm/nce/guest_context.h"
++
++namespace Core::Memory {
++class Memory;
++}
++
++namespace Core {
++
++class System;
++
++class ARM_NCE final : public ARM_Interface {
++public:
++    ARM_NCE(System& system_, bool uses_wall_clock_, std::size_t core_index_);
++
++    ~ARM_NCE() override;
++
++    void Initialize() override;
++    void SetPC(u64 pc) override;
++    u64 GetPC() const override;
++    u64 GetSP() const override;
++    u64 GetReg(int index) const override;
++    void SetReg(int index, u64 value) override;
++    u128 GetVectorReg(int index) const override;
++    void SetVectorReg(int index, u128 value) override;
++
++    u32 GetPSTATE() const override;
++    void SetPSTATE(u32 pstate) override;
++    u64 GetTlsAddress() const override;
++    void SetTlsAddress(u64 address) override;
++    void SetTPIDR_EL0(u64 value) override;
++    u64 GetTPIDR_EL0() const override;
++
++    Architecture GetArchitecture() const override {
++        return Architecture::Aarch64;
++    }
++
++    void SaveContext(ThreadContext32& ctx) const override {}
++    void SaveContext(ThreadContext64& ctx) const override;
++    void LoadContext(const ThreadContext32& ctx) override {}
++    void LoadContext(const ThreadContext64& ctx) override;
++
++    void SignalInterrupt() override;
++    void ClearInterrupt() override;
++    void ClearExclusiveState() override;
++    void ClearInstructionCache() override;
++    void InvalidateCacheRange(u64 addr, std::size_t size) override;
++    void PageTableChanged(Common::PageTable& new_page_table,
++                          std::size_t new_address_space_size_in_bits) override;
++
++protected:
++    HaltReason RunJit() override;
++    HaltReason StepJit() override;
++
++    u32 GetSvcNumber() const override;
++
++    const Kernel::DebugWatchpoint* HaltedWatchpoint() const override {
++        return nullptr;
++    }
++
++    void RewindBreakpointInstruction() override {}
++
++private:
++    // Assembly definitions.
++    static HaltReason ReturnToRunCodeByTrampoline(void* tpidr, GuestContext* ctx,
++                                                  u64 trampoline_addr);
++    static HaltReason ReturnToRunCodeByExceptionLevelChange(int tid, void* tpidr);
++
++    static void ReturnToRunCodeByExceptionLevelChangeSignalHandler(int sig, void* info,
++                                                                   void* raw_context);
++    static void BreakFromRunCodeSignalHandler(int sig, void* info, void* raw_context);
++    static void GuestFaultSignalHandler(int sig, void* info, void* raw_context);
++
++    static void LockThreadParameters(void* tpidr);
++    static void UnlockThreadParameters(void* tpidr);
++
++private:
++    // C++ implementation functions for assembly definitions.
++    static void* RestoreGuestContext(void* raw_context);
++    static void SaveGuestContext(GuestContext* ctx, void* raw_context);
++    static bool HandleGuestFault(GuestContext* ctx, void* info, void* raw_context);
++    static void HandleHostFault(int sig, void* info, void* raw_context);
++
++public:
++    // Members set on initialization.
++    std::size_t core_index{};
++    pid_t thread_id{-1};
++
++    // Core context.
++    GuestContext guest_ctx;
++
++    // Thread and invalidation info.
++    std::mutex lock;
++    Kernel::KThread* running_thread{};
++};
++
++} // namespace Core
+diff --git a/src/core/arm/nce/arm_nce.s b/src/core/arm/nce/arm_nce.s
+new file mode 100644
+index 000000000000..b98e09f318da
+--- /dev/null
++++ b/src/core/arm/nce/arm_nce.s
+@@ -0,0 +1,222 @@
++/* SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project */
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++#include "core/arm/nce/arm_nce_asm_definitions.h"
++
++#define LOAD_IMMEDIATE_32(reg, val)                     \
++    mov     reg, #(((val) >> 0x00) & 0xFFFF);           \
++    movk    reg, #(((val) >> 0x10) & 0xFFFF), lsl #16
++
++
++/* static HaltReason Core::ARM_NCE::ReturnToRunCodeByTrampoline(void* tpidr, Core::GuestContext* ctx, u64 trampoline_addr) */
++.section    .text._ZN4Core7ARM_NCE27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm, "ax", %progbits
++.global     _ZN4Core7ARM_NCE27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm
++.type       _ZN4Core7ARM_NCE27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm, %function
++_ZN4Core7ARM_NCE27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm:
++    /* Back up host sp to x3. */
++    /* Back up host tpidr_el0 to x4. */
++    mov     x3, sp
++    mrs     x4, tpidr_el0
++
++    /* Load guest sp. x5 is used as a scratch register. */
++    ldr     x5, [x1, #(GuestContextSp)]
++    mov     sp, x5
++
++    /* Offset GuestContext pointer to the host member. */
++    add     x5, x1, #(GuestContextHostContext)
++
++    /* Save original host sp and tpidr_el0 (x3, x4) to host context. */
++    stp     x3, x4, [x5, #(HostContextSpTpidrEl0)]
++
++    /* Save all callee-saved host GPRs. */
++    stp     x19, x20, [x5, #(HostContextRegs+0x0)]
++    stp     x21, x22, [x5, #(HostContextRegs+0x10)]
++    stp     x23, x24, [x5, #(HostContextRegs+0x20)]
++    stp     x25, x26, [x5, #(HostContextRegs+0x30)]
++    stp     x27, x28, [x5, #(HostContextRegs+0x40)]
++    stp     x29, x30, [x5, #(HostContextRegs+0x50)]
++
++    /* Save all callee-saved host FPRs. */
++    stp     q8, q9,   [x5, #(HostContextVregs+0x0)]
++    stp     q10, q11, [x5, #(HostContextVregs+0x20)]
++    stp     q12, q13, [x5, #(HostContextVregs+0x40)]
++    stp     q14, q15, [x5, #(HostContextVregs+0x60)]
++
++    /* Load guest tpidr_el0 from argument. */
++    msr     tpidr_el0, x0
++
++    /* Tail call the trampoline to restore guest state. */
++    br      x2
++
++
++/* static HaltReason Core::ARM_NCE::ReturnToRunCodeByExceptionLevelChange(int tid, void* tpidr) */
++.section    .text._ZN4Core7ARM_NCE37ReturnToRunCodeByExceptionLevelChangeEiPv, "ax", %progbits
++.global     _ZN4Core7ARM_NCE37ReturnToRunCodeByExceptionLevelChangeEiPv
++.type       _ZN4Core7ARM_NCE37ReturnToRunCodeByExceptionLevelChangeEiPv, %function
++_ZN4Core7ARM_NCE37ReturnToRunCodeByExceptionLevelChangeEiPv:
++    /* This jumps to the signal handler, which will restore the entire context. */
++    /* On entry, x0 = thread id, which is already in the right place. */
++
++    /* Move tpidr to x9 so it is not trampled. */
++    mov     x9, x1
++
++    /* Set up arguments. */
++    mov     x8, #(__NR_tkill)
++    mov     x1, #(ReturnToRunCodeByExceptionLevelChangeSignal)
++
++    /* Tail call the signal handler. */
++    svc     #0
++
++    /* Block execution from flowing here. */
++    brk     #1000
++
++
++/* static void Core::ARM_NCE::ReturnToRunCodeByExceptionLevelChangeSignalHandler(int sig, void* info, void* raw_context) */
++.section    .text._ZN4Core7ARM_NCE50ReturnToRunCodeByExceptionLevelChangeSignalHandlerEiPvS1_, "ax", %progbits
++.global     _ZN4Core7ARM_NCE50ReturnToRunCodeByExceptionLevelChangeSignalHandlerEiPvS1_
++.type       _ZN4Core7ARM_NCE50ReturnToRunCodeByExceptionLevelChangeSignalHandlerEiPvS1_, %function
++_ZN4Core7ARM_NCE50ReturnToRunCodeByExceptionLevelChangeSignalHandlerEiPvS1_:
++    stp     x29, x30, [sp, #-0x10]!
++    mov     x29, sp
++
++    /* Call the context restorer with the raw context. */
++    mov     x0, x2
++    bl      _ZN4Core7ARM_NCE19RestoreGuestContextEPv
++
++    /* Save the old value of tpidr_el0. */
++    mrs     x8, tpidr_el0
++    ldr     x9, [x0, #(TpidrEl0NativeContext)]
++    str     x8, [x9, #(GuestContextHostContext + HostContextTpidrEl0)]
++
++    /* Set our new tpidr_el0. */
++    msr     tpidr_el0, x0
++
++    /* Unlock the context. */
++    bl      _ZN4Core7ARM_NCE22UnlockThreadParametersEPv
++
++    /* Returning from here will enter the guest. */
++    ldp     x29, x30, [sp], #0x10
++    ret
++
++
++/* static void Core::ARM_NCE::BreakFromRunCodeSignalHandler(int sig, void* info, void* raw_context) */
++.section    .text._ZN4Core7ARM_NCE29BreakFromRunCodeSignalHandlerEiPvS1_, "ax", %progbits
++.global     _ZN4Core7ARM_NCE29BreakFromRunCodeSignalHandlerEiPvS1_
++.type       _ZN4Core7ARM_NCE29BreakFromRunCodeSignalHandlerEiPvS1_, %function
++_ZN4Core7ARM_NCE29BreakFromRunCodeSignalHandlerEiPvS1_:
++    /* Check to see if we have the correct TLS magic. */
++    mrs     x8, tpidr_el0
++    ldr     w9, [x8, #(TpidrEl0TlsMagic)]
++
++    LOAD_IMMEDIATE_32(w10, TlsMagic)
++
++    cmp     w9, w10
++    b.ne    1f
++
++    /* Correct TLS magic, so this is a guest interrupt. */
++    /* Restore host tpidr_el0. */
++    ldr     x0, [x8, #(TpidrEl0NativeContext)]
++    ldr     x3, [x0, #(GuestContextHostContext + HostContextTpidrEl0)]
++    msr     tpidr_el0, x3
++
++    /* Tail call the restorer. */
++    mov     x1, x2
++    b       _ZN4Core7ARM_NCE16SaveGuestContextEPNS_12GuestContextEPv
++
++    /* Returning from here will enter host code. */
++
++1:
++    /* Incorrect TLS magic, so this is a spurious signal. */
++    ret
++
++
++/* static void Core::ARM_NCE::GuestFaultSignalHandler(int sig, void* info, void* raw_context) */
++.section    .text._ZN4Core7ARM_NCE23GuestFaultSignalHandlerEiPvS1_, "ax", %progbits
++.global     _ZN4Core7ARM_NCE23GuestFaultSignalHandlerEiPvS1_
++.type       _ZN4Core7ARM_NCE23GuestFaultSignalHandlerEiPvS1_, %function
++_ZN4Core7ARM_NCE23GuestFaultSignalHandlerEiPvS1_:
++    /* Check to see if we have the correct TLS magic. */
++    mrs     x8, tpidr_el0
++    ldr     w9, [x8, #(TpidrEl0TlsMagic)]
++
++    LOAD_IMMEDIATE_32(w10, TlsMagic)
++
++    cmp     w9, w10
++    b.eq    1f
++
++    /* Incorrect TLS magic, so this is a host fault. */
++    /* Tail call the handler. */
++    b       _ZN4Core7ARM_NCE15HandleHostFaultEiPvS1_
++
++1:
++    /* Correct TLS magic, so this is a guest fault. */
++    stp     x29, x30, [sp, #-0x20]!
++    str     x19, [sp, #0x10]
++    mov     x29, sp
++
++    /* Save the old tpidr_el0. */
++    mov     x19, x8
++
++    /* Restore host tpidr_el0. */
++    ldr     x0, [x8, #(TpidrEl0NativeContext)]
++    ldr     x3, [x0, #(GuestContextHostContext + HostContextTpidrEl0)]
++    msr     tpidr_el0, x3
++
++    /* Call the handler. */
++    bl       _ZN4Core7ARM_NCE16HandleGuestFaultEPNS_12GuestContextEPvS3_
++
++    /* If the handler returned false, we want to preserve the host tpidr_el0. */
++    cbz     x0, 2f
++
++    /* Otherwise, restore guest tpidr_el0. */
++    msr     tpidr_el0, x19
++
++2:
++    ldr     x19, [sp, #0x10]
++    ldp     x29, x30, [sp], #0x20
++    ret
++
++
++/* static void Core::ARM_NCE::LockThreadParameters(void* tpidr) */
++.section    .text._ZN4Core7ARM_NCE20LockThreadParametersEPv, "ax", %progbits
++.global     _ZN4Core7ARM_NCE20LockThreadParametersEPv
++.type       _ZN4Core7ARM_NCE20LockThreadParametersEPv, %function
++_ZN4Core7ARM_NCE20LockThreadParametersEPv:
++    /* Offset to lock member. */
++    add     x0, x0, #(TpidrEl0Lock)
++
++1:
++    /* Clear the monitor. */
++    clrex
++
++2:
++    /* Load-linked with acquire ordering. */
++    ldaxr   w1, [x0]
++
++    /* If the value was SpinLockLocked, clear monitor and retry. */
++    cbz     w1, 1b
++
++    /* Store-conditional SpinLockLocked with relaxed ordering. */
++    stxr    w1, wzr, [x0]
++
++    /* If we failed to store, retry. */
++    cbnz    w1, 2b
++
++    ret
++
++
++/* static void Core::ARM_NCE::UnlockThreadParameters(void* tpidr) */
++.section    .text._ZN4Core7ARM_NCE22UnlockThreadParametersEPv, "ax", %progbits
++.global     _ZN4Core7ARM_NCE22UnlockThreadParametersEPv
++.type       _ZN4Core7ARM_NCE22UnlockThreadParametersEPv, %function
++_ZN4Core7ARM_NCE22UnlockThreadParametersEPv:
++    /* Offset to lock member. */
++    add     x0, x0, #(TpidrEl0Lock)
++
++    /* Load SpinLockUnlocked. */
++    mov     w1, #(SpinLockUnlocked)
++
++    /* Store value with release ordering. */
++    stlr    w1, [x0]
++
++    ret
+diff --git a/src/core/arm/nce/arm_nce_asm_definitions.h b/src/core/arm/nce/arm_nce_asm_definitions.h
+new file mode 100644
+index 000000000000..8a9b285b5be8
+--- /dev/null
++++ b/src/core/arm/nce/arm_nce_asm_definitions.h
+@@ -0,0 +1,29 @@
++/* SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project */
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++#pragma once
++
++#define __ASSEMBLY__
++
++#include <asm-generic/signal.h>
++#include <asm-generic/unistd.h>
++
++#define ReturnToRunCodeByExceptionLevelChangeSignal SIGUSR2
++#define BreakFromRunCodeSignal SIGURG
++#define GuestFaultSignal SIGSEGV
++
++#define GuestContextSp 0xF8
++#define GuestContextHostContext 0x320
++
++#define HostContextSpTpidrEl0 0xE0
++#define HostContextTpidrEl0 0xE8
++#define HostContextRegs 0x0
++#define HostContextVregs 0x60
++
++#define TpidrEl0NativeContext 0x10
++#define TpidrEl0Lock 0x18
++#define TpidrEl0TlsMagic 0x20
++#define TlsMagic 0x555a5559
++
++#define SpinLockLocked 0
++#define SpinLockUnlocked 1
+diff --git a/src/core/arm/nce/guest_context.h b/src/core/arm/nce/guest_context.h
+new file mode 100644
+index 000000000000..0767a0337ff8
+--- /dev/null
++++ b/src/core/arm/nce/guest_context.h
+@@ -0,0 +1,50 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "common/common_funcs.h"
++#include "common/common_types.h"
++#include "core/arm/arm_interface.h"
++#include "core/arm/nce/arm_nce_asm_definitions.h"
++
++namespace Core {
++
++class ARM_NCE;
++class System;
++
++struct HostContext {
++    alignas(16) std::array<u64, 12> host_saved_regs{};
++    alignas(16) std::array<u128, 8> host_saved_vregs{};
++    u64 host_sp{};
++    void* host_tpidr_el0{};
++};
++
++struct GuestContext {
++    std::array<u64, 31> cpu_registers{};
++    u64 sp{};
++    u64 pc{};
++    u32 fpcr{};
++    u32 fpsr{};
++    std::array<u128, 32> vector_registers{};
++    u32 pstate{};
++    alignas(16) HostContext host_ctx{};
++    u64 tpidrro_el0{};
++    u64 tpidr_el0{};
++    std::atomic<u64> esr_el1{};
++    u32 nzcv{};
++    u32 svc_swi{};
++    System* system{};
++    ARM_NCE* parent{};
++};
++
++// Verify assembly offsets.
++static_assert(offsetof(GuestContext, sp) == GuestContextSp);
++static_assert(offsetof(GuestContext, host_ctx) == GuestContextHostContext);
++static_assert(offsetof(HostContext, host_sp) == HostContextSpTpidrEl0);
++static_assert(offsetof(HostContext, host_tpidr_el0) - 8 == HostContextSpTpidrEl0);
++static_assert(offsetof(HostContext, host_tpidr_el0) == HostContextTpidrEl0);
++static_assert(offsetof(HostContext, host_saved_regs) == HostContextRegs);
++static_assert(offsetof(HostContext, host_saved_vregs) == HostContextVregs);
++
++} // namespace Core
+diff --git a/src/core/arm/nce/instructions.h b/src/core/arm/nce/instructions.h
+new file mode 100644
+index 000000000000..5b56ff85700a
+--- /dev/null
++++ b/src/core/arm/nce/instructions.h
+@@ -0,0 +1,147 @@
++// SPDX-FileCopyrightText: Copyright © 2020 Skyline Team and Contributors
++// SPDX-License-Identifier: MPL-2.0
++
++#include "common/bit_field.h"
++#include "common/common_types.h"
++
++namespace Core::NCE {
++
++enum SystemRegister : u32 {
++    TpidrEl0 = 0x5E82,
++    TpidrroEl0 = 0x5E83,
++    CntfrqEl0 = 0x5F00,
++    CntpctEl0 = 0x5F01,
++};
++
++// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/SVC--Supervisor-Call-
++union SVC {
++    constexpr explicit SVC(u32 raw_) : raw{raw_} {}
++
++    constexpr bool Verify() {
++        return (this->GetSig0() == 0x1 && this->GetSig1() == 0x6A0);
++    }
++
++    constexpr u32 GetSig0() {
++        return decltype(sig0)::ExtractValue(raw);
++    }
++
++    constexpr u32 GetValue() {
++        return decltype(value)::ExtractValue(raw);
++    }
++
++    constexpr u32 GetSig1() {
++        return decltype(sig1)::ExtractValue(raw);
++    }
++
++    u32 raw;
++
++private:
++    BitField<0, 5, u32> sig0;   // 0x1
++    BitField<5, 16, u32> value; // 16-bit immediate
++    BitField<21, 11, u32> sig1; // 0x6A0
++};
++static_assert(sizeof(SVC) == sizeof(u32));
++static_assert(SVC(0xD40000C1).Verify());
++static_assert(SVC(0xD40000C1).GetValue() == 0x6);
++
++// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/MRS--Move-System-Register-
++union MRS {
++    constexpr explicit MRS(u32 raw_) : raw{raw_} {}
++
++    constexpr bool Verify() {
++        return (this->GetSig() == 0xD53);
++    }
++
++    constexpr u32 GetRt() {
++        return decltype(rt)::ExtractValue(raw);
++    }
++
++    constexpr u32 GetSystemReg() {
++        return decltype(system_reg)::ExtractValue(raw);
++    }
++
++    constexpr u32 GetSig() {
++        return decltype(sig)::ExtractValue(raw);
++    }
++
++    u32 raw;
++
++private:
++    BitField<0, 5, u32> rt;          // destination register
++    BitField<5, 15, u32> system_reg; // source system register
++    BitField<20, 12, u32> sig;       // 0xD53
++};
++static_assert(sizeof(MRS) == sizeof(u32));
++static_assert(MRS(0xD53BE020).Verify());
++static_assert(MRS(0xD53BE020).GetSystemReg() == CntpctEl0);
++static_assert(MRS(0xD53BE020).GetRt() == 0x0);
++
++// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/MSR--register---Move-general-purpose-register-to-System-Register-
++union MSR {
++    constexpr explicit MSR(u32 raw_) : raw{raw_} {}
++
++    constexpr bool Verify() {
++        return this->GetSig() == 0xD51;
++    }
++
++    constexpr u32 GetRt() {
++        return decltype(rt)::ExtractValue(raw);
++    }
++
++    constexpr u32 GetSystemReg() {
++        return decltype(system_reg)::ExtractValue(raw);
++    }
++
++    constexpr u32 GetSig() {
++        return decltype(sig)::ExtractValue(raw);
++    }
++
++    u32 raw;
++
++private:
++    BitField<0, 5, u32> rt;          // source register
++    BitField<5, 15, u32> system_reg; // destination system register
++    BitField<20, 12, u32> sig;       // 0xD51
++};
++static_assert(sizeof(MSR) == sizeof(u32));
++static_assert(MSR(0xD51BD040).Verify());
++static_assert(MSR(0xD51BD040).GetSystemReg() == TpidrEl0);
++static_assert(MSR(0xD51BD040).GetRt() == 0x0);
++
++// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/LDXR--Load-Exclusive-Register-
++// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/LDXP--Load-Exclusive-Pair-of-Registers-
++// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/STXR--Store-Exclusive-Register-
++// https://developer.arm.com/documentation/ddi0596/2021-12/Base-Instructions/STXP--Store-Exclusive-Pair-of-registers-
++union Exclusive {
++    constexpr explicit Exclusive(u32 raw_) : raw{raw_} {}
++
++    constexpr bool Verify() {
++        return this->GetSig() == 0x10;
++    }
++
++    constexpr u32 GetSig() {
++        return decltype(sig)::ExtractValue(raw);
++    }
++
++    constexpr u32 AsOrdered() {
++        return raw | decltype(o0)::FormatValue(1);
++    }
++
++    u32 raw;
++
++private:
++    BitField<0, 5, u32> rt;    // memory operand
++    BitField<5, 5, u32> rn;    // register operand 1
++    BitField<10, 5, u32> rt2;  // register operand 2
++    BitField<15, 1, u32> o0;   // ordered
++    BitField<16, 5, u32> rs;   // status register
++    BitField<21, 2, u32> l;    // operation type
++    BitField<23, 7, u32> sig;  // 0x10
++    BitField<30, 2, u32> size; // size
++};
++static_assert(Exclusive(0xC85FFC00).Verify());
++static_assert(Exclusive(0xC85FFC00).AsOrdered() == 0xC85FFC00);
++static_assert(Exclusive(0xC85F7C00).AsOrdered() == 0xC85FFC00);
++static_assert(Exclusive(0xC8200440).AsOrdered() == 0xC8208440);
++
++} // namespace Core::NCE
+diff --git a/src/core/arm/nce/patch.cpp b/src/core/arm/nce/patch.cpp
+new file mode 100644
+index 000000000000..bc4b73634cf2
+--- /dev/null
++++ b/src/core/arm/nce/patch.cpp
+@@ -0,0 +1,471 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "common/arm64/native_clock.h"
++#include "common/bit_cast.h"
++#include "common/literals.h"
++#include "core/arm/nce/arm_nce.h"
++#include "core/arm/nce/guest_context.h"
++#include "core/arm/nce/instructions.h"
++#include "core/arm/nce/patch.h"
++#include "core/core.h"
++#include "core/core_timing.h"
++#include "core/hle/kernel/svc.h"
++
++namespace Core::NCE {
++
++using namespace Common::Literals;
++using namespace oaknut::util;
++
++using NativeExecutionParameters = Kernel::KThread::NativeExecutionParameters;
++
++constexpr size_t MaxRelativeBranch = 128_MiB;
++
++Patcher::Patcher() : c(m_patch_instructions) {}
++
++Patcher::~Patcher() = default;
++
++void Patcher::PatchText(const Kernel::PhysicalMemory& program_image,
++                        const Kernel::CodeSet::Segment& code) {
++
++    // Write save context helper function.
++    c.l(m_save_context);
++    WriteSaveContext();
++
++    // Write load context helper function.
++    c.l(m_load_context);
++    WriteLoadContext();
++
++    // Retrieve text segment data.
++    const auto text = std::span{program_image}.subspan(code.offset, code.size);
++    const auto text_words =
++        std::span<const u32>{reinterpret_cast<const u32*>(text.data()), text.size() / sizeof(u32)};
++
++    // Loop through instructions, patching as needed.
++    for (u32 i = 0; i < static_cast<u32>(text_words.size()); i++) {
++        const u32 inst = text_words[i];
++
++        const auto AddRelocations = [&] {
++            const uintptr_t this_offset = i * sizeof(u32);
++            const uintptr_t next_offset = this_offset + sizeof(u32);
++
++            // Relocate from here to patch.
++            this->BranchToPatch(this_offset);
++
++            // Relocate from patch to next instruction.
++            return next_offset;
++        };
++
++        // SVC
++        if (auto svc = SVC{inst}; svc.Verify()) {
++            WriteSvcTrampoline(AddRelocations(), svc.GetValue());
++            continue;
++        }
++
++        // MRS Xn, TPIDR_EL0
++        // MRS Xn, TPIDRRO_EL0
++        if (auto mrs = MRS{inst};
++            mrs.Verify() && (mrs.GetSystemReg() == TpidrroEl0 || mrs.GetSystemReg() == TpidrEl0)) {
++            const auto src_reg = mrs.GetSystemReg() == TpidrroEl0 ? oaknut::SystemReg::TPIDRRO_EL0
++                                                                  : oaknut::SystemReg::TPIDR_EL0;
++            const auto dest_reg = oaknut::XReg{static_cast<int>(mrs.GetRt())};
++            WriteMrsHandler(AddRelocations(), dest_reg, src_reg);
++            continue;
++        }
++
++        // MRS Xn, CNTPCT_EL0
++        if (auto mrs = MRS{inst}; mrs.Verify() && mrs.GetSystemReg() == CntpctEl0) {
++            WriteCntpctHandler(AddRelocations(), oaknut::XReg{static_cast<int>(mrs.GetRt())});
++            continue;
++        }
++
++        // MRS Xn, CNTFRQ_EL0
++        if (auto mrs = MRS{inst}; mrs.Verify() && mrs.GetSystemReg() == CntfrqEl0) {
++            UNREACHABLE();
++        }
++
++        // MSR TPIDR_EL0, Xn
++        if (auto msr = MSR{inst}; msr.Verify() && msr.GetSystemReg() == TpidrEl0) {
++            WriteMsrHandler(AddRelocations(), oaknut::XReg{static_cast<int>(msr.GetRt())});
++            continue;
++        }
++    }
++
++    // Determine patching mode for the final relocation step
++    const size_t image_size = program_image.size();
++    this->mode = image_size > MaxRelativeBranch ? PatchMode::PreText : PatchMode::PostData;
++}
++
++void Patcher::RelocateAndCopy(Common::ProcessAddress load_base,
++                              const Kernel::CodeSet::Segment& code,
++                              Kernel::PhysicalMemory& program_image,
++                              EntryTrampolines* out_trampolines) {
++    const size_t patch_size = GetSectionSize();
++    const size_t image_size = program_image.size();
++
++    // Retrieve text segment data.
++    const auto text = std::span{program_image}.subspan(code.offset, code.size);
++    const auto text_words =
++        std::span<u32>{reinterpret_cast<u32*>(text.data()), text.size() / sizeof(u32)};
++
++    const auto ApplyBranchToPatchRelocation = [&](u32* target, const Relocation& rel) {
++        oaknut::CodeGenerator rc{target};
++        if (mode == PatchMode::PreText) {
++            rc.B(rel.patch_offset - patch_size - rel.module_offset);
++        } else {
++            rc.B(image_size - rel.module_offset + rel.patch_offset);
++        }
++    };
++
++    const auto ApplyBranchToModuleRelocation = [&](u32* target, const Relocation& rel) {
++        oaknut::CodeGenerator rc{target};
++        if (mode == PatchMode::PreText) {
++            rc.B(patch_size - rel.patch_offset + rel.module_offset);
++        } else {
++            rc.B(rel.module_offset - image_size - rel.patch_offset);
++        }
++    };
++
++    const auto RebasePatch = [&](ptrdiff_t patch_offset) {
++        if (mode == PatchMode::PreText) {
++            return GetInteger(load_base) + patch_offset;
++        } else {
++            return GetInteger(load_base) + image_size + patch_offset;
++        }
++    };
++
++    const auto RebasePc = [&](uintptr_t module_offset) {
++        if (mode == PatchMode::PreText) {
++            return GetInteger(load_base) + patch_size + module_offset;
++        } else {
++            return GetInteger(load_base) + module_offset;
++        }
++    };
++
++    // We are now ready to relocate!
++    for (const Relocation& rel : m_branch_to_patch_relocations) {
++        ApplyBranchToPatchRelocation(text_words.data() + rel.module_offset / sizeof(u32), rel);
++    }
++    for (const Relocation& rel : m_branch_to_module_relocations) {
++        ApplyBranchToModuleRelocation(m_patch_instructions.data() + rel.patch_offset / sizeof(u32),
++                                      rel);
++    }
++
++    // Rewrite PC constants and record post trampolines
++    for (const Relocation& rel : m_write_module_pc_relocations) {
++        oaknut::CodeGenerator rc{m_patch_instructions.data() + rel.patch_offset / sizeof(u32)};
++        rc.dx(RebasePc(rel.module_offset));
++    }
++    for (const Trampoline& rel : m_trampolines) {
++        out_trampolines->insert({RebasePc(rel.module_offset), RebasePatch(rel.patch_offset)});
++    }
++
++    // Cortex-A57 seems to treat all exclusives as ordered, but newer processors do not.
++    // Convert to ordered to preserve this assumption
++    for (u32 i = 0; i < static_cast<u32>(text_words.size()); i++) {
++        const u32 inst = text_words[i];
++        if (auto exclusive = Exclusive{inst}; exclusive.Verify()) {
++            text_words[i] = exclusive.AsOrdered();
++        }
++    }
++
++    // Copy to program image
++    if (this->mode == PatchMode::PreText) {
++        std::memcpy(program_image.data(), m_patch_instructions.data(),
++                    m_patch_instructions.size() * sizeof(u32));
++    } else {
++        program_image.resize(image_size + patch_size);
++        std::memcpy(program_image.data() + image_size, m_patch_instructions.data(),
++                    m_patch_instructions.size() * sizeof(u32));
++    }
++}
++
++size_t Patcher::GetSectionSize() const noexcept {
++    return Common::AlignUp(m_patch_instructions.size() * sizeof(u32), Core::Memory::YUZU_PAGESIZE);
++}
++
++void Patcher::WriteLoadContext() {
++    // This function was called, which modifies X30, so use that as a scratch register.
++    // SP contains the guest X30, so save our return X30 to SP + 8, since we have allocated 16 bytes
++    // of stack.
++    c.STR(X30, SP, 8);
++    c.MRS(X30, oaknut::SystemReg::TPIDR_EL0);
++    c.LDR(X30, X30, offsetof(NativeExecutionParameters, native_context));
++
++    // Load system registers.
++    c.LDR(W0, X30, offsetof(GuestContext, fpsr));
++    c.MSR(oaknut::SystemReg::FPSR, X0);
++    c.LDR(W0, X30, offsetof(GuestContext, fpcr));
++    c.MSR(oaknut::SystemReg::FPCR, X0);
++    c.LDR(W0, X30, offsetof(GuestContext, nzcv));
++    c.MSR(oaknut::SystemReg::NZCV, X0);
++
++    // Load all vector registers.
++    static constexpr size_t VEC_OFF = offsetof(GuestContext, vector_registers);
++    for (int i = 0; i <= 30; i += 2) {
++        c.LDP(oaknut::QReg{i}, oaknut::QReg{i + 1}, X30, VEC_OFF + 16 * i);
++    }
++
++    // Load all general-purpose registers except X30.
++    for (int i = 0; i <= 28; i += 2) {
++        c.LDP(oaknut::XReg{i}, oaknut::XReg{i + 1}, X30, 8 * i);
++    }
++
++    // Reload our return X30 from the stack and return.
++    // The patch code will reload the guest X30 for us.
++    c.LDR(X30, SP, 8);
++    c.RET();
++}
++
++void Patcher::WriteSaveContext() {
++    // This function was called, which modifies X30, so use that as a scratch register.
++    // SP contains the guest X30, so save our X30 to SP + 8, since we have allocated 16 bytes of
++    // stack.
++    c.STR(X30, SP, 8);
++    c.MRS(X30, oaknut::SystemReg::TPIDR_EL0);
++    c.LDR(X30, X30, offsetof(NativeExecutionParameters, native_context));
++
++    // Store all general-purpose registers except X30.
++    for (int i = 0; i <= 28; i += 2) {
++        c.STP(oaknut::XReg{i}, oaknut::XReg{i + 1}, X30, 8 * i);
++    }
++
++    // Store all vector registers.
++    static constexpr size_t VEC_OFF = offsetof(GuestContext, vector_registers);
++    for (int i = 0; i <= 30; i += 2) {
++        c.STP(oaknut::QReg{i}, oaknut::QReg{i + 1}, X30, VEC_OFF + 16 * i);
++    }
++
++    // Store guest system registers, X30 and SP, using X0 as a scratch register.
++    c.STR(X0, SP, PRE_INDEXED, -16);
++    c.LDR(X0, SP, 16);
++    c.STR(X0, X30, 8 * 30);
++    c.ADD(X0, SP, 32);
++    c.STR(X0, X30, offsetof(GuestContext, sp));
++    c.MRS(X0, oaknut::SystemReg::FPSR);
++    c.STR(W0, X30, offsetof(GuestContext, fpsr));
++    c.MRS(X0, oaknut::SystemReg::FPCR);
++    c.STR(W0, X30, offsetof(GuestContext, fpcr));
++    c.MRS(X0, oaknut::SystemReg::NZCV);
++    c.STR(W0, X30, offsetof(GuestContext, nzcv));
++    c.LDR(X0, SP, POST_INDEXED, 16);
++
++    // Reload our return X30 from the stack, and return.
++    c.LDR(X30, SP, 8);
++    c.RET();
++}
++
++void Patcher::WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id) {
++    // We are about to start saving state, so we need to lock the context.
++    this->LockContext();
++
++    // Store guest X30 to the stack. Then, save the context and restore the stack.
++    // This will save all registers except PC, but we know PC at patch time.
++    c.STR(X30, SP, PRE_INDEXED, -16);
++    c.BL(m_save_context);
++    c.LDR(X30, SP, POST_INDEXED, 16);
++
++    // Now that we've saved all registers, we can use any registers as scratch.
++    // Store PC + 4 to arm interface, since we know the instruction offset from the entry point.
++    oaknut::Label pc_after_svc;
++    c.MRS(X1, oaknut::SystemReg::TPIDR_EL0);
++    c.LDR(X1, X1, offsetof(NativeExecutionParameters, native_context));
++    c.LDR(X2, pc_after_svc);
++    c.STR(X2, X1, offsetof(GuestContext, pc));
++
++    // Store SVC number to execute when we return
++    c.MOV(X2, svc_id);
++    c.STR(W2, X1, offsetof(GuestContext, svc_swi));
++
++    // We are calling a SVC. Clear esr_el1 and return it.
++    static_assert(std::is_same_v<std::underlying_type_t<HaltReason>, u64>);
++    oaknut::Label retry;
++    c.ADD(X2, X1, offsetof(GuestContext, esr_el1));
++    c.l(retry);
++    c.LDAXR(X0, X2);
++    c.STLXR(W3, XZR, X2);
++    c.CBNZ(W3, retry);
++
++    // Add "calling SVC" flag. Since this is X0, this is now our return value.
++    c.ORR(X0, X0, static_cast<u64>(HaltReason::SupervisorCall));
++
++    // Offset the GuestContext pointer to the HostContext member.
++    // STP has limited range of [-512, 504] which we can't reach otherwise
++    // NB: Due to this all offsets below are from the start of HostContext.
++    c.ADD(X1, X1, offsetof(GuestContext, host_ctx));
++
++    // Reload host TPIDR_EL0 and SP.
++    static_assert(offsetof(HostContext, host_sp) + 8 == offsetof(HostContext, host_tpidr_el0));
++    c.LDP(X2, X3, X1, offsetof(HostContext, host_sp));
++    c.MOV(SP, X2);
++    c.MSR(oaknut::SystemReg::TPIDR_EL0, X3);
++
++    // Load callee-saved host registers and return to host.
++    static constexpr size_t HOST_REGS_OFF = offsetof(HostContext, host_saved_regs);
++    static constexpr size_t HOST_VREGS_OFF = offsetof(HostContext, host_saved_vregs);
++    c.LDP(X19, X20, X1, HOST_REGS_OFF);
++    c.LDP(X21, X22, X1, HOST_REGS_OFF + 2 * sizeof(u64));
++    c.LDP(X23, X24, X1, HOST_REGS_OFF + 4 * sizeof(u64));
++    c.LDP(X25, X26, X1, HOST_REGS_OFF + 6 * sizeof(u64));
++    c.LDP(X27, X28, X1, HOST_REGS_OFF + 8 * sizeof(u64));
++    c.LDP(X29, X30, X1, HOST_REGS_OFF + 10 * sizeof(u64));
++    c.LDP(Q8, Q9, X1, HOST_VREGS_OFF);
++    c.LDP(Q10, Q11, X1, HOST_VREGS_OFF + 2 * sizeof(u128));
++    c.LDP(Q12, Q13, X1, HOST_VREGS_OFF + 4 * sizeof(u128));
++    c.LDP(Q14, Q15, X1, HOST_VREGS_OFF + 6 * sizeof(u128));
++    c.RET();
++
++    // Write the post-SVC trampoline address, which will jump back to the guest after restoring its
++    // state.
++    m_trampolines.push_back({c.offset(), module_dest});
++
++    // Host called this location. Save the return address so we can
++    // unwind the stack properly when jumping back.
++    c.MRS(X2, oaknut::SystemReg::TPIDR_EL0);
++    c.LDR(X2, X2, offsetof(NativeExecutionParameters, native_context));
++    c.ADD(X0, X2, offsetof(GuestContext, host_ctx));
++    c.STR(X30, X0, offsetof(HostContext, host_saved_regs) + 11 * sizeof(u64));
++
++    // Reload all guest registers except X30 and PC.
++    // The function also expects 16 bytes of stack already allocated.
++    c.STR(X30, SP, PRE_INDEXED, -16);
++    c.BL(m_load_context);
++    c.LDR(X30, SP, POST_INDEXED, 16);
++
++    // Use X1 as a scratch register to restore X30.
++    c.STR(X1, SP, PRE_INDEXED, -16);
++    c.MRS(X1, oaknut::SystemReg::TPIDR_EL0);
++    c.LDR(X1, X1, offsetof(NativeExecutionParameters, native_context));
++    c.LDR(X30, X1, offsetof(GuestContext, cpu_registers) + sizeof(u64) * 30);
++    c.LDR(X1, SP, POST_INDEXED, 16);
++
++    // Unlock the context.
++    this->UnlockContext();
++
++    // Jump back to the instruction after the emulated SVC.
++    this->BranchToModule(module_dest);
++
++    // Store PC after call.
++    c.l(pc_after_svc);
++    this->WriteModulePc(module_dest);
++}
++
++void Patcher::WriteMrsHandler(ModuleDestLabel module_dest, oaknut::XReg dest_reg,
++                              oaknut::SystemReg src_reg) {
++    // Retrieve emulated TLS register from GuestContext.
++    c.MRS(dest_reg, oaknut::SystemReg::TPIDR_EL0);
++    if (src_reg == oaknut::SystemReg::TPIDRRO_EL0) {
++        c.LDR(dest_reg, dest_reg, offsetof(NativeExecutionParameters, tpidrro_el0));
++    } else {
++        c.LDR(dest_reg, dest_reg, offsetof(NativeExecutionParameters, tpidr_el0));
++    }
++
++    // Jump back to the instruction after the emulated MRS.
++    this->BranchToModule(module_dest);
++}
++
++void Patcher::WriteMsrHandler(ModuleDestLabel module_dest, oaknut::XReg src_reg) {
++    const auto scratch_reg = src_reg.index() == 0 ? X1 : X0;
++    c.STR(scratch_reg, SP, PRE_INDEXED, -16);
++
++    // Save guest value to NativeExecutionParameters::tpidr_el0.
++    c.MRS(scratch_reg, oaknut::SystemReg::TPIDR_EL0);
++    c.STR(src_reg, scratch_reg, offsetof(NativeExecutionParameters, tpidr_el0));
++
++    // Restore scratch register.
++    c.LDR(scratch_reg, SP, POST_INDEXED, 16);
++
++    // Jump back to the instruction after the emulated MSR.
++    this->BranchToModule(module_dest);
++}
++
++void Patcher::WriteCntpctHandler(ModuleDestLabel module_dest, oaknut::XReg dest_reg) {
++    static Common::Arm64::NativeClock clock{};
++    const auto factor = clock.GetGuestCNTFRQFactor();
++    const auto raw_factor = Common::BitCast<std::array<u64, 2>>(factor);
++
++    const auto use_x2_x3 = dest_reg.index() == 0 || dest_reg.index() == 1;
++    oaknut::XReg scratch0 = use_x2_x3 ? X2 : X0;
++    oaknut::XReg scratch1 = use_x2_x3 ? X3 : X1;
++
++    oaknut::Label factorlo;
++    oaknut::Label factorhi;
++
++    // Save scratches.
++    c.STP(scratch0, scratch1, SP, PRE_INDEXED, -16);
++
++    // Load counter value.
++    c.MRS(dest_reg, oaknut::SystemReg::CNTVCT_EL0);
++
++    // Load scaling factor.
++    c.LDR(scratch0, factorlo);
++    c.LDR(scratch1, factorhi);
++
++    // Multiply low bits and get result.
++    c.UMULH(scratch0, dest_reg, scratch0);
++
++    // Multiply high bits and add low bit result.
++    c.MADD(dest_reg, dest_reg, scratch1, scratch0);
++
++    // Reload scratches.
++    c.LDP(scratch0, scratch1, SP, POST_INDEXED, 16);
++
++    // Jump back to the instruction after the emulated MRS.
++    this->BranchToModule(module_dest);
++
++    // Scaling factor constant values.
++    c.l(factorlo);
++    c.dx(raw_factor[0]);
++    c.l(factorhi);
++    c.dx(raw_factor[1]);
++}
++
++void Patcher::LockContext() {
++    oaknut::Label retry;
++
++    // Save scratches.
++    c.STP(X0, X1, SP, PRE_INDEXED, -16);
++
++    // Reload lock pointer.
++    c.l(retry);
++    c.CLREX();
++    c.MRS(X0, oaknut::SystemReg::TPIDR_EL0);
++    c.ADD(X0, X0, offsetof(NativeExecutionParameters, lock));
++
++    static_assert(SpinLockLocked == 0);
++
++    // Load-linked with acquire ordering.
++    c.LDAXR(W1, X0);
++
++    // If the value was SpinLockLocked, clear monitor and retry.
++    c.CBZ(W1, retry);
++
++    // Store-conditional SpinLockLocked with relaxed ordering.
++    c.STXR(W1, WZR, X0);
++
++    // If we failed to store, retry.
++    c.CBNZ(W1, retry);
++
++    // We succeeded! Reload scratches.
++    c.LDP(X0, X1, SP, POST_INDEXED, 16);
++}
++
++void Patcher::UnlockContext() {
++    // Save scratches.
++    c.STP(X0, X1, SP, PRE_INDEXED, -16);
++
++    // Load lock pointer.
++    c.MRS(X0, oaknut::SystemReg::TPIDR_EL0);
++    c.ADD(X0, X0, offsetof(NativeExecutionParameters, lock));
++
++    // Load SpinLockUnlocked.
++    c.MOV(W1, SpinLockUnlocked);
++
++    // Store value with release ordering.
++    c.STLR(W1, X0);
++
++    // Load scratches.
++    c.LDP(X0, X1, SP, POST_INDEXED, 16);
++}
++
++} // namespace Core::NCE
+diff --git a/src/core/arm/nce/patch.h b/src/core/arm/nce/patch.h
+new file mode 100644
+index 000000000000..dcce1bfc623a
+--- /dev/null
++++ b/src/core/arm/nce/patch.h
+@@ -0,0 +1,101 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <span>
++#include <unordered_map>
++#include <vector>
++
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wshorten-64-to-32"
++#include <oaknut/code_block.hpp>
++#include <oaknut/oaknut.hpp>
++#pragma GCC diagnostic pop
++
++#include "common/common_types.h"
++#include "core/hle/kernel/code_set.h"
++#include "core/hle/kernel/k_typed_address.h"
++#include "core/hle/kernel/physical_memory.h"
++
++namespace Core::NCE {
++
++enum class PatchMode : u32 {
++    None,
++    PreText,  ///< Patch section is inserted before .text
++    PostData, ///< Patch section is inserted after .data
++};
++
++using ModuleTextAddress = u64;
++using PatchTextAddress = u64;
++using EntryTrampolines = std::unordered_map<ModuleTextAddress, PatchTextAddress>;
++
++class Patcher {
++public:
++    explicit Patcher();
++    ~Patcher();
++
++    void PatchText(const Kernel::PhysicalMemory& program_image,
++                   const Kernel::CodeSet::Segment& code);
++    void RelocateAndCopy(Common::ProcessAddress load_base, const Kernel::CodeSet::Segment& code,
++                         Kernel::PhysicalMemory& program_image, EntryTrampolines* out_trampolines);
++    size_t GetSectionSize() const noexcept;
++
++    [[nodiscard]] PatchMode GetPatchMode() const noexcept {
++        return mode;
++    }
++
++private:
++    using ModuleDestLabel = uintptr_t;
++
++    struct Trampoline {
++        ptrdiff_t patch_offset;
++        uintptr_t module_offset;
++    };
++
++    void WriteLoadContext();
++    void WriteSaveContext();
++    void LockContext();
++    void UnlockContext();
++    void WriteSvcTrampoline(ModuleDestLabel module_dest, u32 svc_id);
++    void WriteMrsHandler(ModuleDestLabel module_dest, oaknut::XReg dest_reg,
++                         oaknut::SystemReg src_reg);
++    void WriteMsrHandler(ModuleDestLabel module_dest, oaknut::XReg src_reg);
++    void WriteCntpctHandler(ModuleDestLabel module_dest, oaknut::XReg dest_reg);
++
++private:
++    void BranchToPatch(uintptr_t module_dest) {
++        m_branch_to_patch_relocations.push_back({c.offset(), module_dest});
++    }
++
++    void BranchToModule(uintptr_t module_dest) {
++        m_branch_to_module_relocations.push_back({c.offset(), module_dest});
++        c.dw(0);
++    }
++
++    void WriteModulePc(uintptr_t module_dest) {
++        m_write_module_pc_relocations.push_back({c.offset(), module_dest});
++        c.dx(0);
++    }
++
++private:
++    // List of patch instructions we have generated.
++    std::vector<u32> m_patch_instructions{};
++
++    // Relocation type for relative branch from module to patch.
++    struct Relocation {
++        ptrdiff_t patch_offset;  ///< Offset in bytes from the start of the patch section.
++        uintptr_t module_offset; ///< Offset in bytes from the start of the text section.
++    };
++
++    oaknut::VectorCodeGenerator c;
++    std::vector<Trampoline> m_trampolines;
++    std::vector<Relocation> m_branch_to_patch_relocations{};
++    std::vector<Relocation> m_branch_to_module_relocations{};
++    std::vector<Relocation> m_write_module_pc_relocations{};
++    oaknut::Label m_save_context{};
++    oaknut::Label m_load_context{};
++    PatchMode mode{PatchMode::None};
++};
++
++} // namespace Core::NCE
+diff --git a/src/core/cpu_manager.cpp b/src/core/cpu_manager.cpp
+index 980bb97f9567..151eb3870c6c 100644
+--- a/src/core/cpu_manager.cpp
++++ b/src/core/cpu_manager.cpp
+@@ -211,6 +211,8 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
+         system.GPU().ObtainContext();
+     }
+ 
++    system.ArmInterface(core).Initialize();
++
+     auto& kernel = system.Kernel();
+     auto& scheduler = *kernel.CurrentScheduler();
+     auto* thread = scheduler.GetSchedulerCurrentThread();
+diff --git a/src/core/device_memory.cpp b/src/core/device_memory.cpp
+index de3f8ef8f44e..3a915164691e 100644
+--- a/src/core/device_memory.cpp
++++ b/src/core/device_memory.cpp
+@@ -6,7 +6,7 @@
+ 
+ namespace Core {
+ 
+-#ifdef ANDROID
++#ifdef ARCHITECTURE_arm64
+ constexpr size_t VirtualReserveSize = 1ULL << 38;
+ #else
+ constexpr size_t VirtualReserveSize = 1ULL << 39;
+@@ -15,6 +15,7 @@ constexpr size_t VirtualReserveSize = 1ULL << 39;
+ DeviceMemory::DeviceMemory()
+     : buffer{Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize(),
+              VirtualReserveSize} {}
++
+ DeviceMemory::~DeviceMemory() = default;
+ 
+ } // namespace Core
+diff --git a/src/core/hle/kernel/code_set.h b/src/core/hle/kernel/code_set.h
+index af1af2b78afe..d53da82f44f4 100644
+--- a/src/core/hle/kernel/code_set.h
++++ b/src/core/hle/kernel/code_set.h
+@@ -75,11 +75,20 @@ struct CodeSet final {
+         return segments[2];
+     }
+ 
++    Segment& PatchSegment() {
++        return patch_segment;
++    }
++
++    const Segment& PatchSegment() const {
++        return patch_segment;
++    }
++
+     /// The overall data that backs this code set.
+     Kernel::PhysicalMemory memory;
+ 
+     /// The segments that comprise this code set.
+     std::array<Segment, 3> segments;
++    Segment patch_segment;
+ 
+     /// The entry point address for this code set.
+     KProcessAddress entrypoint = 0;
+diff --git a/src/core/hle/kernel/k_address_space_info.cpp b/src/core/hle/kernel/k_address_space_info.cpp
+index 32173e52b4b9..3235a7a3765e 100644
+--- a/src/core/hle/kernel/k_address_space_info.cpp
++++ b/src/core/hle/kernel/k_address_space_info.cpp
+@@ -25,8 +25,8 @@ constexpr std::array<KAddressSpaceInfo, 13> AddressSpaceInfos{{
+    { .bit_width = 36, .address = 2_GiB       , .size = 64_GiB  - 2_GiB  , .type = KAddressSpaceInfo::Type::MapLarge, },
+    { .bit_width = 36, .address = Size_Invalid, .size = 8_GiB            , .type = KAddressSpaceInfo::Type::Heap,     },
+    { .bit_width = 36, .address = Size_Invalid, .size = 6_GiB            , .type = KAddressSpaceInfo::Type::Alias,    },
+-#ifdef ANDROID
+-   // With Android, we use a 38-bit address space due to memory limitations. This should (safely) truncate ASLR region.
++#ifdef ARCHITECTURE_arm64
++   // With NCE, we use a 38-bit address space due to memory limitations. This should (safely) truncate ASLR region.
+    { .bit_width = 39, .address = 128_MiB     , .size = 256_GiB - 128_MiB, .type = KAddressSpaceInfo::Type::Map39Bit, },
+ #else
+    { .bit_width = 39, .address = 128_MiB     , .size = 512_GiB - 128_MiB, .type = KAddressSpaceInfo::Type::Map39Bit, },
+diff --git a/src/core/hle/kernel/k_page_table_base.cpp b/src/core/hle/kernel/k_page_table_base.cpp
+index 47dc8fd35cc7..f7f1e8a3bc52 100644
+--- a/src/core/hle/kernel/k_page_table_base.cpp
++++ b/src/core/hle/kernel/k_page_table_base.cpp
+@@ -88,6 +88,22 @@ Result FlushDataCache(AddressType addr, u64 size) {
+     R_SUCCEED();
+ }
+ 
++constexpr Common::MemoryPermission ConvertToMemoryPermission(KMemoryPermission perm) {
++    Common::MemoryPermission perms{};
++    if (True(perm & KMemoryPermission::UserRead)) {
++        perms |= Common::MemoryPermission::Read;
++    }
++    if (True(perm & KMemoryPermission::UserWrite)) {
++        perms |= Common::MemoryPermission::Write;
++    }
++#ifdef ARCHITECTURE_arm64
++    if (True(perm & KMemoryPermission::UserExecute)) {
++        perms |= Common::MemoryPermission::Execute;
++    }
++#endif
++    return perms;
++}
++
+ } // namespace
+ 
+ void KPageTableBase::MemoryRange::Open() {
+@@ -170,7 +186,8 @@ Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool
+                                             KMemoryManager::Pool pool, KProcessAddress code_address,
+                                             size_t code_size, KSystemResource* system_resource,
+                                             KResourceLimit* resource_limit,
+-                                            Core::Memory::Memory& memory) {
++                                            Core::Memory::Memory& memory,
++                                            KProcessAddress aslr_space_start) {
+     // Calculate region extents.
+     const size_t as_width = GetAddressSpaceWidth(as_type);
+     const KProcessAddress start = 0;
+@@ -211,7 +228,8 @@ Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool
+         heap_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Heap);
+         stack_region_size = GetSpaceSize(KAddressSpaceInfo::Type::Stack);
+         kernel_map_region_size = GetSpaceSize(KAddressSpaceInfo::Type::MapSmall);
+-        m_code_region_start = GetSpaceStart(KAddressSpaceInfo::Type::Map39Bit);
++        m_code_region_start = m_address_space_start + aslr_space_start +
++                              GetSpaceStart(KAddressSpaceInfo::Type::Map39Bit);
+         m_code_region_end = m_code_region_start + GetSpaceSize(KAddressSpaceInfo::Type::Map39Bit);
+         m_alias_code_region_start = m_code_region_start;
+         m_alias_code_region_end = m_code_region_end;
+@@ -5643,7 +5661,8 @@ Result KPageTableBase::Operate(PageLinkedList* page_list, KProcessAddress virt_a
+     case OperationType::Map: {
+         ASSERT(virt_addr != 0);
+         ASSERT(Common::IsAligned(GetInteger(virt_addr), PageSize));
+-        m_memory->MapMemoryRegion(*m_impl, virt_addr, num_pages * PageSize, phys_addr);
++        m_memory->MapMemoryRegion(*m_impl, virt_addr, num_pages * PageSize, phys_addr,
++                                  ConvertToMemoryPermission(properties.perm));
+ 
+         // Open references to pages, if we should.
+         if (this->IsHeapPhysicalAddress(phys_addr)) {
+@@ -5658,8 +5677,18 @@ Result KPageTableBase::Operate(PageLinkedList* page_list, KProcessAddress virt_a
+     }
+     case OperationType::ChangePermissions:
+     case OperationType::ChangePermissionsAndRefresh:
+-    case OperationType::ChangePermissionsAndRefreshAndFlush:
++    case OperationType::ChangePermissionsAndRefreshAndFlush: {
++        const bool read = True(properties.perm & Kernel::KMemoryPermission::UserRead);
++        const bool write = True(properties.perm & Kernel::KMemoryPermission::UserWrite);
++        // todo: this doesn't really belong here and should go into m_memory to handle rasterizer
++        // access todo: ignore exec on non-direct-mapped case
++        const bool exec = True(properties.perm & Kernel::KMemoryPermission::UserExecute);
++        if (Settings::IsFastmemEnabled()) {
++            m_system.DeviceMemory().buffer.Protect(GetInteger(virt_addr), num_pages * PageSize,
++                                                   read, write, exec);
++        }
+         R_SUCCEED();
++    }
+     default:
+         UNREACHABLE();
+     }
+@@ -5687,7 +5716,8 @@ Result KPageTableBase::Operate(PageLinkedList* page_list, KProcessAddress virt_a
+             const size_t size{node.GetNumPages() * PageSize};
+ 
+             // Map the pages.
+-            m_memory->MapMemoryRegion(*m_impl, virt_addr, size, node.GetAddress());
++            m_memory->MapMemoryRegion(*m_impl, virt_addr, size, node.GetAddress(),
++                                      ConvertToMemoryPermission(properties.perm));
+ 
+             virt_addr += size;
+         }
+diff --git a/src/core/hle/kernel/k_page_table_base.h b/src/core/hle/kernel/k_page_table_base.h
+index ee2c41e67bfa..556d230b3e88 100644
+--- a/src/core/hle/kernel/k_page_table_base.h
++++ b/src/core/hle/kernel/k_page_table_base.h
+@@ -235,7 +235,8 @@ class KPageTableBase {
+                                 bool enable_device_address_space_merge, bool from_back,
+                                 KMemoryManager::Pool pool, KProcessAddress code_address,
+                                 size_t code_size, KSystemResource* system_resource,
+-                                KResourceLimit* resource_limit, Core::Memory::Memory& memory);
++                                KResourceLimit* resource_limit, Core::Memory::Memory& memory,
++                                KProcessAddress aslr_space_start);
+ 
+     void Finalize();
+ 
+diff --git a/src/core/hle/kernel/k_process.cpp b/src/core/hle/kernel/k_process.cpp
+index 3cfb414e5d84..d2e9f2a2e3ea 100644
+--- a/src/core/hle/kernel/k_process.cpp
++++ b/src/core/hle/kernel/k_process.cpp
+@@ -300,7 +300,7 @@ Result KProcess::Initialize(const Svc::CreateProcessParameter& params, const KPa
+             False(params.flags & Svc::CreateProcessFlag::DisableDeviceAddressSpaceMerge);
+         R_TRY(m_page_table.Initialize(as_type, enable_aslr, enable_das_merge, !enable_aslr, pool,
+                                       params.code_address, params.code_num_pages * PageSize,
+-                                      m_system_resource, res_limit, this->GetMemory()));
++                                      m_system_resource, res_limit, this->GetMemory(), 0));
+     }
+     ON_RESULT_FAILURE_2 {
+         m_page_table.Finalize();
+@@ -332,7 +332,7 @@ Result KProcess::Initialize(const Svc::CreateProcessParameter& params, const KPa
+ 
+ Result KProcess::Initialize(const Svc::CreateProcessParameter& params,
+                             std::span<const u32> user_caps, KResourceLimit* res_limit,
+-                            KMemoryManager::Pool pool) {
++                            KMemoryManager::Pool pool, KProcessAddress aslr_space_start) {
+     ASSERT(res_limit != nullptr);
+ 
+     // Set members.
+@@ -393,7 +393,7 @@ Result KProcess::Initialize(const Svc::CreateProcessParameter& params,
+             False(params.flags & Svc::CreateProcessFlag::DisableDeviceAddressSpaceMerge);
+         R_TRY(m_page_table.Initialize(as_type, enable_aslr, enable_das_merge, !enable_aslr, pool,
+                                       params.code_address, code_size, m_system_resource, res_limit,
+-                                      this->GetMemory()));
++                                      this->GetMemory(), aslr_space_start));
+     }
+     ON_RESULT_FAILURE_2 {
+         m_page_table.Finalize();
+@@ -1128,7 +1128,7 @@ KProcess::KProcess(KernelCore& kernel)
+ KProcess::~KProcess() = default;
+ 
+ Result KProcess::LoadFromMetadata(const FileSys::ProgramMetadata& metadata, std::size_t code_size,
+-                                  bool is_hbl) {
++                                  KProcessAddress aslr_space_start, bool is_hbl) {
+     // Create a resource limit for the process.
+     const auto physical_memory_size =
+         m_kernel.MemoryManager().GetSize(Kernel::KMemoryManager::Pool::Application);
+@@ -1179,7 +1179,7 @@ Result KProcess::LoadFromMetadata(const FileSys::ProgramMetadata& metadata, std:
+         .name = {},
+         .version = {},
+         .program_id = metadata.GetTitleID(),
+-        .code_address = code_address,
++        .code_address = code_address + GetInteger(aslr_space_start),
+         .code_num_pages = static_cast<s32>(code_size / PageSize),
+         .flags = flag,
+         .reslimit = Svc::InvalidHandle,
+@@ -1193,7 +1193,7 @@ Result KProcess::LoadFromMetadata(const FileSys::ProgramMetadata& metadata, std:
+ 
+     // Initialize for application process.
+     R_TRY(this->Initialize(params, metadata.GetKernelCapabilities(), res_limit,
+-                           KMemoryManager::Pool::Application));
++                           KMemoryManager::Pool::Application, aslr_space_start));
+ 
+     // Assign remaining properties.
+     m_is_hbl = is_hbl;
+@@ -1214,6 +1214,17 @@ void KProcess::LoadModule(CodeSet code_set, KProcessAddress base_addr) {
+     ReprotectSegment(code_set.CodeSegment(), Svc::MemoryPermission::ReadExecute);
+     ReprotectSegment(code_set.RODataSegment(), Svc::MemoryPermission::Read);
+     ReprotectSegment(code_set.DataSegment(), Svc::MemoryPermission::ReadWrite);
++
++#ifdef ARCHITECTURE_arm64
++    if (Settings::IsNceEnabled()) {
++        auto& buffer = m_kernel.System().DeviceMemory().buffer;
++        const auto& code = code_set.CodeSegment();
++        const auto& patch = code_set.PatchSegment();
++        buffer.Protect(GetInteger(base_addr + code.addr), code.size, true, true, true);
++        buffer.Protect(GetInteger(base_addr + patch.addr), patch.size, true, true, true);
++        ReprotectSegment(code_set.PatchSegment(), Svc::MemoryPermission::None);
++    }
++#endif
+ }
+ 
+ bool KProcess::InsertWatchpoint(KProcessAddress addr, u64 size, DebugWatchpointType type) {
+diff --git a/src/core/hle/kernel/k_process.h b/src/core/hle/kernel/k_process.h
+index 8339465fd8f8..e5f796ac7c7f 100644
+--- a/src/core/hle/kernel/k_process.h
++++ b/src/core/hle/kernel/k_process.h
+@@ -112,6 +112,7 @@ class KProcess final : public KAutoObjectWithSlabHeapAndContainer<KProcess, KWor
+     std::array<KThread*, Core::Hardware::NUM_CPU_CORES> m_pinned_threads{};
+     std::array<DebugWatchpoint, Core::Hardware::NUM_WATCHPOINTS> m_watchpoints{};
+     std::map<KProcessAddress, u64> m_debug_page_refcounts{};
++    std::unordered_map<u64, u64> m_post_handlers{};
+     std::atomic<s64> m_cpu_time{};
+     std::atomic<s64> m_num_process_switches{};
+     std::atomic<s64> m_num_thread_switches{};
+@@ -150,7 +151,8 @@ class KProcess final : public KAutoObjectWithSlabHeapAndContainer<KProcess, KWor
+                       std::span<const u32> caps, KResourceLimit* res_limit,
+                       KMemoryManager::Pool pool, bool immortal);
+     Result Initialize(const Svc::CreateProcessParameter& params, std::span<const u32> user_caps,
+-                      KResourceLimit* res_limit, KMemoryManager::Pool pool);
++                      KResourceLimit* res_limit, KMemoryManager::Pool pool,
++                      KProcessAddress aslr_space_start);
+     void Exit();
+ 
+     const char* GetName() const {
+@@ -466,6 +468,10 @@ class KProcess final : public KAutoObjectWithSlabHeapAndContainer<KProcess, KWor
+ 
+     static void Switch(KProcess* cur_process, KProcess* next_process);
+ 
++    std::unordered_map<u64, u64>& GetPostHandlers() noexcept {
++        return m_post_handlers;
++    }
++
+ public:
+     // Attempts to insert a watchpoint into a free slot. Returns false if none are available.
+     bool InsertWatchpoint(KProcessAddress addr, u64 size, DebugWatchpointType type);
+@@ -479,7 +485,7 @@ class KProcess final : public KAutoObjectWithSlabHeapAndContainer<KProcess, KWor
+ 
+ public:
+     Result LoadFromMetadata(const FileSys::ProgramMetadata& metadata, std::size_t code_size,
+-                            bool is_hbl);
++                            KProcessAddress aslr_space_start, bool is_hbl);
+ 
+     void LoadModule(CodeSet code_set, KProcessAddress base_addr);
+ 
+diff --git a/src/core/hle/kernel/k_process_page_table.h b/src/core/hle/kernel/k_process_page_table.h
+index b7ae5abd01d5..9e40f68bc01a 100644
+--- a/src/core/hle/kernel/k_process_page_table.h
++++ b/src/core/hle/kernel/k_process_page_table.h
+@@ -23,10 +23,11 @@ class KProcessPageTable {
+     Result Initialize(Svc::CreateProcessFlag as_type, bool enable_aslr, bool enable_das_merge,
+                       bool from_back, KMemoryManager::Pool pool, KProcessAddress code_address,
+                       size_t code_size, KSystemResource* system_resource,
+-                      KResourceLimit* resource_limit, Core::Memory::Memory& memory) {
+-        R_RETURN(m_page_table.InitializeForProcess(as_type, enable_aslr, enable_das_merge,
+-                                                   from_back, pool, code_address, code_size,
+-                                                   system_resource, resource_limit, memory));
++                      KResourceLimit* resource_limit, Core::Memory::Memory& memory,
++                      KProcessAddress aslr_space_start) {
++        R_RETURN(m_page_table.InitializeForProcess(
++            as_type, enable_aslr, enable_das_merge, from_back, pool, code_address, code_size,
++            system_resource, resource_limit, memory, aslr_space_start));
+     }
+ 
+     void Finalize() {
+diff --git a/src/core/hle/kernel/k_thread.h b/src/core/hle/kernel/k_thread.h
+index e1f80b04f4f4..e9ca5dfcadaf 100644
+--- a/src/core/hle/kernel/k_thread.h
++++ b/src/core/hle/kernel/k_thread.h
+@@ -655,6 +655,21 @@ class KThread final : public KAutoObjectWithSlabHeapAndContainer<KThread, KWorke
+         return m_stack_top;
+     }
+ 
++public:
++    // TODO: This shouldn't be defined in kernel namespace
++    struct NativeExecutionParameters {
++        u64 tpidr_el0{};
++        u64 tpidrro_el0{};
++        void* native_context{};
++        std::atomic<u32> lock{1};
++        bool is_running{};
++        u32 magic{Common::MakeMagic('Y', 'U', 'Z', 'U')};
++    };
++
++    NativeExecutionParameters& GetNativeExecutionParameters() {
++        return m_native_execution_parameters;
++    }
++
+ private:
+     KThread* RemoveWaiterByKey(bool* out_has_waiters, KProcessAddress key,
+                                bool is_kernel_address_key);
+@@ -914,6 +929,7 @@ class KThread final : public KAutoObjectWithSlabHeapAndContainer<KThread, KWorke
+     ThreadWaitReasonForDebugging m_wait_reason_for_debugging{};
+     uintptr_t m_argument{};
+     KProcessAddress m_stack_top{};
++    NativeExecutionParameters m_native_execution_parameters{};
+ 
+ public:
+     using ConditionVariableThreadTreeType = ConditionVariableThreadTree;
+diff --git a/src/core/hle/kernel/physical_core.cpp b/src/core/hle/kernel/physical_core.cpp
+index 5ee869fa2f59..15434212e7e2 100644
+--- a/src/core/hle/kernel/physical_core.cpp
++++ b/src/core/hle/kernel/physical_core.cpp
+@@ -1,8 +1,12 @@
+ // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "common/settings.h"
+ #include "core/arm/dynarmic/arm_dynarmic_32.h"
+ #include "core/arm/dynarmic/arm_dynarmic_64.h"
++#ifdef ARCHITECTURE_arm64
++#include "core/arm/nce/arm_nce.h"
++#endif
+ #include "core/core.h"
+ #include "core/hle/kernel/k_scheduler.h"
+ #include "core/hle/kernel/kernel.h"
+@@ -14,7 +18,8 @@ PhysicalCore::PhysicalCore(std::size_t core_index, Core::System& system, KSchedu
+     : m_core_index{core_index}, m_system{system}, m_scheduler{scheduler} {
+ #if defined(ARCHITECTURE_x86_64) || defined(ARCHITECTURE_arm64)
+     // TODO(bunnei): Initialization relies on a core being available. We may later replace this with
+-    // a 32-bit instance of Dynarmic. This should be abstracted out to a CPU manager.
++    // an NCE interface or a 32-bit instance of Dynarmic. This should be abstracted out to a CPU
++    // manager.
+     auto& kernel = system.Kernel();
+     m_arm_interface = std::make_unique<Core::ARM_Dynarmic_64>(
+         system, kernel.IsMulticore(),
+@@ -28,6 +33,13 @@ PhysicalCore::PhysicalCore(std::size_t core_index, Core::System& system, KSchedu
+ PhysicalCore::~PhysicalCore() = default;
+ 
+ void PhysicalCore::Initialize(bool is_64_bit) {
++#if defined(ARCHITECTURE_arm64)
++    if (Settings::IsNceEnabled()) {
++        m_arm_interface = std::make_unique<Core::ARM_NCE>(m_system, m_system.Kernel().IsMulticore(),
++                                                          m_core_index);
++        return;
++    }
++#endif
+ #if defined(ARCHITECTURE_x86_64) || defined(ARCHITECTURE_arm64)
+     auto& kernel = m_system.Kernel();
+     if (!is_64_bit) {
+diff --git a/src/core/loader/deconstructed_rom_directory.cpp b/src/core/loader/deconstructed_rom_directory.cpp
+index 5c36b71e5340..31c00f0a3197 100644
+--- a/src/core/loader/deconstructed_rom_directory.cpp
++++ b/src/core/loader/deconstructed_rom_directory.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include <cstring>
+ #include "common/logging/log.h"
++#include "common/settings.h"
+ #include "core/core.h"
+ #include "core/file_sys/content_archive.h"
+ #include "core/file_sys/control_metadata.h"
+@@ -14,6 +15,10 @@
+ #include "core/loader/deconstructed_rom_directory.h"
+ #include "core/loader/nso.h"
+ 
++#ifdef ARCHITECTURE_arm64
++#include "core/arm/nce/patch.h"
++#endif
++
+ namespace Loader {
+ 
+ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_,
+@@ -124,21 +129,43 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+     }
+     metadata.Print();
+ 
+-    const auto static_modules = {"rtld",    "main",    "subsdk0", "subsdk1", "subsdk2",
+-                                 "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7",
+-                                 "subsdk8", "subsdk9", "sdk"};
++    // Enable NCE only for programs with 39-bit address space.
++    const bool is_39bit =
++        metadata.GetAddressSpaceType() == FileSys::ProgramAddressSpaceType::Is39Bit;
++    Settings::SetNceEnabled(is_39bit);
++
++    const std::array static_modules = {"rtld",    "main",    "subsdk0", "subsdk1", "subsdk2",
++                                       "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7",
++                                       "subsdk8", "subsdk9", "sdk"};
+ 
+-    // Use the NSO module loader to figure out the code layout
+     std::size_t code_size{};
+-    for (const auto& module : static_modules) {
++
++    // Define an nce patch context for each potential module.
++#ifdef ARCHITECTURE_arm64
++    std::array<Core::NCE::Patcher, 13> module_patchers;
++#endif
++
++    const auto GetPatcher = [&](size_t i) -> Core::NCE::Patcher* {
++#ifdef ARCHITECTURE_arm64
++        if (Settings::IsNceEnabled()) {
++            return &module_patchers[i];
++        }
++#endif
++        return nullptr;
++    };
++
++    // Use the NSO module loader to figure out the code layout
++    for (size_t i = 0; i < static_modules.size(); i++) {
++        const auto& module = static_modules[i];
+         const FileSys::VirtualFile module_file{dir->GetFile(module)};
+         if (!module_file) {
+             continue;
+         }
+ 
+         const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+-        const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
+-            process, system, *module_file, code_size, should_pass_arguments, false);
++        const auto tentative_next_load_addr =
++            AppLoader_NSO::LoadModule(process, system, *module_file, code_size,
++                                      should_pass_arguments, false, {}, GetPatcher(i));
+         if (!tentative_next_load_addr) {
+             return {ResultStatus::ErrorLoadingNSO, {}};
+         }
+@@ -146,8 +173,18 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+         code_size = *tentative_next_load_addr;
+     }
+ 
++    // Enable direct memory mapping in case of NCE.
++    const u64 fastmem_base = [&]() -> size_t {
++        if (Settings::IsNceEnabled()) {
++            auto& buffer = system.DeviceMemory().buffer;
++            buffer.EnableDirectMappedAddress();
++            return reinterpret_cast<u64>(buffer.VirtualBasePointer());
++        }
++        return 0;
++    }();
++
+     // Setup the process code layout
+-    if (process.LoadFromMetadata(metadata, code_size, is_hbl).IsError()) {
++    if (process.LoadFromMetadata(metadata, code_size, fastmem_base, is_hbl).IsError()) {
+         return {ResultStatus::ErrorUnableToParseKernelMetadata, {}};
+     }
+ 
+@@ -157,7 +194,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+     VAddr next_load_addr{base_address};
+     const FileSys::PatchManager pm{metadata.GetTitleID(), system.GetFileSystemController(),
+                                    system.GetContentProvider()};
+-    for (const auto& module : static_modules) {
++    for (size_t i = 0; i < static_modules.size(); i++) {
++        const auto& module = static_modules[i];
+         const FileSys::VirtualFile module_file{dir->GetFile(module)};
+         if (!module_file) {
+             continue;
+@@ -165,15 +203,16 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+ 
+         const VAddr load_addr{next_load_addr};
+         const bool should_pass_arguments = std::strcmp(module, "rtld") == 0;
+-        const auto tentative_next_load_addr = AppLoader_NSO::LoadModule(
+-            process, system, *module_file, load_addr, should_pass_arguments, true, pm);
++        const auto tentative_next_load_addr =
++            AppLoader_NSO::LoadModule(process, system, *module_file, load_addr,
++                                      should_pass_arguments, true, pm, GetPatcher(i));
+         if (!tentative_next_load_addr) {
+             return {ResultStatus::ErrorLoadingNSO, {}};
+         }
+ 
+         next_load_addr = *tentative_next_load_addr;
+         modules.insert_or_assign(load_addr, module);
+-        LOG_DEBUG(Loader, "loaded module {} @ 0x{:X}", module, load_addr);
++        LOG_DEBUG(Loader, "loaded module {} @ {:#X}", module, load_addr);
+     }
+ 
+     // Find the RomFS by searching for a ".romfs" file in this directory
+diff --git a/src/core/loader/kip.cpp b/src/core/loader/kip.cpp
+index bf56a08b4052..cd6982921775 100644
+--- a/src/core/loader/kip.cpp
++++ b/src/core/loader/kip.cpp
+@@ -91,7 +91,8 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::KProcess& process,
+ 
+     // Setup the process code layout
+     if (process
+-            .LoadFromMetadata(FileSys::ProgramMetadata::GetDefault(), program_image.size(), false)
++            .LoadFromMetadata(FileSys::ProgramMetadata::GetDefault(), program_image.size(), 0,
++                              false)
+             .IsError()) {
+         return {ResultStatus::ErrorNotInitialized, {}};
+     }
+diff --git a/src/core/loader/nro.cpp b/src/core/loader/nro.cpp
+index 69f1a54ed61f..49d4d7e437e7 100644
+--- a/src/core/loader/nro.cpp
++++ b/src/core/loader/nro.cpp
+@@ -22,6 +22,10 @@
+ #include "core/loader/nso.h"
+ #include "core/memory.h"
+ 
++#ifdef ARCHITECTURE_arm64
++#include "core/arm/nce/patch.h"
++#endif
++
+ namespace Loader {
+ 
+ struct NroSegmentHeader {
+@@ -139,7 +143,8 @@ static constexpr u32 PageAlignSize(u32 size) {
+     return static_cast<u32>((size + Core::Memory::YUZU_PAGEMASK) & ~Core::Memory::YUZU_PAGEMASK);
+ }
+ 
+-static bool LoadNroImpl(Kernel::KProcess& process, const std::vector<u8>& data) {
++static bool LoadNroImpl(Core::System& system, Kernel::KProcess& process,
++                        const std::vector<u8>& data) {
+     if (data.size() < sizeof(NroHeader)) {
+         return {};
+     }
+@@ -194,14 +199,61 @@ static bool LoadNroImpl(Kernel::KProcess& process, const std::vector<u8>& data)
+ 
+     codeset.DataSegment().size += bss_size;
+     program_image.resize(static_cast<u32>(program_image.size()) + bss_size);
++    size_t image_size = program_image.size();
++
++#ifdef ARCHITECTURE_arm64
++    const auto& code = codeset.CodeSegment();
++
++    // NROs always have a 39-bit address space.
++    Settings::SetNceEnabled(true);
++
++    // Create NCE patcher
++    Core::NCE::Patcher patch{};
++
++    if (Settings::IsNceEnabled()) {
++        // Patch SVCs and MRS calls in the guest code
++        patch.PatchText(program_image, code);
++
++        // We only support PostData patching for NROs.
++        ASSERT(patch.GetPatchMode() == Core::NCE::PatchMode::PostData);
++
++        // Update patch section.
++        auto& patch_segment = codeset.PatchSegment();
++        patch_segment.addr = image_size;
++        patch_segment.size = static_cast<u32>(patch.GetSectionSize());
++
++        // Add patch section size to the module size.
++        image_size += patch_segment.size;
++    }
++#endif
++
++    // Enable direct memory mapping in case of NCE.
++    const u64 fastmem_base = [&]() -> size_t {
++        if (Settings::IsNceEnabled()) {
++            auto& buffer = system.DeviceMemory().buffer;
++            buffer.EnableDirectMappedAddress();
++            return reinterpret_cast<u64>(buffer.VirtualBasePointer());
++        }
++        return 0;
++    }();
+ 
+     // Setup the process code layout
+     if (process
+-            .LoadFromMetadata(FileSys::ProgramMetadata::GetDefault(), program_image.size(), false)
++            .LoadFromMetadata(FileSys::ProgramMetadata::GetDefault(), image_size, fastmem_base,
++                              false)
+             .IsError()) {
+         return false;
+     }
+ 
++    // Relocate code patch and copy to the program_image if running under NCE.
++    // This needs to be after LoadFromMetadata so we can use the process entry point.
++#ifdef ARCHITECTURE_arm64
++    if (Settings::IsNceEnabled()) {
++        patch.RelocateAndCopy(process.GetEntryPoint(), code, program_image,
++                              &process.GetPostHandlers());
++    }
++#endif
++
+     // Load codeset for current process
+     codeset.memory = std::move(program_image);
+     process.LoadModule(std::move(codeset), process.GetEntryPoint());
+@@ -209,8 +261,9 @@ static bool LoadNroImpl(Kernel::KProcess& process, const std::vector<u8>& data)
+     return true;
+ }
+ 
+-bool AppLoader_NRO::LoadNro(Kernel::KProcess& process, const FileSys::VfsFile& nro_file) {
+-    return LoadNroImpl(process, nro_file.ReadAllBytes());
++bool AppLoader_NRO::LoadNro(Core::System& system, Kernel::KProcess& process,
++                            const FileSys::VfsFile& nro_file) {
++    return LoadNroImpl(system, process, nro_file.ReadAllBytes());
+ }
+ 
+ AppLoader_NRO::LoadResult AppLoader_NRO::Load(Kernel::KProcess& process, Core::System& system) {
+@@ -218,7 +271,7 @@ AppLoader_NRO::LoadResult AppLoader_NRO::Load(Kernel::KProcess& process, Core::S
+         return {ResultStatus::ErrorAlreadyLoaded, {}};
+     }
+ 
+-    if (!LoadNro(process, *file)) {
++    if (!LoadNro(system, process, *file)) {
+         return {ResultStatus::ErrorLoadingNRO, {}};
+     }
+ 
+diff --git a/src/core/loader/nro.h b/src/core/loader/nro.h
+index 8de6eebc6785..d2928cba0e8a 100644
+--- a/src/core/loader/nro.h
++++ b/src/core/loader/nro.h
+@@ -54,7 +54,7 @@ class AppLoader_NRO final : public AppLoader {
+     bool IsRomFSUpdatable() const override;
+ 
+ private:
+-    bool LoadNro(Kernel::KProcess& process, const FileSys::VfsFile& nro_file);
++    bool LoadNro(Core::System& system, Kernel::KProcess& process, const FileSys::VfsFile& nro_file);
+ 
+     std::vector<u8> icon_data;
+     std::unique_ptr<FileSys::NACP> nacp;
+diff --git a/src/core/loader/nso.cpp b/src/core/loader/nso.cpp
+index 1350da8dca95..1ad2e917cd4d 100644
+--- a/src/core/loader/nso.cpp
++++ b/src/core/loader/nso.cpp
+@@ -20,6 +20,10 @@
+ #include "core/loader/nso.h"
+ #include "core/memory.h"
+ 
++#ifdef ARCHITECTURE_arm64
++#include "core/arm/nce/patch.h"
++#endif
++
+ namespace Loader {
+ namespace {
+ struct MODHeader {
+@@ -72,7 +76,8 @@ FileType AppLoader_NSO::IdentifyType(const FileSys::VirtualFile& in_file) {
+ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::System& system,
+                                                const FileSys::VfsFile& nso_file, VAddr load_base,
+                                                bool should_pass_arguments, bool load_into_process,
+-                                               std::optional<FileSys::PatchManager> pm) {
++                                               std::optional<FileSys::PatchManager> pm,
++                                               Core::NCE::Patcher* patch) {
+     if (nso_file.GetSize() < sizeof(NSOHeader)) {
+         return std::nullopt;
+     }
+@@ -86,6 +91,16 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+         return std::nullopt;
+     }
+ 
++    // Allocate some space at the beginning if we are patching in PreText mode.
++    const size_t module_start = [&]() -> size_t {
++#ifdef ARCHITECTURE_arm64
++        if (patch && patch->GetPatchMode() == Core::NCE::PatchMode::PreText) {
++            return patch->GetSectionSize();
++        }
++#endif
++        return 0;
++    }();
++
+     // Build program image
+     Kernel::CodeSet codeset;
+     Kernel::PhysicalMemory program_image;
+@@ -95,11 +110,12 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+         if (nso_header.IsSegmentCompressed(i)) {
+             data = DecompressSegment(data, nso_header.segments[i]);
+         }
+-        program_image.resize(nso_header.segments[i].location + static_cast<u32>(data.size()));
+-        std::memcpy(program_image.data() + nso_header.segments[i].location, data.data(),
+-                    data.size());
+-        codeset.segments[i].addr = nso_header.segments[i].location;
+-        codeset.segments[i].offset = nso_header.segments[i].location;
++        program_image.resize(module_start + nso_header.segments[i].location +
++                             static_cast<u32>(data.size()));
++        std::memcpy(program_image.data() + module_start + nso_header.segments[i].location,
++                    data.data(), data.size());
++        codeset.segments[i].addr = module_start + nso_header.segments[i].location;
++        codeset.segments[i].offset = module_start + nso_header.segments[i].location;
+         codeset.segments[i].size = nso_header.segments[i].size;
+     }
+ 
+@@ -118,7 +134,7 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+     }
+ 
+     codeset.DataSegment().size += nso_header.segments[2].bss_size;
+-    const u32 image_size{
++    u32 image_size{
+         PageAlignSize(static_cast<u32>(program_image.size()) + nso_header.segments[2].bss_size)};
+     program_image.resize(image_size);
+ 
+@@ -139,6 +155,33 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
+         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), program_image.data());
+     }
+ 
++#ifdef ARCHITECTURE_arm64
++    // If we are computing the process code layout and using nce backend, patch.
++    const auto& code = codeset.CodeSegment();
++    if (patch && patch->GetPatchMode() == Core::NCE::PatchMode::None) {
++        // Patch SVCs and MRS calls in the guest code
++        patch->PatchText(program_image, code);
++
++        // Add patch section size to the module size.
++        image_size += patch->GetSectionSize();
++    } else if (patch) {
++        // Relocate code patch and copy to the program_image.
++        patch->RelocateAndCopy(load_base, code, program_image, &process.GetPostHandlers());
++
++        // Update patch section.
++        auto& patch_segment = codeset.PatchSegment();
++        patch_segment.addr =
++            patch->GetPatchMode() == Core::NCE::PatchMode::PreText ? 0 : image_size;
++        patch_segment.size = static_cast<u32>(patch->GetSectionSize());
++
++        // Add patch section size to the module size. In PreText mode image_size
++        // already contains the patch segment as part of module_start.
++        if (patch->GetPatchMode() == Core::NCE::PatchMode::PostData) {
++            image_size += patch_segment.size;
++        }
++    }
++#endif
++
+     // If we aren't actually loading (i.e. just computing the process code layout), we are done
+     if (!load_into_process) {
+         return load_base + image_size;
+diff --git a/src/core/loader/nso.h b/src/core/loader/nso.h
+index 0b53b4ecd12e..29b86ed4c56f 100644
+--- a/src/core/loader/nso.h
++++ b/src/core/loader/nso.h
+@@ -15,6 +15,10 @@ namespace Core {
+ class System;
+ }
+ 
++namespace Core::NCE {
++class Patcher;
++}
++
+ namespace Kernel {
+ class KProcess;
+ }
+@@ -88,7 +92,8 @@ class AppLoader_NSO final : public AppLoader {
+     static std::optional<VAddr> LoadModule(Kernel::KProcess& process, Core::System& system,
+                                            const FileSys::VfsFile& nso_file, VAddr load_base,
+                                            bool should_pass_arguments, bool load_into_process,
+-                                           std::optional<FileSys::PatchManager> pm = {});
++                                           std::optional<FileSys::PatchManager> pm = {},
++                                           Core::NCE::Patcher* patch = nullptr);
+ 
+     LoadResult Load(Kernel::KProcess& process, Core::System& system) override;
+ 
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index a3431772a22f..e5ca78ef4458 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -53,7 +53,7 @@ struct Memory::Impl {
+     }
+ 
+     void MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
+-                         Common::PhysicalAddress target) {
++                         Common::PhysicalAddress target, Common::MemoryPermission perms) {
+         ASSERT_MSG((size & YUZU_PAGEMASK) == 0, "non-page aligned size: {:016X}", size);
+         ASSERT_MSG((base & YUZU_PAGEMASK) == 0, "non-page aligned base: {:016X}", GetInteger(base));
+         ASSERT_MSG(target >= DramMemoryMap::Base, "Out of bounds target: {:016X}",
+@@ -63,7 +63,7 @@ struct Memory::Impl {
+ 
+         if (Settings::IsFastmemEnabled()) {
+             system.DeviceMemory().buffer.Map(GetInteger(base),
+-                                             GetInteger(target) - DramMemoryMap::Base, size);
++                                             GetInteger(target) - DramMemoryMap::Base, size, perms);
+         }
+     }
+ 
+@@ -831,8 +831,8 @@ void Memory::SetCurrentPageTable(Kernel::KProcess& process, u32 core_id) {
+ }
+ 
+ void Memory::MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
+-                             Common::PhysicalAddress target) {
+-    impl->MapMemoryRegion(page_table, base, size, target);
++                             Common::PhysicalAddress target, Common::MemoryPermission perms) {
++    impl->MapMemoryRegion(page_table, base, size, target, perms);
+ }
+ 
+ void Memory::UnmapRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size) {
+@@ -1001,4 +1001,17 @@ void Memory::FlushRegion(Common::ProcessAddress dest_addr, size_t size) {
+     impl->FlushRegion(dest_addr, size);
+ }
+ 
++bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
++    bool mapped = true;
++    u8* const ptr = impl->GetPointerImpl(
++        GetInteger(vaddr),
++        [&] {
++            LOG_ERROR(HW_Memory, "Unmapped InvalidateNCE for {} bytes @ {:#x}", size,
++                      GetInteger(vaddr));
++            mapped = false;
++        },
++        [&] { impl->system.GPU().InvalidateRegion(GetInteger(vaddr), size); });
++    return mapped && ptr != nullptr;
++}
++
+ } // namespace Core::Memory
+diff --git a/src/core/memory.h b/src/core/memory.h
+index 13047a5451c3..e5fbc00255f3 100644
+--- a/src/core/memory.h
++++ b/src/core/memory.h
+@@ -15,8 +15,9 @@
+ #include "core/hle/result.h"
+ 
+ namespace Common {
++enum class MemoryPermission : u32;
+ struct PageTable;
+-}
++} // namespace Common
+ 
+ namespace Core {
+ class System;
+@@ -82,9 +83,10 @@ class Memory {
+      * @param size       The amount of bytes to map. Must be page-aligned.
+      * @param target     Buffer with the memory backing the mapping. Must be of length at least
+      *                   `size`.
++     * @param perms      The permissions to map the memory with.
+      */
+     void MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
+-                         Common::PhysicalAddress target);
++                         Common::PhysicalAddress target, Common::MemoryPermission perms);
+ 
+     /**
+      * Unmaps a region of the emulated process address space.
+@@ -472,6 +474,7 @@ class Memory {
+ 
+     void SetGPUDirtyManagers(std::span<Core::GPUDirtyMemoryManager> managers);
+     void InvalidateRegion(Common::ProcessAddress dest_addr, size_t size);
++    bool InvalidateNCE(Common::ProcessAddress vaddr, size_t size);
+     void FlushRegion(Common::ProcessAddress dest_addr, size_t size);
+ 
+ private:
+diff --git a/src/tests/common/host_memory.cpp b/src/tests/common/host_memory.cpp
+index 1b014b6326b0..1a28e862b043 100644
+--- a/src/tests/common/host_memory.cpp
++++ b/src/tests/common/host_memory.cpp
+@@ -11,6 +11,7 @@ using namespace Common::Literals;
+ 
+ static constexpr size_t VIRTUAL_SIZE = 1ULL << 39;
+ static constexpr size_t BACKING_SIZE = 4_GiB;
++static constexpr auto PERMS = Common::MemoryPermission::ReadWrite;
+ 
+ TEST_CASE("HostMemory: Initialize and deinitialize", "[common]") {
+     { HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE); }
+@@ -19,7 +20,7 @@ TEST_CASE("HostMemory: Initialize and deinitialize", "[common]") {
+ 
+ TEST_CASE("HostMemory: Simple map", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x5000, 0x8000, 0x1000);
++    mem.Map(0x5000, 0x8000, 0x1000, PERMS);
+ 
+     volatile u8* const data = mem.VirtualBasePointer() + 0x5000;
+     data[0] = 50;
+@@ -28,8 +29,8 @@ TEST_CASE("HostMemory: Simple map", "[common]") {
+ 
+ TEST_CASE("HostMemory: Simple mirror map", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x5000, 0x3000, 0x2000);
+-    mem.Map(0x8000, 0x4000, 0x1000);
++    mem.Map(0x5000, 0x3000, 0x2000, PERMS);
++    mem.Map(0x8000, 0x4000, 0x1000, PERMS);
+ 
+     volatile u8* const mirror_a = mem.VirtualBasePointer() + 0x5000;
+     volatile u8* const mirror_b = mem.VirtualBasePointer() + 0x8000;
+@@ -39,7 +40,7 @@ TEST_CASE("HostMemory: Simple mirror map", "[common]") {
+ 
+ TEST_CASE("HostMemory: Simple unmap", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x5000, 0x3000, 0x2000);
++    mem.Map(0x5000, 0x3000, 0x2000, PERMS);
+ 
+     volatile u8* const data = mem.VirtualBasePointer() + 0x5000;
+     data[75] = 50;
+@@ -50,7 +51,7 @@ TEST_CASE("HostMemory: Simple unmap", "[common]") {
+ 
+ TEST_CASE("HostMemory: Simple unmap and remap", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x5000, 0x3000, 0x2000);
++    mem.Map(0x5000, 0x3000, 0x2000, PERMS);
+ 
+     volatile u8* const data = mem.VirtualBasePointer() + 0x5000;
+     data[0] = 50;
+@@ -58,79 +59,79 @@ TEST_CASE("HostMemory: Simple unmap and remap", "[common]") {
+ 
+     mem.Unmap(0x5000, 0x2000);
+ 
+-    mem.Map(0x5000, 0x3000, 0x2000);
++    mem.Map(0x5000, 0x3000, 0x2000, PERMS);
+     REQUIRE(data[0] == 50);
+ 
+-    mem.Map(0x7000, 0x2000, 0x5000);
++    mem.Map(0x7000, 0x2000, 0x5000, PERMS);
+     REQUIRE(data[0x3000] == 50);
+ }
+ 
+ TEST_CASE("HostMemory: Nieche allocation", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x0000, 0, 0x20000);
++    mem.Map(0x0000, 0, 0x20000, PERMS);
+     mem.Unmap(0x0000, 0x4000);
+-    mem.Map(0x1000, 0, 0x2000);
+-    mem.Map(0x3000, 0, 0x1000);
+-    mem.Map(0, 0, 0x1000);
++    mem.Map(0x1000, 0, 0x2000, PERMS);
++    mem.Map(0x3000, 0, 0x1000, PERMS);
++    mem.Map(0, 0, 0x1000, PERMS);
+ }
+ 
+ TEST_CASE("HostMemory: Full unmap", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x8000, 0, 0x4000);
++    mem.Map(0x8000, 0, 0x4000, PERMS);
+     mem.Unmap(0x8000, 0x4000);
+-    mem.Map(0x6000, 0, 0x16000);
++    mem.Map(0x6000, 0, 0x16000, PERMS);
+ }
+ 
+ TEST_CASE("HostMemory: Right out of bounds unmap", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x0000, 0, 0x4000);
++    mem.Map(0x0000, 0, 0x4000, PERMS);
+     mem.Unmap(0x2000, 0x4000);
+-    mem.Map(0x2000, 0x80000, 0x4000);
++    mem.Map(0x2000, 0x80000, 0x4000, PERMS);
+ }
+ 
+ TEST_CASE("HostMemory: Left out of bounds unmap", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x8000, 0, 0x4000);
++    mem.Map(0x8000, 0, 0x4000, PERMS);
+     mem.Unmap(0x6000, 0x4000);
+-    mem.Map(0x8000, 0, 0x2000);
++    mem.Map(0x8000, 0, 0x2000, PERMS);
+ }
+ 
+ TEST_CASE("HostMemory: Multiple placeholder unmap", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x0000, 0, 0x4000);
+-    mem.Map(0x4000, 0, 0x1b000);
++    mem.Map(0x0000, 0, 0x4000, PERMS);
++    mem.Map(0x4000, 0, 0x1b000, PERMS);
+     mem.Unmap(0x3000, 0x1c000);
+-    mem.Map(0x3000, 0, 0x20000);
++    mem.Map(0x3000, 0, 0x20000, PERMS);
+ }
+ 
+ TEST_CASE("HostMemory: Unmap between placeholders", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x0000, 0, 0x4000);
+-    mem.Map(0x4000, 0, 0x4000);
++    mem.Map(0x0000, 0, 0x4000, PERMS);
++    mem.Map(0x4000, 0, 0x4000, PERMS);
+     mem.Unmap(0x2000, 0x4000);
+-    mem.Map(0x2000, 0, 0x4000);
++    mem.Map(0x2000, 0, 0x4000, PERMS);
+ }
+ 
+ TEST_CASE("HostMemory: Unmap to origin", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x4000, 0, 0x4000);
+-    mem.Map(0x8000, 0, 0x4000);
++    mem.Map(0x4000, 0, 0x4000, PERMS);
++    mem.Map(0x8000, 0, 0x4000, PERMS);
+     mem.Unmap(0x4000, 0x4000);
+-    mem.Map(0, 0, 0x4000);
+-    mem.Map(0x4000, 0, 0x4000);
++    mem.Map(0, 0, 0x4000, PERMS);
++    mem.Map(0x4000, 0, 0x4000, PERMS);
+ }
+ 
+ TEST_CASE("HostMemory: Unmap to right", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x4000, 0, 0x4000);
+-    mem.Map(0x8000, 0, 0x4000);
++    mem.Map(0x4000, 0, 0x4000, PERMS);
++    mem.Map(0x8000, 0, 0x4000, PERMS);
+     mem.Unmap(0x8000, 0x4000);
+-    mem.Map(0x8000, 0, 0x4000);
++    mem.Map(0x8000, 0, 0x4000, PERMS);
+ }
+ 
+ TEST_CASE("HostMemory: Partial right unmap check bindings", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x4000, 0x10000, 0x4000);
++    mem.Map(0x4000, 0x10000, 0x4000, PERMS);
+ 
+     volatile u8* const ptr = mem.VirtualBasePointer() + 0x4000;
+     ptr[0x1000] = 17;
+@@ -142,7 +143,7 @@ TEST_CASE("HostMemory: Partial right unmap check bindings", "[common]") {
+ 
+ TEST_CASE("HostMemory: Partial left unmap check bindings", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x4000, 0x10000, 0x4000);
++    mem.Map(0x4000, 0x10000, 0x4000, PERMS);
+ 
+     volatile u8* const ptr = mem.VirtualBasePointer() + 0x4000;
+     ptr[0x3000] = 19;
+@@ -156,7 +157,7 @@ TEST_CASE("HostMemory: Partial left unmap check bindings", "[common]") {
+ 
+ TEST_CASE("HostMemory: Partial middle unmap check bindings", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x4000, 0x10000, 0x4000);
++    mem.Map(0x4000, 0x10000, 0x4000, PERMS);
+ 
+     volatile u8* const ptr = mem.VirtualBasePointer() + 0x4000;
+     ptr[0x0000] = 19;
+@@ -170,8 +171,8 @@ TEST_CASE("HostMemory: Partial middle unmap check bindings", "[common]") {
+ 
+ TEST_CASE("HostMemory: Partial sparse middle unmap and check bindings", "[common]") {
+     HostMemory mem(BACKING_SIZE, VIRTUAL_SIZE);
+-    mem.Map(0x4000, 0x10000, 0x2000);
+-    mem.Map(0x6000, 0x20000, 0x2000);
++    mem.Map(0x4000, 0x10000, 0x2000, PERMS);
++    mem.Map(0x6000, 0x20000, 0x2000, PERMS);
+ 
+     volatile u8* const ptr = mem.VirtualBasePointer() + 0x4000;
+     ptr[0x0000] = 19;

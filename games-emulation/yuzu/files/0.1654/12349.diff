@@ -1,0 +1,127 @@
+diff --git a/src/audio_core/sink/cubeb_sink.cpp b/src/audio_core/sink/cubeb_sink.cpp
+index 51a23fe15873..d97ca2a406c2 100644
+--- a/src/audio_core/sink/cubeb_sink.cpp
++++ b/src/audio_core/sink/cubeb_sink.cpp
+@@ -253,8 +253,9 @@ CubebSink::~CubebSink() {
+ #endif
+ }
+ 
+-SinkStream* CubebSink::AcquireSinkStream(Core::System& system, u32 system_channels,
++SinkStream* CubebSink::AcquireSinkStream(Core::System& system, u32 system_channels_,
+                                          const std::string& name, StreamType type) {
++    system_channels = system_channels_;
+     SinkStreamPtr& stream = sink_streams.emplace_back(std::make_unique<CubebSinkStream>(
+         ctx, device_channels, system_channels, output_device, input_device, name, type, system));
+ 
+diff --git a/src/audio_core/sink/sdl2_sink.cpp b/src/audio_core/sink/sdl2_sink.cpp
+index 96e0efce2e0e..7dd155ff0c74 100644
+--- a/src/audio_core/sink/sdl2_sink.cpp
++++ b/src/audio_core/sink/sdl2_sink.cpp
+@@ -168,8 +168,9 @@ SDLSink::SDLSink(std::string_view target_device_name) {
+ 
+ SDLSink::~SDLSink() = default;
+ 
+-SinkStream* SDLSink::AcquireSinkStream(Core::System& system, u32 system_channels,
++SinkStream* SDLSink::AcquireSinkStream(Core::System& system, u32 system_channels_,
+                                        const std::string&, StreamType type) {
++    system_channels = system_channels_;
+     SinkStreamPtr& stream = sink_streams.emplace_back(std::make_unique<SDLSinkStream>(
+         device_channels, system_channels, output_device, input_device, type, system));
+     return stream.get();
+diff --git a/src/audio_core/sink/sink.h b/src/audio_core/sink/sink.h
+index f28c6d1268a8..e22e8c3e56d2 100644
+--- a/src/audio_core/sink/sink.h
++++ b/src/audio_core/sink/sink.h
+@@ -85,9 +85,21 @@ class Sink {
+      */
+     virtual void SetSystemVolume(f32 volume) = 0;
+ 
++    /**
++     * Get the number of channels the game has set, can be different to the host hardware's support.
++     * Either 2 or 6.
++     *
++     * @return Number of device channels.
++     */
++    u32 GetSystemChannels() const {
++        return system_channels;
++    }
++
+ protected:
+     /// Number of device channels supported by the hardware
+     u32 device_channels{2};
++    /// Number of channels the game is sending
++    u32 system_channels{2};
+ };
+ 
+ using SinkPtr = std::unique_ptr<Sink>;
+diff --git a/src/audio_core/sink/sink_stream.cpp b/src/audio_core/sink/sink_stream.cpp
+index 2a09db599e50..c047b0668381 100644
+--- a/src/audio_core/sink/sink_stream.cpp
++++ b/src/audio_core/sink/sink_stream.cpp
+@@ -40,29 +40,36 @@ void SinkStream::AppendBuffer(SinkBuffer& buffer, std::span<s16> samples) {
+ 
+     if (system_channels == 6 && device_channels == 2) {
+         // We're given 6 channels, but our device only outputs 2, so downmix.
+-        static constexpr std::array<f32, 4> down_mix_coeff{1.0f, 0.707f, 0.251f, 0.707f};
++        // Front = 1.0
++        // Center = 0.596
++        // LFE = 0.354
++        // Back = 0.707
++        static constexpr std::array<f32, 4> down_mix_coeff{1.0, 0.596f, 0.354f, 0.707f};
+ 
+         for (u32 read_index = 0, write_index = 0; read_index < samples.size();
+              read_index += system_channels, write_index += device_channels) {
++            const auto fl =
++                static_cast<f32>(samples[read_index + static_cast<u32>(Channels::FrontLeft)]);
++            const auto fr =
++                static_cast<f32>(samples[read_index + static_cast<u32>(Channels::FrontRight)]);
++            const auto c =
++                static_cast<f32>(samples[read_index + static_cast<u32>(Channels::Center)]);
++            const auto lfe =
++                static_cast<f32>(samples[read_index + static_cast<u32>(Channels::LFE)]);
++            const auto bl =
++                static_cast<f32>(samples[read_index + static_cast<u32>(Channels::BackLeft)]);
++            const auto br =
++                static_cast<f32>(samples[read_index + static_cast<u32>(Channels::BackRight)]);
++
+             const auto left_sample{
+-                ((Common::FixedPoint<49, 15>(
+-                      samples[read_index + static_cast<u32>(Channels::FrontLeft)]) *
+-                      down_mix_coeff[0] +
+-                  samples[read_index + static_cast<u32>(Channels::Center)] * down_mix_coeff[1] +
+-                  samples[read_index + static_cast<u32>(Channels::LFE)] * down_mix_coeff[2] +
+-                  samples[read_index + static_cast<u32>(Channels::BackLeft)] * down_mix_coeff[3]) *
+-                 volume)
+-                    .to_int()};
++                static_cast<s32>((fl * down_mix_coeff[0] + c * down_mix_coeff[1] +
++                                  lfe * down_mix_coeff[2] + bl * down_mix_coeff[3]) *
++                                 volume)};
+ 
+             const auto right_sample{
+-                ((Common::FixedPoint<49, 15>(
+-                      samples[read_index + static_cast<u32>(Channels::FrontRight)]) *
+-                      down_mix_coeff[0] +
+-                  samples[read_index + static_cast<u32>(Channels::Center)] * down_mix_coeff[1] +
+-                  samples[read_index + static_cast<u32>(Channels::LFE)] * down_mix_coeff[2] +
+-                  samples[read_index + static_cast<u32>(Channels::BackRight)] * down_mix_coeff[3]) *
+-                 volume)
+-                    .to_int()};
++                static_cast<s32>((fr * down_mix_coeff[0] + c * down_mix_coeff[1] +
++                                  lfe * down_mix_coeff[2] + br * down_mix_coeff[3]) *
++                                 volume)};
+ 
+             samples[write_index + static_cast<u32>(Channels::FrontLeft)] =
+                 static_cast<s16>(std::clamp(left_sample, min, max));
+diff --git a/src/core/hle/service/audio/audren_u.cpp b/src/core/hle/service/audio/audren_u.cpp
+index 2f09cade5566..23e56c77a640 100644
+--- a/src/core/hle/service/audio/audren_u.cpp
++++ b/src/core/hle/service/audio/audren_u.cpp
+@@ -359,7 +359,7 @@ class IAudioDevice final : public ServiceFramework<IAudioDevice> {
+ 
+     void GetActiveChannelCount(HLERequestContext& ctx) {
+         const auto& sink{system.AudioCore().GetOutputSink()};
+-        u32 channel_count{sink.GetDeviceChannels()};
++        u32 channel_count{sink.GetSystemChannels()};
+ 
+         LOG_DEBUG(Service_Audio, "(STUBBED) called. Channels={}", channel_count);
+ 

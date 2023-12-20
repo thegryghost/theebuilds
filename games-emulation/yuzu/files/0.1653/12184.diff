@@ -1,0 +1,2450 @@
+diff --git a/src/common/common_funcs.h b/src/common/common_funcs.h
+index 47d028d4822d..ba3081efb405 100644
+--- a/src/common/common_funcs.h
++++ b/src/common/common_funcs.h
+@@ -123,6 +123,12 @@ namespace Common {
+     return u32(a) | u32(b) << 8 | u32(c) << 16 | u32(d) << 24;
+ }
+ 
++[[nodiscard]] constexpr u64 MakeMagic(char a, char b, char c, char d, char e, char f, char g,
++                                      char h) {
++    return u64(a) << 0 | u64(b) << 8 | u64(c) << 16 | u64(d) << 24 | u64(e) << 32 | u64(f) << 40 |
++           u64(g) << 48 | u64(h) << 56;
++}
++
+ // std::size() does not support zero-size C arrays. We're fixing that.
+ template <class C>
+ constexpr auto Size(const C& c) -> decltype(c.size()) {
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 7b9ed856f9b8..1ff90bbafe1a 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -784,6 +784,12 @@ add_library(core STATIC
+     hle/service/service.h
+     hle/service/set/set.cpp
+     hle/service/set/set.h
++    hle/service/set/appln_settings.cpp
++    hle/service/set/appln_settings.h
++    hle/service/set/device_settings.cpp
++    hle/service/set/device_settings.h
++    hle/service/set/private_settings.cpp
++    hle/service/set/private_settings.h
+     hle/service/set/set_cal.cpp
+     hle/service/set/set_cal.h
+     hle/service/set/set_fd.cpp
+@@ -792,6 +798,8 @@ add_library(core STATIC
+     hle/service/set/set_sys.h
+     hle/service/set/settings.cpp
+     hle/service/set/settings.h
++    hle/service/set/system_settings.cpp
++    hle/service/set/system_settings.h
+     hle/service/sm/sm.cpp
+     hle/service/sm/sm.h
+     hle/service/sm/sm_controller.cpp
+diff --git a/src/core/hle/service/set/appln_settings.cpp b/src/core/hle/service/set/appln_settings.cpp
+new file mode 100644
+index 000000000000..a5d802757abb
+--- /dev/null
++++ b/src/core/hle/service/set/appln_settings.cpp
+@@ -0,0 +1,12 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/set/appln_settings.h"
++
++namespace Service::Set {
++
++ApplnSettings DefaultApplnSettings() {
++    return {};
++}
++
++} // namespace Service::Set
+diff --git a/src/core/hle/service/set/appln_settings.h b/src/core/hle/service/set/appln_settings.h
+new file mode 100644
+index 000000000000..b07df0ee79a5
+--- /dev/null
++++ b/src/core/hle/service/set/appln_settings.h
+@@ -0,0 +1,35 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <array>
++
++#include "common/common_types.h"
++
++namespace Service::Set {
++struct ApplnSettings {
++    std::array<u8, 0x10> reserved_000;
++
++    // nn::util::Uuid MiiAuthorId, copied from system settings 0x94B0
++    std::array<u8, 0x10> mii_author_id;
++
++    std::array<u8, 0x30> reserved_020;
++
++    // nn::settings::system::ServiceDiscoveryControlSettings
++    std::array<u8, 0x4> service_discovery_control_settings;
++
++    std::array<u8, 0x20> reserved_054;
++
++    bool in_repair_process_enable_flag;
++
++    std::array<u8, 0x3> pad_075;
++};
++static_assert(offsetof(ApplnSettings, mii_author_id) == 0x10);
++static_assert(offsetof(ApplnSettings, service_discovery_control_settings) == 0x50);
++static_assert(offsetof(ApplnSettings, in_repair_process_enable_flag) == 0x74);
++static_assert(sizeof(ApplnSettings) == 0x78, "ApplnSettings has the wrong size!");
++
++ApplnSettings DefaultApplnSettings();
++
++} // namespace Service::Set
+diff --git a/src/core/hle/service/set/device_settings.cpp b/src/core/hle/service/set/device_settings.cpp
+new file mode 100644
+index 000000000000..e423ce38aef1
+--- /dev/null
++++ b/src/core/hle/service/set/device_settings.cpp
+@@ -0,0 +1,12 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/set/device_settings.h"
++
++namespace Service::Set {
++
++DeviceSettings DefaultDeviceSettings() {
++    return {};
++}
++
++} // namespace Service::Set
+diff --git a/src/core/hle/service/set/device_settings.h b/src/core/hle/service/set/device_settings.h
+new file mode 100644
+index 000000000000..b6cfe04f2ebd
+--- /dev/null
++++ b/src/core/hle/service/set/device_settings.h
+@@ -0,0 +1,53 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <array>
++
++#include "common/common_types.h"
++
++namespace Service::Set {
++struct DeviceSettings {
++    std::array<u8, 0x10> reserved_000;
++
++    // nn::settings::BatteryLot
++    std::array<u8, 0x18> ptm_battery_lot;
++    // nn::settings::system::PtmFuelGaugeParameter
++    std::array<u8, 0x18> ptm_fuel_gauge_parameter;
++    u8 ptm_battery_version;
++    // nn::settings::system::PtmCycleCountReliability
++    u32 ptm_cycle_count_reliability;
++
++    std::array<u8, 0x48> reserved_048;
++
++    // nn::settings::system::AnalogStickUserCalibration L
++    std::array<u8, 0x10> analog_user_stick_calibration_l;
++    // nn::settings::system::AnalogStickUserCalibration R
++    std::array<u8, 0x10> analog_user_stick_calibration_r;
++
++    std::array<u8, 0x20> reserved_0B0;
++
++    // nn::settings::system::ConsoleSixAxisSensorAccelerationBias
++    std::array<u8, 0xC> console_six_axis_sensor_acceleration_bias;
++    // nn::settings::system::ConsoleSixAxisSensorAngularVelocityBias
++    std::array<u8, 0xC> console_six_axis_sensor_angular_velocity_bias;
++    // nn::settings::system::ConsoleSixAxisSensorAccelerationGain
++    std::array<u8, 0x24> console_six_axis_sensor_acceleration_gain;
++    // nn::settings::system::ConsoleSixAxisSensorAngularVelocityGain
++    std::array<u8, 0x24> console_six_axis_sensor_angular_velocity_gain;
++    // nn::settings::system::ConsoleSixAxisSensorAngularVelocityTimeBias
++    std::array<u8, 0xC> console_six_axis_sensor_angular_velocity_time_bias;
++    // nn::settings::system::ConsoleSixAxisSensorAngularAcceleration
++    std::array<u8, 0x24> console_six_axis_sensor_angular_acceleration;
++};
++static_assert(offsetof(DeviceSettings, ptm_battery_lot) == 0x10);
++static_assert(offsetof(DeviceSettings, ptm_cycle_count_reliability) == 0x44);
++static_assert(offsetof(DeviceSettings, analog_user_stick_calibration_l) == 0x90);
++static_assert(offsetof(DeviceSettings, console_six_axis_sensor_acceleration_bias) == 0xD0);
++static_assert(offsetof(DeviceSettings, console_six_axis_sensor_angular_acceleration) == 0x13C);
++static_assert(sizeof(DeviceSettings) == 0x160, "DeviceSettings has the wrong size!");
++
++DeviceSettings DefaultDeviceSettings();
++
++} // namespace Service::Set
+diff --git a/src/core/hle/service/set/private_settings.cpp b/src/core/hle/service/set/private_settings.cpp
+new file mode 100644
+index 000000000000..70bf65727259
+--- /dev/null
++++ b/src/core/hle/service/set/private_settings.cpp
+@@ -0,0 +1,12 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/set/private_settings.h"
++
++namespace Service::Set {
++
++PrivateSettings DefaultPrivateSettings() {
++    return {};
++}
++
++} // namespace Service::Set
+diff --git a/src/core/hle/service/set/private_settings.h b/src/core/hle/service/set/private_settings.h
+new file mode 100644
+index 000000000000..b63eaf45c2ac
+--- /dev/null
++++ b/src/core/hle/service/set/private_settings.h
+@@ -0,0 +1,72 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <array>
++
++#include "common/bit_field.h"
++#include "common/common_funcs.h"
++#include "common/common_types.h"
++#include "common/uuid.h"
++#include "core/hle/service/time/clock_types.h"
++
++namespace Service::Set {
++
++/// This is nn::settings::system::InitialLaunchFlag
++struct InitialLaunchFlag {
++    union {
++        u32 raw{};
++
++        BitField<0, 1, u32> InitialLaunchCompletionFlag;
++        BitField<8, 1, u32> InitialLaunchUserAdditionFlag;
++        BitField<16, 1, u32> InitialLaunchTimestampFlag;
++    };
++};
++static_assert(sizeof(InitialLaunchFlag) == 4, "InitialLaunchFlag is an invalid size");
++
++/// This is nn::settings::system::InitialLaunchSettings
++struct InitialLaunchSettings {
++    InitialLaunchFlag flags;
++    INSERT_PADDING_BYTES(0x4);
++    Service::Time::Clock::SteadyClockTimePoint timestamp;
++};
++static_assert(sizeof(InitialLaunchSettings) == 0x20, "InitialLaunchSettings is incorrect size");
++
++#pragma pack(push, 4)
++struct InitialLaunchSettingsPacked {
++    InitialLaunchFlag flags;
++    Service::Time::Clock::SteadyClockTimePoint timestamp;
++};
++#pragma pack(pop)
++static_assert(sizeof(InitialLaunchSettingsPacked) == 0x1C,
++              "InitialLaunchSettingsPacked is incorrect size");
++
++struct PrivateSettings {
++    std::array<u8, 0x10> reserved_00;
++
++    // nn::settings::system::InitialLaunchSettings
++    InitialLaunchSettings initial_launch_settings;
++
++    std::array<u8, 0x20> reserved_30;
++
++    Common::UUID external_clock_source_id;
++    s64 shutdown_rtc_value;
++    s64 external_steady_clock_internal_offset;
++
++    std::array<u8, 0x60> reserved_70;
++
++    // nn::settings::system::PlatformRegion
++    std::array<u8, 0x4> platform_region;
++
++    std::array<u8, 0x4> reserved_D4;
++};
++static_assert(offsetof(PrivateSettings, initial_launch_settings) == 0x10);
++static_assert(offsetof(PrivateSettings, external_clock_source_id) == 0x50);
++static_assert(offsetof(PrivateSettings, reserved_70) == 0x70);
++static_assert(offsetof(PrivateSettings, platform_region) == 0xD0);
++static_assert(sizeof(PrivateSettings) == 0xD8, "PrivateSettings has the wrong size!");
++
++PrivateSettings DefaultPrivateSettings();
++
++} // namespace Service::Set
+diff --git a/src/core/hle/service/set/set.h b/src/core/hle/service/set/set.h
+index b61a3560d4fb..6ef3da410efb 100644
+--- a/src/core/hle/service/set/set.h
++++ b/src/core/hle/service/set/set.h
+@@ -4,35 +4,13 @@
+ #pragma once
+ 
+ #include "core/hle/service/service.h"
++#include "core/hle/service/set/system_settings.h"
+ 
+ namespace Core {
+ class System;
+ }
+ 
+ namespace Service::Set {
+-
+-/// This is "nn::settings::LanguageCode", which is a NUL-terminated string stored in a u64.
+-enum class LanguageCode : u64 {
+-    JA = 0x000000000000616A,
+-    EN_US = 0x00000053552D6E65,
+-    FR = 0x0000000000007266,
+-    DE = 0x0000000000006564,
+-    IT = 0x0000000000007469,
+-    ES = 0x0000000000007365,
+-    ZH_CN = 0x0000004E432D687A,
+-    KO = 0x0000000000006F6B,
+-    NL = 0x0000000000006C6E,
+-    PT = 0x0000000000007470,
+-    RU = 0x0000000000007572,
+-    ZH_TW = 0x00000057542D687A,
+-    EN_GB = 0x00000042472D6E65,
+-    FR_CA = 0x00000041432D7266,
+-    ES_419 = 0x00003931342D7365,
+-    ZH_HANS = 0x00736E61482D687A,
+-    ZH_HANT = 0x00746E61482D687A,
+-    PT_BR = 0x00000052422D7470,
+-};
+-
+ enum class KeyboardLayout : u64 {
+     Japanese = 0,
+     EnglishUs = 1,
+diff --git a/src/core/hle/service/set/set_sys.cpp b/src/core/hle/service/set/set_sys.cpp
+index 48304e6d1f92..0653779d598d 100644
+--- a/src/core/hle/service/set/set_sys.cpp
++++ b/src/core/hle/service/set/set_sys.cpp
+@@ -1,7 +1,12 @@
+ // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <fstream>
++
+ #include "common/assert.h"
++#include "common/fs/file.h"
++#include "common/fs/fs.h"
++#include "common/fs/path_util.h"
+ #include "common/logging/log.h"
+ #include "common/settings.h"
+ #include "common/string_util.h"
+@@ -19,6 +24,16 @@
+ 
+ namespace Service::Set {
+ 
++namespace {
++constexpr u32 SETTINGS_VERSION{1u};
++constexpr auto SETTINGS_MAGIC = Common::MakeMagic('y', 'u', 'z', 'u', '_', 's', 'e', 't');
++struct SettingsHeader {
++    u64 magic;
++    u32 version;
++    u32 reserved;
++};
++} // Anonymous namespace
++
+ Result GetFirmwareVersionImpl(FirmwareVersionFormat& out_firmware, Core::System& system,
+                               GetFirmwareVersionType type) {
+     constexpr u64 FirmwareVersionSystemDataId = 0x0100000000000809;
+@@ -72,11 +87,120 @@ Result GetFirmwareVersionImpl(FirmwareVersionFormat& out_firmware, Core::System&
+     return ResultSuccess;
+ }
+ 
++bool SET_SYS::LoadSettingsFile(std::filesystem::path& path, auto&& default_func) {
++    using settings_type = decltype(default_func());
++
++    if (!Common::FS::CreateDirs(path)) {
++        return false;
++    }
++
++    auto settings_file = path / "settings.dat";
++    auto exists = std::filesystem::exists(settings_file);
++    auto file_size_ok = exists && std::filesystem::file_size(settings_file) ==
++                                      sizeof(SettingsHeader) + sizeof(settings_type);
++
++    auto ResetToDefault = [&]() {
++        auto default_settings{default_func()};
++
++        SettingsHeader hdr{
++            .magic = SETTINGS_MAGIC,
++            .version = SETTINGS_VERSION,
++            .reserved = 0u,
++        };
++
++        std::ofstream out_settings_file(settings_file, std::ios::out | std::ios::binary);
++        out_settings_file.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
++        out_settings_file.write(reinterpret_cast<const char*>(&default_settings),
++                                sizeof(settings_type));
++        out_settings_file.flush();
++        out_settings_file.close();
++    };
++
++    constexpr auto IsHeaderValid = [](std::ifstream& file) -> bool {
++        if (!file.is_open()) {
++            return false;
++        }
++        SettingsHeader hdr{};
++        file.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
++        return hdr.magic == SETTINGS_MAGIC && hdr.version == SETTINGS_VERSION;
++    };
++
++    if (!exists || !file_size_ok) {
++        ResetToDefault();
++    }
++
++    std::ifstream file(settings_file, std::ios::binary | std::ios::in);
++    if (!IsHeaderValid(file)) {
++        file.close();
++        ResetToDefault();
++        file = std::ifstream(settings_file, std::ios::binary | std::ios::in);
++        if (!IsHeaderValid(file)) {
++            return false;
++        }
++    }
++
++    if constexpr (std::is_same_v<settings_type, PrivateSettings>) {
++        file.read(reinterpret_cast<char*>(&m_private_settings), sizeof(settings_type));
++    } else if constexpr (std::is_same_v<settings_type, DeviceSettings>) {
++        file.read(reinterpret_cast<char*>(&m_device_settings), sizeof(settings_type));
++    } else if constexpr (std::is_same_v<settings_type, ApplnSettings>) {
++        file.read(reinterpret_cast<char*>(&m_appln_settings), sizeof(settings_type));
++    } else if constexpr (std::is_same_v<settings_type, SystemSettings>) {
++        file.read(reinterpret_cast<char*>(&m_system_settings), sizeof(settings_type));
++    } else {
++        UNREACHABLE();
++    }
++    file.close();
++
++    return true;
++}
++
++bool SET_SYS::StoreSettingsFile(std::filesystem::path& path, auto& settings) {
++    using settings_type = std::decay_t<decltype(settings)>;
++
++    if (!Common::FS::IsDir(path)) {
++        return false;
++    }
++
++    auto settings_base = path / "settings";
++    auto settings_tmp_file = settings_base;
++    settings_tmp_file = settings_tmp_file.replace_extension("tmp");
++    std::ofstream file(settings_tmp_file, std::ios::binary | std::ios::out);
++    if (!file.is_open()) {
++        return false;
++    }
++
++    SettingsHeader hdr{
++        .magic = SETTINGS_MAGIC,
++        .version = SETTINGS_VERSION,
++        .reserved = 0u,
++    };
++    file.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
++
++    if constexpr (std::is_same_v<settings_type, PrivateSettings>) {
++        file.write(reinterpret_cast<const char*>(&m_private_settings), sizeof(settings_type));
++    } else if constexpr (std::is_same_v<settings_type, DeviceSettings>) {
++        file.write(reinterpret_cast<const char*>(&m_device_settings), sizeof(settings_type));
++    } else if constexpr (std::is_same_v<settings_type, ApplnSettings>) {
++        file.write(reinterpret_cast<const char*>(&m_appln_settings), sizeof(settings_type));
++    } else if constexpr (std::is_same_v<settings_type, SystemSettings>) {
++        file.write(reinterpret_cast<const char*>(&m_system_settings), sizeof(settings_type));
++    } else {
++        UNREACHABLE();
++    }
++    file.close();
++
++    std::filesystem::rename(settings_tmp_file, settings_base.replace_extension("dat"));
++
++    return true;
++}
++
+ void SET_SYS::SetLanguageCode(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    language_code_setting = rp.PopEnum<LanguageCode>();
++    m_system_settings.language_code = rp.PopEnum<LanguageCode>();
++    SetSaveNeeded();
+ 
+-    LOG_INFO(Service_SET, "called, language_code={}", language_code_setting);
++    LOG_INFO(Service_SET, "called, language_code={}", m_system_settings.language_code);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -112,19 +236,68 @@ void SET_SYS::GetFirmwareVersion2(HLERequestContext& ctx) {
+     rb.Push(result);
+ }
+ 
++void SET_SYS::GetExternalSteadyClockSourceId(HLERequestContext& ctx) {
++    LOG_INFO(Service_SET, "called");
++
++    Common::UUID id{};
++    auto res = GetExternalSteadyClockSourceId(id);
++
++    IPC::ResponseBuilder rb{ctx, 2 + sizeof(Common::UUID) / sizeof(u32)};
++    rb.Push(res);
++    rb.PushRaw(id);
++}
++
++void SET_SYS::SetExternalSteadyClockSourceId(HLERequestContext& ctx) {
++    LOG_INFO(Service_SET, "called");
++
++    IPC::RequestParser rp{ctx};
++    auto id{rp.PopRaw<Common::UUID>()};
++
++    auto res = SetExternalSteadyClockSourceId(id);
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(res);
++}
++
++void SET_SYS::GetUserSystemClockContext(HLERequestContext& ctx) {
++    LOG_INFO(Service_SET, "called");
++
++    Service::Time::Clock::SystemClockContext context{};
++    auto res = GetUserSystemClockContext(context);
++
++    IPC::ResponseBuilder rb{ctx,
++                            2 + sizeof(Service::Time::Clock::SystemClockContext) / sizeof(u32)};
++    rb.Push(res);
++    rb.PushRaw(context);
++}
++
++void SET_SYS::SetUserSystemClockContext(HLERequestContext& ctx) {
++    LOG_INFO(Service_SET, "called");
++
++    IPC::RequestParser rp{ctx};
++    auto context{rp.PopRaw<Service::Time::Clock::SystemClockContext>()};
++
++    auto res = SetUserSystemClockContext(context);
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(res);
++}
++
+ void SET_SYS::GetAccountSettings(HLERequestContext& ctx) {
+     LOG_INFO(Service_SET, "called");
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+     rb.Push(ResultSuccess);
+-    rb.PushRaw(account_settings);
++    rb.PushRaw(m_system_settings.account_settings);
+ }
+ 
+ void SET_SYS::SetAccountSettings(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    account_settings = rp.PopRaw<AccountSettings>();
++    m_system_settings.account_settings = rp.PopRaw<AccountSettings>();
++    SetSaveNeeded();
+ 
+-    LOG_INFO(Service_SET, "called, account_settings_flags={}", account_settings.flags);
++    LOG_INFO(Service_SET, "called, account_settings_flags={}",
++             m_system_settings.account_settings.flags);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -133,11 +306,11 @@ void SET_SYS::SetAccountSettings(HLERequestContext& ctx) {
+ void SET_SYS::GetEulaVersions(HLERequestContext& ctx) {
+     LOG_INFO(Service_SET, "called");
+ 
+-    ctx.WriteBuffer(eula_versions);
++    ctx.WriteBuffer(m_system_settings.eula_versions);
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+     rb.Push(ResultSuccess);
+-    rb.Push(static_cast<u32>(eula_versions.size()));
++    rb.Push(m_system_settings.eula_version_count);
+ }
+ 
+ void SET_SYS::SetEulaVersions(HLERequestContext& ctx) {
+@@ -145,13 +318,12 @@ void SET_SYS::SetEulaVersions(HLERequestContext& ctx) {
+     const auto buffer_data = ctx.ReadBuffer();
+ 
+     LOG_INFO(Service_SET, "called, elements={}", elements);
++    ASSERT(elements <= m_system_settings.eula_versions.size());
+ 
+-    eula_versions.resize(elements);
+-    for (std::size_t index = 0; index < elements; index++) {
+-        const std::size_t start_index = index * sizeof(EulaVersion);
+-        memcpy(eula_versions.data() + start_index, buffer_data.data() + start_index,
+-               sizeof(EulaVersion));
+-    }
++    m_system_settings.eula_version_count = static_cast<u32>(elements);
++    std::memcpy(&m_system_settings.eula_versions, buffer_data.data(),
++                sizeof(EulaVersion) * elements);
++    SetSaveNeeded();
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -162,14 +334,15 @@ void SET_SYS::GetColorSetId(HLERequestContext& ctx) {
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+     rb.Push(ResultSuccess);
+-    rb.PushEnum(color_set);
++    rb.PushEnum(m_system_settings.color_set_id);
+ }
+ 
+ void SET_SYS::SetColorSetId(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    color_set = rp.PopEnum<ColorSet>();
++    m_system_settings.color_set_id = rp.PopEnum<ColorSet>();
++    SetSaveNeeded();
+ 
+-    LOG_DEBUG(Service_SET, "called, color_set={}", color_set);
++    LOG_DEBUG(Service_SET, "called, color_set={}", m_system_settings.color_set_id);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -180,17 +353,21 @@ void SET_SYS::GetNotificationSettings(HLERequestContext& ctx) {
+ 
+     IPC::ResponseBuilder rb{ctx, 8};
+     rb.Push(ResultSuccess);
+-    rb.PushRaw(notification_settings);
++    rb.PushRaw(m_system_settings.notification_settings);
+ }
+ 
+ void SET_SYS::SetNotificationSettings(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    notification_settings = rp.PopRaw<NotificationSettings>();
++    m_system_settings.notification_settings = rp.PopRaw<NotificationSettings>();
++    SetSaveNeeded();
+ 
+     LOG_INFO(Service_SET, "called, flags={}, volume={}, head_time={}:{}, tailt_time={}:{}",
+-             notification_settings.flags.raw, notification_settings.volume,
+-             notification_settings.start_time.hour, notification_settings.start_time.minute,
+-             notification_settings.stop_time.hour, notification_settings.stop_time.minute);
++             m_system_settings.notification_settings.flags.raw,
++             m_system_settings.notification_settings.volume,
++             m_system_settings.notification_settings.start_time.hour,
++             m_system_settings.notification_settings.start_time.minute,
++             m_system_settings.notification_settings.stop_time.hour,
++             m_system_settings.notification_settings.stop_time.minute);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -199,11 +376,11 @@ void SET_SYS::SetNotificationSettings(HLERequestContext& ctx) {
+ void SET_SYS::GetAccountNotificationSettings(HLERequestContext& ctx) {
+     LOG_INFO(Service_SET, "called");
+ 
+-    ctx.WriteBuffer(account_notifications);
++    ctx.WriteBuffer(m_system_settings.account_notification_settings);
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+     rb.Push(ResultSuccess);
+-    rb.Push(static_cast<u32>(account_notifications.size()));
++    rb.Push(m_system_settings.account_notification_settings_count);
+ }
+ 
+ void SET_SYS::SetAccountNotificationSettings(HLERequestContext& ctx) {
+@@ -212,12 +389,12 @@ void SET_SYS::SetAccountNotificationSettings(HLERequestContext& ctx) {
+ 
+     LOG_INFO(Service_SET, "called, elements={}", elements);
+ 
+-    account_notifications.resize(elements);
+-    for (std::size_t index = 0; index < elements; index++) {
+-        const std::size_t start_index = index * sizeof(AccountNotificationSettings);
+-        memcpy(account_notifications.data() + start_index, buffer_data.data() + start_index,
+-               sizeof(AccountNotificationSettings));
+-    }
++    ASSERT(elements <= m_system_settings.account_notification_settings.size());
++
++    m_system_settings.account_notification_settings_count = static_cast<u32>(elements);
++    std::memcpy(&m_system_settings.account_notification_settings, buffer_data.data(),
++                elements * sizeof(AccountNotificationSettings));
++    SetSaveNeeded();
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -244,6 +421,14 @@ static Settings GetSettings() {
+     ret["hbloader"]["applet_heap_size"] = ToBytes(u64{0x0});
+     ret["hbloader"]["applet_heap_reservation_size"] = ToBytes(u64{0x8600000});
+ 
++    // Time
++    ret["time"]["notify_time_to_fs_interval_seconds"] = ToBytes(s32{600});
++    ret["time"]["standard_network_clock_sufficient_accuracy_minutes"] =
++        ToBytes(s32{43200}); // 30 days
++    ret["time"]["standard_steady_clock_rtc_update_interval_minutes"] = ToBytes(s32{5});
++    ret["time"]["standard_steady_clock_test_offset_minutes"] = ToBytes(s32{0});
++    ret["time"]["standard_user_clock_initial_year"] = ToBytes(s32{2023});
++
+     return ret;
+ }
+ 
+@@ -273,8 +458,6 @@ void SET_SYS::GetSettingsItemValueSize(HLERequestContext& ctx) {
+ }
+ 
+ void SET_SYS::GetSettingsItemValue(HLERequestContext& ctx) {
+-    LOG_DEBUG(Service_SET, "called");
+-
+     // The category of the setting. This corresponds to the top-level keys of
+     // system_settings.ini.
+     const auto setting_category_buf{ctx.ReadBuffer(0)};
+@@ -285,14 +468,13 @@ void SET_SYS::GetSettingsItemValue(HLERequestContext& ctx) {
+     const auto setting_name_buf{ctx.ReadBuffer(1)};
+     const std::string setting_name{setting_name_buf.begin(), setting_name_buf.end()};
+ 
+-    auto settings{GetSettings()};
+-    Result response{ResultUnknown};
++    std::vector<u8> value;
++    auto response = GetSettingsItemValue(value, setting_category, setting_name);
+ 
+-    if (settings.contains(setting_category) && settings[setting_category].contains(setting_name)) {
+-        auto setting_value = settings[setting_category][setting_name];
+-        ctx.WriteBuffer(setting_value.data(), setting_value.size());
+-        response = ResultSuccess;
+-    }
++    LOG_INFO(Service_SET, "called. category={}, name={} -- res=0x{:X}", setting_category,
++             setting_name, response.raw);
++
++    ctx.WriteBuffer(value.data(), value.size());
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(response);
+@@ -303,19 +485,23 @@ void SET_SYS::GetTvSettings(HLERequestContext& ctx) {
+ 
+     IPC::ResponseBuilder rb{ctx, 10};
+     rb.Push(ResultSuccess);
+-    rb.PushRaw(tv_settings);
++    rb.PushRaw(m_system_settings.tv_settings);
+ }
+ 
+ void SET_SYS::SetTvSettings(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    tv_settings = rp.PopRaw<TvSettings>();
++    m_system_settings.tv_settings = rp.PopRaw<TvSettings>();
++    SetSaveNeeded();
+ 
+     LOG_INFO(Service_SET,
+              "called, flags={}, cmu_mode={}, constrast_ratio={}, hdmi_content_type={}, "
+              "rgb_range={}, tv_gama={}, tv_resolution={}, tv_underscan={}",
+-             tv_settings.flags.raw, tv_settings.cmu_mode, tv_settings.constrast_ratio,
+-             tv_settings.hdmi_content_type, tv_settings.rgb_range, tv_settings.tv_gama,
+-             tv_settings.tv_resolution, tv_settings.tv_underscan);
++             m_system_settings.tv_settings.flags.raw, m_system_settings.tv_settings.cmu_mode,
++             m_system_settings.tv_settings.constrast_ratio,
++             m_system_settings.tv_settings.hdmi_content_type,
++             m_system_settings.tv_settings.rgb_range, m_system_settings.tv_settings.tv_gama,
++             m_system_settings.tv_settings.tv_resolution,
++             m_system_settings.tv_settings.tv_underscan);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -329,16 +515,87 @@ void SET_SYS::GetQuestFlag(HLERequestContext& ctx) {
+     rb.PushEnum(QuestFlag::Retail);
+ }
+ 
++void SET_SYS::GetDeviceTimeZoneLocationName(HLERequestContext& ctx) {
++    LOG_WARNING(Service_SET, "called");
++
++    Service::Time::TimeZone::LocationName name{};
++    auto res = GetDeviceTimeZoneLocationName(name);
++
++    IPC::ResponseBuilder rb{ctx, 2 + sizeof(Service::Time::TimeZone::LocationName) / sizeof(u32)};
++    rb.Push(res);
++    rb.PushRaw<Service::Time::TimeZone::LocationName>(name);
++}
++
++void SET_SYS::SetDeviceTimeZoneLocationName(HLERequestContext& ctx) {
++    LOG_WARNING(Service_SET, "called");
++
++    IPC::RequestParser rp{ctx};
++    auto name{rp.PopRaw<Service::Time::TimeZone::LocationName>()};
++
++    auto res = SetDeviceTimeZoneLocationName(name);
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(res);
++}
++
+ void SET_SYS::SetRegionCode(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    region_code = rp.PopEnum<RegionCode>();
++    m_system_settings.region_code = rp.PopEnum<RegionCode>();
++    SetSaveNeeded();
+ 
+-    LOG_INFO(Service_SET, "called, region_code={}", region_code);
++    LOG_INFO(Service_SET, "called, region_code={}", m_system_settings.region_code);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+ }
+ 
++void SET_SYS::GetNetworkSystemClockContext(HLERequestContext& ctx) {
++    LOG_INFO(Service_SET, "called");
++
++    Service::Time::Clock::SystemClockContext context{};
++    auto res = GetNetworkSystemClockContext(context);
++
++    IPC::ResponseBuilder rb{ctx,
++                            2 + sizeof(Service::Time::Clock::SystemClockContext) / sizeof(u32)};
++    rb.Push(res);
++    rb.PushRaw(context);
++}
++
++void SET_SYS::SetNetworkSystemClockContext(HLERequestContext& ctx) {
++    LOG_INFO(Service_SET, "called");
++
++    IPC::RequestParser rp{ctx};
++    auto context{rp.PopRaw<Service::Time::Clock::SystemClockContext>()};
++
++    auto res = SetNetworkSystemClockContext(context);
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(res);
++}
++
++void SET_SYS::IsUserSystemClockAutomaticCorrectionEnabled(HLERequestContext& ctx) {
++    LOG_INFO(Service_SET, "called");
++
++    bool enabled{};
++    auto res = IsUserSystemClockAutomaticCorrectionEnabled(enabled);
++
++    IPC::ResponseBuilder rb{ctx, 3};
++    rb.Push(res);
++    rb.PushRaw(enabled);
++}
++
++void SET_SYS::SetUserSystemClockAutomaticCorrectionEnabled(HLERequestContext& ctx) {
++    LOG_INFO(Service_SET, "called");
++
++    IPC::RequestParser rp{ctx};
++    auto enabled{rp.Pop<bool>()};
++
++    auto res = SetUserSystemClockAutomaticCorrectionEnabled(enabled);
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(res);
++}
++
+ void SET_SYS::GetPrimaryAlbumStorage(HLERequestContext& ctx) {
+     LOG_WARNING(Service_SET, "(STUBBED) called");
+ 
+@@ -352,16 +609,18 @@ void SET_SYS::GetSleepSettings(HLERequestContext& ctx) {
+ 
+     IPC::ResponseBuilder rb{ctx, 5};
+     rb.Push(ResultSuccess);
+-    rb.PushRaw(sleep_settings);
++    rb.PushRaw(m_system_settings.sleep_settings);
+ }
+ 
+ void SET_SYS::SetSleepSettings(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    sleep_settings = rp.PopRaw<SleepSettings>();
++    m_system_settings.sleep_settings = rp.PopRaw<SleepSettings>();
++    SetSaveNeeded();
+ 
+     LOG_INFO(Service_SET, "called, flags={}, handheld_sleep_plan={}, console_sleep_plan={}",
+-             sleep_settings.flags.raw, sleep_settings.handheld_sleep_plan,
+-             sleep_settings.console_sleep_plan);
++             m_system_settings.sleep_settings.flags.raw,
++             m_system_settings.sleep_settings.handheld_sleep_plan,
++             m_system_settings.sleep_settings.console_sleep_plan);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -371,15 +630,20 @@ void SET_SYS::GetInitialLaunchSettings(HLERequestContext& ctx) {
+     LOG_INFO(Service_SET, "called");
+     IPC::ResponseBuilder rb{ctx, 10};
+     rb.Push(ResultSuccess);
+-    rb.PushRaw(launch_settings);
++    rb.PushRaw(m_system_settings.initial_launch_settings_packed);
+ }
+ 
+ void SET_SYS::SetInitialLaunchSettings(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    launch_settings = rp.PopRaw<InitialLaunchSettings>();
++    auto inital_launch_settings = rp.PopRaw<InitialLaunchSettings>();
+ 
+-    LOG_INFO(Service_SET, "called, flags={}, timestamp={}", launch_settings.flags.raw,
+-             launch_settings.timestamp.time_point);
++    m_system_settings.initial_launch_settings_packed.flags = inital_launch_settings.flags;
++    m_system_settings.initial_launch_settings_packed.timestamp = inital_launch_settings.timestamp;
++    SetSaveNeeded();
++
++    LOG_INFO(Service_SET, "called, flags={}, timestamp={}",
++             m_system_settings.initial_launch_settings_packed.flags.raw,
++             m_system_settings.initial_launch_settings_packed.timestamp.time_point);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -437,13 +701,37 @@ void SET_SYS::GetAutoUpdateEnableFlag(HLERequestContext& ctx) {
+ void SET_SYS::GetBatteryPercentageFlag(HLERequestContext& ctx) {
+     u8 battery_percentage_flag{1};
+ 
+-    LOG_DEBUG(Service_SET, "(STUBBED) called, battery_percentage_flag={}", battery_percentage_flag);
++    LOG_WARNING(Service_SET, "(STUBBED) called, battery_percentage_flag={}",
++                battery_percentage_flag);
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+     rb.Push(ResultSuccess);
+     rb.Push(battery_percentage_flag);
+ }
+ 
++void SET_SYS::SetExternalSteadyClockInternalOffset(HLERequestContext& ctx) {
++    LOG_DEBUG(Service_SET, "called.");
++
++    IPC::RequestParser rp{ctx};
++    auto offset{rp.Pop<s64>()};
++
++    auto res = SetExternalSteadyClockInternalOffset(offset);
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(res);
++}
++
++void SET_SYS::GetExternalSteadyClockInternalOffset(HLERequestContext& ctx) {
++    LOG_DEBUG(Service_SET, "called.");
++
++    s64 offset{};
++    auto res = GetExternalSteadyClockInternalOffset(offset);
++
++    IPC::ResponseBuilder rb{ctx, 4};
++    rb.Push(res);
++    rb.Push(offset);
++}
++
+ void SET_SYS::GetErrorReportSharePermission(HLERequestContext& ctx) {
+     LOG_WARNING(Service_SET, "(STUBBED) called");
+ 
+@@ -453,18 +741,19 @@ void SET_SYS::GetErrorReportSharePermission(HLERequestContext& ctx) {
+ }
+ 
+ void SET_SYS::GetAppletLaunchFlags(HLERequestContext& ctx) {
+-    LOG_INFO(Service_SET, "called, applet_launch_flag={}", applet_launch_flag);
++    LOG_INFO(Service_SET, "called, applet_launch_flag={}", m_system_settings.applet_launch_flag);
+ 
+     IPC::ResponseBuilder rb{ctx, 3};
+     rb.Push(ResultSuccess);
+-    rb.Push(applet_launch_flag);
++    rb.Push(m_system_settings.applet_launch_flag);
+ }
+ 
+ void SET_SYS::SetAppletLaunchFlags(HLERequestContext& ctx) {
+     IPC::RequestParser rp{ctx};
+-    applet_launch_flag = rp.Pop<u32>();
++    m_system_settings.applet_launch_flag = rp.Pop<u32>();
++    SetSaveNeeded();
+ 
+-    LOG_INFO(Service_SET, "called, applet_launch_flag={}", applet_launch_flag);
++    LOG_INFO(Service_SET, "called, applet_launch_flag={}", m_system_settings.applet_launch_flag);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -489,6 +778,52 @@ void SET_SYS::GetKeyboardLayout(HLERequestContext& ctx) {
+     rb.Push(static_cast<u32>(selected_keyboard_layout));
+ }
+ 
++void SET_SYS::GetDeviceTimeZoneLocationUpdatedTime(HLERequestContext& ctx) {
++    LOG_WARNING(Service_SET, "called.");
++
++    Service::Time::Clock::SteadyClockTimePoint time_point{};
++    auto res = GetDeviceTimeZoneLocationUpdatedTime(time_point);
++
++    IPC::ResponseBuilder rb{ctx, 4};
++    rb.Push(res);
++    rb.PushRaw<Service::Time::Clock::SteadyClockTimePoint>(time_point);
++}
++
++void SET_SYS::SetDeviceTimeZoneLocationUpdatedTime(HLERequestContext& ctx) {
++    LOG_WARNING(Service_SET, "called.");
++
++    IPC::RequestParser rp{ctx};
++    auto time_point{rp.PopRaw<Service::Time::Clock::SteadyClockTimePoint>()};
++
++    auto res = SetDeviceTimeZoneLocationUpdatedTime(time_point);
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(res);
++}
++
++void SET_SYS::GetUserSystemClockAutomaticCorrectionUpdatedTime(HLERequestContext& ctx) {
++    LOG_WARNING(Service_SET, "called.");
++
++    Service::Time::Clock::SteadyClockTimePoint time_point{};
++    auto res = GetUserSystemClockAutomaticCorrectionUpdatedTime(time_point);
++
++    IPC::ResponseBuilder rb{ctx, 4};
++    rb.Push(res);
++    rb.PushRaw<Service::Time::Clock::SteadyClockTimePoint>(time_point);
++}
++
++void SET_SYS::SetUserSystemClockAutomaticCorrectionUpdatedTime(HLERequestContext& ctx) {
++    LOG_WARNING(Service_SET, "called.");
++
++    IPC::RequestParser rp{ctx};
++    auto time_point{rp.PopRaw<Service::Time::Clock::SteadyClockTimePoint>()};
++
++    auto res = SetUserSystemClockAutomaticCorrectionUpdatedTime(time_point);
++
++    IPC::ResponseBuilder rb{ctx, 2};
++    rb.Push(res);
++}
++
+ void SET_SYS::GetChineseTraditionalInputMethod(HLERequestContext& ctx) {
+     LOG_WARNING(Service_SET, "(STUBBED) called");
+ 
+@@ -508,7 +843,7 @@ void SET_SYS::GetHomeMenuScheme(HLERequestContext& ctx) {
+         .extra = 0xFF000000,
+     };
+ 
+-    IPC::ResponseBuilder rb{ctx, 7};
++    IPC::ResponseBuilder rb{ctx, 2 + sizeof(HomeMenuScheme) / sizeof(u32)};
+     rb.Push(ResultSuccess);
+     rb.PushRaw(default_color);
+ }
+@@ -520,6 +855,7 @@ void SET_SYS::GetHomeMenuSchemeModel(HLERequestContext& ctx) {
+     rb.Push(ResultSuccess);
+     rb.Push(0);
+ }
++
+ void SET_SYS::GetFieldTestingFlag(HLERequestContext& ctx) {
+     LOG_WARNING(Service_SET, "(STUBBED) called");
+ 
+@@ -528,7 +864,7 @@ void SET_SYS::GetFieldTestingFlag(HLERequestContext& ctx) {
+     rb.Push<u8>(false);
+ }
+ 
+-SET_SYS::SET_SYS(Core::System& system_) : ServiceFramework{system_, "set:sys"} {
++SET_SYS::SET_SYS(Core::System& system_) : ServiceFramework{system_, "set:sys"}, m_system{system} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, &SET_SYS::SetLanguageCode, "SetLanguageCode"},
+@@ -543,10 +879,10 @@ SET_SYS::SET_SYS(Core::System& system_) : ServiceFramework{system_, "set:sys"} {
+         {10, nullptr, "SetBacklightSettings"},
+         {11, nullptr, "SetBluetoothDevicesSettings"},
+         {12, nullptr, "GetBluetoothDevicesSettings"},
+-        {13, nullptr, "GetExternalSteadyClockSourceId"},
+-        {14, nullptr, "SetExternalSteadyClockSourceId"},
+-        {15, nullptr, "GetUserSystemClockContext"},
+-        {16, nullptr, "SetUserSystemClockContext"},
++        {13, &SET_SYS::GetExternalSteadyClockSourceId, "GetExternalSteadyClockSourceId"},
++        {14, &SET_SYS::SetExternalSteadyClockSourceId, "SetExternalSteadyClockSourceId"},
++        {15, &SET_SYS::GetUserSystemClockContext, "GetUserSystemClockContext"},
++        {16, &SET_SYS::SetUserSystemClockContext, "SetUserSystemClockContext"},
+         {17, &SET_SYS::GetAccountSettings, "GetAccountSettings"},
+         {18, &SET_SYS::SetAccountSettings, "SetAccountSettings"},
+         {19, nullptr, "GetAudioVolume"},
+@@ -581,15 +917,15 @@ SET_SYS::SET_SYS(Core::System& system_) : ServiceFramework{system_, "set:sys"} {
+         {50, nullptr, "SetDataDeletionSettings"},
+         {51, nullptr, "GetInitialSystemAppletProgramId"},
+         {52, nullptr, "GetOverlayDispProgramId"},
+-        {53, nullptr, "GetDeviceTimeZoneLocationName"},
+-        {54, nullptr, "SetDeviceTimeZoneLocationName"},
++        {53, &SET_SYS::GetDeviceTimeZoneLocationName, "GetDeviceTimeZoneLocationName"},
++        {54, &SET_SYS::SetDeviceTimeZoneLocationName, "SetDeviceTimeZoneLocationName"},
+         {55, nullptr, "GetWirelessCertificationFileSize"},
+         {56, nullptr, "GetWirelessCertificationFile"},
+         {57, &SET_SYS::SetRegionCode, "SetRegionCode"},
+-        {58, nullptr, "GetNetworkSystemClockContext"},
+-        {59, nullptr, "SetNetworkSystemClockContext"},
+-        {60, nullptr, "IsUserSystemClockAutomaticCorrectionEnabled"},
+-        {61, nullptr, "SetUserSystemClockAutomaticCorrectionEnabled"},
++        {58, &SET_SYS::GetNetworkSystemClockContext, "GetNetworkSystemClockContext"},
++        {59, &SET_SYS::SetNetworkSystemClockContext, "SetNetworkSystemClockContext"},
++        {60, &SET_SYS::IsUserSystemClockAutomaticCorrectionEnabled, "IsUserSystemClockAutomaticCorrectionEnabled"},
++        {61, &SET_SYS::SetUserSystemClockAutomaticCorrectionEnabled, "SetUserSystemClockAutomaticCorrectionEnabled"},
+         {62, nullptr, "GetDebugModeFlag"},
+         {63, &SET_SYS::GetPrimaryAlbumStorage, "GetPrimaryAlbumStorage"},
+         {64, nullptr, "SetPrimaryAlbumStorage"},
+@@ -633,8 +969,8 @@ SET_SYS::SET_SYS(Core::System& system_) : ServiceFramework{system_, "set:sys"} {
+         {102, nullptr, "SetExternalRtcResetFlag"},
+         {103, nullptr, "GetUsbFullKeyEnableFlag"},
+         {104, nullptr, "SetUsbFullKeyEnableFlag"},
+-        {105, nullptr, "SetExternalSteadyClockInternalOffset"},
+-        {106, nullptr, "GetExternalSteadyClockInternalOffset"},
++        {105, &SET_SYS::SetExternalSteadyClockInternalOffset, "SetExternalSteadyClockInternalOffset"},
++        {106, &SET_SYS::GetExternalSteadyClockInternalOffset, "GetExternalSteadyClockInternalOffset"},
+         {107, nullptr, "GetBacklightSettingsEx"},
+         {108, nullptr, "SetBacklightSettingsEx"},
+         {109, nullptr, "GetHeadphoneVolumeWarningCount"},
+@@ -678,10 +1014,10 @@ SET_SYS::SET_SYS(Core::System& system_) : ServiceFramework{system_, "set:sys"} {
+         {147, nullptr, "GetConsoleSixAxisSensorAngularAcceleration"},
+         {148, nullptr, "SetConsoleSixAxisSensorAngularAcceleration"},
+         {149, nullptr, "GetRebootlessSystemUpdateVersion"},
+-        {150, nullptr, "GetDeviceTimeZoneLocationUpdatedTime"},
+-        {151, nullptr, "SetDeviceTimeZoneLocationUpdatedTime"},
+-        {152, nullptr, "GetUserSystemClockAutomaticCorrectionUpdatedTime"},
+-        {153, nullptr, "SetUserSystemClockAutomaticCorrectionUpdatedTime"},
++        {150, &SET_SYS::GetDeviceTimeZoneLocationUpdatedTime, "GetDeviceTimeZoneLocationUpdatedTime"},
++        {151, &SET_SYS::SetDeviceTimeZoneLocationUpdatedTime, "SetDeviceTimeZoneLocationUpdatedTime"},
++        {152, &SET_SYS::GetUserSystemClockAutomaticCorrectionUpdatedTime, "GetUserSystemClockAutomaticCorrectionUpdatedTime"},
++        {153, &SET_SYS::SetUserSystemClockAutomaticCorrectionUpdatedTime, "SetUserSystemClockAutomaticCorrectionUpdatedTime"},
+         {154, nullptr, "GetAccountOnlineStorageSettings"},
+         {155, nullptr, "SetAccountOnlineStorageSettings"},
+         {156, nullptr, "GetPctlReadyFlag"},
+@@ -743,8 +1079,184 @@ SET_SYS::SET_SYS(Core::System& system_) : ServiceFramework{system_, "set:sys"} {
+     // clang-format on
+ 
+     RegisterHandlers(functions);
++
++    SetupSettings();
++    m_save_thread =
++        std::jthread([this](std::stop_token stop_token) { StoreSettingsThreadFunc(stop_token); });
++}
++
++SET_SYS::~SET_SYS() {
++    SetSaveNeeded();
++    m_save_thread.request_stop();
++}
++
++void SET_SYS::SetupSettings() {
++    auto system_dir =
++        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000050";
++    if (!LoadSettingsFile(system_dir, []() { return DefaultSystemSettings(); })) {
++        ASSERT(false);
++    }
++
++    auto private_dir =
++        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000052";
++    if (!LoadSettingsFile(private_dir, []() { return DefaultPrivateSettings(); })) {
++        ASSERT(false);
++    }
++
++    auto device_dir =
++        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000053";
++    if (!LoadSettingsFile(device_dir, []() { return DefaultDeviceSettings(); })) {
++        ASSERT(false);
++    }
++
++    auto appln_dir =
++        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000054";
++    if (!LoadSettingsFile(appln_dir, []() { return DefaultApplnSettings(); })) {
++        ASSERT(false);
++    }
++}
++
++void SET_SYS::StoreSettings() {
++    auto system_dir =
++        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000050";
++    if (!StoreSettingsFile(system_dir, m_system_settings)) {
++        LOG_ERROR(HW_GPU, "Failed to store System settings");
++    }
++
++    auto private_dir =
++        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000052";
++    if (!StoreSettingsFile(private_dir, m_private_settings)) {
++        LOG_ERROR(HW_GPU, "Failed to store Private settings");
++    }
++
++    auto device_dir =
++        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000053";
++    if (!StoreSettingsFile(device_dir, m_device_settings)) {
++        LOG_ERROR(HW_GPU, "Failed to store Device settings");
++    }
++
++    auto appln_dir =
++        Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "system/save/8000000000000054";
++    if (!StoreSettingsFile(appln_dir, m_appln_settings)) {
++        LOG_ERROR(HW_GPU, "Failed to store ApplLn settings");
++    }
++}
++
++void SET_SYS::StoreSettingsThreadFunc(std::stop_token stop_token) {
++    while (Common::StoppableTimedWait(stop_token, std::chrono::minutes(1))) {
++        std::scoped_lock l{m_save_needed_mutex};
++        if (!std::exchange(m_save_needed, false)) {
++            continue;
++        }
++        StoreSettings();
++    }
++}
++
++void SET_SYS::SetSaveNeeded() {
++    std::scoped_lock l{m_save_needed_mutex};
++    m_save_needed = true;
++}
++
++Result SET_SYS::GetSettingsItemValue(std::vector<u8>& out_value, const std::string& category,
++                                     const std::string& name) {
++    auto settings{GetSettings()};
++    R_UNLESS(settings.contains(category) && settings[category].contains(name), ResultUnknown);
++
++    out_value = settings[category][name];
++    R_SUCCEED();
++}
++
++Result SET_SYS::GetExternalSteadyClockSourceId(Common::UUID& out_id) {
++    out_id = m_private_settings.external_clock_source_id;
++    R_SUCCEED();
++}
++
++Result SET_SYS::SetExternalSteadyClockSourceId(Common::UUID id) {
++    m_private_settings.external_clock_source_id = id;
++    SetSaveNeeded();
++    R_SUCCEED();
++}
++
++Result SET_SYS::GetUserSystemClockContext(Service::Time::Clock::SystemClockContext& out_context) {
++    out_context = m_system_settings.user_system_clock_context;
++    R_SUCCEED();
+ }
+ 
+-SET_SYS::~SET_SYS() = default;
++Result SET_SYS::SetUserSystemClockContext(Service::Time::Clock::SystemClockContext& context) {
++    m_system_settings.user_system_clock_context = context;
++    SetSaveNeeded();
++    R_SUCCEED();
++}
++
++Result SET_SYS::GetDeviceTimeZoneLocationName(Service::Time::TimeZone::LocationName& out_name) {
++    out_name = m_system_settings.device_time_zone_location_name;
++    R_SUCCEED();
++}
++
++Result SET_SYS::SetDeviceTimeZoneLocationName(Service::Time::TimeZone::LocationName& name) {
++    m_system_settings.device_time_zone_location_name = name;
++    SetSaveNeeded();
++    R_SUCCEED();
++}
++
++Result SET_SYS::GetNetworkSystemClockContext(
++    Service::Time::Clock::SystemClockContext& out_context) {
++    out_context = m_system_settings.network_system_clock_context;
++    R_SUCCEED();
++}
++
++Result SET_SYS::SetNetworkSystemClockContext(Service::Time::Clock::SystemClockContext& context) {
++    m_system_settings.network_system_clock_context = context;
++    SetSaveNeeded();
++    R_SUCCEED();
++}
++
++Result SET_SYS::IsUserSystemClockAutomaticCorrectionEnabled(bool& out_enabled) {
++    out_enabled = m_system_settings.user_system_clock_automatic_correction_enabled;
++    R_SUCCEED();
++}
++
++Result SET_SYS::SetUserSystemClockAutomaticCorrectionEnabled(bool enabled) {
++    m_system_settings.user_system_clock_automatic_correction_enabled = enabled;
++    SetSaveNeeded();
++    R_SUCCEED();
++}
++
++Result SET_SYS::SetExternalSteadyClockInternalOffset(s64 offset) {
++    m_private_settings.external_steady_clock_internal_offset = offset;
++    SetSaveNeeded();
++    R_SUCCEED();
++}
++
++Result SET_SYS::GetExternalSteadyClockInternalOffset(s64& out_offset) {
++    out_offset = m_private_settings.external_steady_clock_internal_offset;
++    R_SUCCEED();
++}
++
++Result SET_SYS::GetDeviceTimeZoneLocationUpdatedTime(
++    Service::Time::Clock::SteadyClockTimePoint& out_time_point) {
++    out_time_point = m_system_settings.device_time_zone_location_updated_time;
++    R_SUCCEED();
++}
++
++Result SET_SYS::SetDeviceTimeZoneLocationUpdatedTime(
++    Service::Time::Clock::SteadyClockTimePoint& time_point) {
++    m_system_settings.device_time_zone_location_updated_time = time_point;
++    SetSaveNeeded();
++    R_SUCCEED();
++}
++
++Result SET_SYS::GetUserSystemClockAutomaticCorrectionUpdatedTime(
++    Service::Time::Clock::SteadyClockTimePoint& out_time_point) {
++    out_time_point = m_system_settings.user_system_clock_automatic_correction_updated_time_point;
++    R_SUCCEED();
++}
++
++Result SET_SYS::SetUserSystemClockAutomaticCorrectionUpdatedTime(
++    Service::Time::Clock::SteadyClockTimePoint out_time_point) {
++    m_system_settings.user_system_clock_automatic_correction_updated_time_point = out_time_point;
++    SetSaveNeeded();
++    R_SUCCEED();
++}
+ 
+ } // namespace Service::Set
+diff --git a/src/core/hle/service/set/set_sys.h b/src/core/hle/service/set/set_sys.h
+index 5f770fd320ca..3785d93d88ca 100644
+--- a/src/core/hle/service/set/set_sys.h
++++ b/src/core/hle/service/set/set_sys.h
+@@ -3,17 +3,27 @@
+ 
+ #pragma once
+ 
++#include <filesystem>
++#include <mutex>
++#include <string>
++#include <thread>
++
++#include "common/polyfill_thread.h"
+ #include "common/uuid.h"
+ #include "core/hle/result.h"
+ #include "core/hle/service/service.h"
++#include "core/hle/service/set/appln_settings.h"
++#include "core/hle/service/set/device_settings.h"
++#include "core/hle/service/set/private_settings.h"
++#include "core/hle/service/set/system_settings.h"
+ #include "core/hle/service/time/clock_types.h"
++#include "core/hle/service/time/time_zone_types.h"
+ 
+ namespace Core {
+ class System;
+ }
+ 
+ namespace Service::Set {
+-enum class LanguageCode : u64;
+ enum class GetFirmwareVersionType {
+     Version1,
+     Version2,
+@@ -42,270 +52,38 @@ class SET_SYS final : public ServiceFramework<SET_SYS> {
+     explicit SET_SYS(Core::System& system_);
+     ~SET_SYS() override;
+ 
+-private:
+-    /// Indicates the current theme set by the system settings
+-    enum class ColorSet : u32 {
+-        BasicWhite = 0,
+-        BasicBlack = 1,
+-    };
+-
+-    /// Indicates the current console is a retail or kiosk unit
+-    enum class QuestFlag : u8 {
+-        Retail = 0,
+-        Kiosk = 1,
+-    };
+-
+-    /// This is nn::settings::system::TvResolution
+-    enum class TvResolution : u32 {
+-        Auto,
+-        Resolution1080p,
+-        Resolution720p,
+-        Resolution480p,
+-    };
+-
+-    /// This is nn::settings::system::HdmiContentType
+-    enum class HdmiContentType : u32 {
+-        None,
+-        Graphics,
+-        Cinema,
+-        Photo,
+-        Game,
+-    };
+-
+-    /// This is nn::settings::system::RgbRange
+-    enum class RgbRange : u32 {
+-        Auto,
+-        Full,
+-        Limited,
+-    };
+-
+-    /// This is nn::settings::system::CmuMode
+-    enum class CmuMode : u32 {
+-        None,
+-        ColorInvert,
+-        HighContrast,
+-        GrayScale,
+-    };
+-
+-    /// This is nn::settings::system::PrimaryAlbumStorage
+-    enum class PrimaryAlbumStorage : u32 {
+-        Nand,
+-        SdCard,
+-    };
+-
+-    /// This is nn::settings::system::NotificationVolume
+-    enum class NotificationVolume : u32 {
+-        Mute,
+-        Low,
+-        High,
+-    };
+-
+-    /// This is nn::settings::system::ChineseTraditionalInputMethod
+-    enum class ChineseTraditionalInputMethod : u32 {
+-        Unknown0 = 0,
+-        Unknown1 = 1,
+-        Unknown2 = 2,
+-    };
+-
+-    /// This is nn::settings::system::ErrorReportSharePermission
+-    enum class ErrorReportSharePermission : u32 {
+-        NotConfirmed,
+-        Granted,
+-        Denied,
+-    };
+-
+-    /// This is nn::settings::system::FriendPresenceOverlayPermission
+-    enum class FriendPresenceOverlayPermission : u8 {
+-        NotConfirmed,
+-        NoDisplay,
+-        FavoriteFriends,
+-        Friends,
+-    };
+-
+-    /// This is nn::settings::system::HandheldSleepPlan
+-    enum class HandheldSleepPlan : u32 {
+-        Sleep1Min,
+-        Sleep3Min,
+-        Sleep5Min,
+-        Sleep10Min,
+-        Sleep30Min,
+-        Never,
+-    };
+-
+-    /// This is nn::settings::system::ConsoleSleepPlan
+-    enum class ConsoleSleepPlan : u32 {
+-        Sleep1Hour,
+-        Sleep2Hour,
+-        Sleep3Hour,
+-        Sleep6Hour,
+-        Sleep12Hour,
+-        Never,
+-    };
+-
+-    /// This is nn::settings::system::RegionCode
+-    enum class RegionCode : u32 {
+-        Japan,
+-        Usa,
+-        Europe,
+-        Australia,
+-        HongKongTaiwanKorea,
+-        China,
+-    };
+-
+-    /// This is nn::settings::system::EulaVersionClockType
+-    enum class EulaVersionClockType : u32 {
+-        NetworkSystemClock,
+-        SteadyClock,
+-    };
+-
+-    /// This is nn::settings::system::SleepFlag
+-    struct SleepFlag {
+-        union {
+-            u32 raw{};
+-
+-            BitField<0, 1, u32> SleepsWhilePlayingMedia;
+-            BitField<1, 1, u32> WakesAtPowerStateChange;
+-        };
+-    };
+-    static_assert(sizeof(SleepFlag) == 4, "TvFlag is an invalid size");
+-
+-    /// This is nn::settings::system::TvFlag
+-    struct TvFlag {
+-        union {
+-            u32 raw{};
+-
+-            BitField<0, 1, u32> Allows4k;
+-            BitField<1, 1, u32> Allows3d;
+-            BitField<2, 1, u32> AllowsCec;
+-            BitField<3, 1, u32> PreventsScreenBurnIn;
+-        };
+-    };
+-    static_assert(sizeof(TvFlag) == 4, "TvFlag is an invalid size");
+-
+-    /// This is nn::settings::system::InitialLaunchFlag
+-    struct InitialLaunchFlag {
+-        union {
+-            u32 raw{};
+-
+-            BitField<0, 1, u32> InitialLaunchCompletionFlag;
+-            BitField<8, 1, u32> InitialLaunchUserAdditionFlag;
+-            BitField<16, 1, u32> InitialLaunchTimestampFlag;
+-        };
+-    };
+-    static_assert(sizeof(InitialLaunchFlag) == 4, "InitialLaunchFlag is an invalid size");
+-
+-    /// This is nn::settings::system::NotificationFlag
+-    struct NotificationFlag {
+-        union {
+-            u32 raw{};
+-
+-            BitField<0, 1, u32> RingtoneFlag;
+-            BitField<1, 1, u32> DownloadCompletionFlag;
+-            BitField<8, 1, u32> EnablesNews;
+-            BitField<9, 1, u32> IncomingLampFlag;
+-        };
+-    };
+-    static_assert(sizeof(NotificationFlag) == 4, "NotificationFlag is an invalid size");
+-
+-    /// This is nn::settings::system::AccountNotificationFlag
+-    struct AccountNotificationFlag {
+-        union {
+-            u32 raw{};
+-
+-            BitField<0, 1, u32> FriendOnlineFlag;
+-            BitField<1, 1, u32> FriendRequestFlag;
+-            BitField<8, 1, u32> CoralInvitationFlag;
+-        };
+-    };
+-    static_assert(sizeof(AccountNotificationFlag) == 4,
+-                  "AccountNotificationFlag is an invalid size");
+-
+-    /// This is nn::settings::system::TvSettings
+-    struct TvSettings {
+-        TvFlag flags;
+-        TvResolution tv_resolution;
+-        HdmiContentType hdmi_content_type;
+-        RgbRange rgb_range;
+-        CmuMode cmu_mode;
+-        u32 tv_underscan;
+-        f32 tv_gama;
+-        f32 constrast_ratio;
+-    };
+-    static_assert(sizeof(TvSettings) == 0x20, "TvSettings is an invalid size");
+-
+-    /// This is nn::settings::system::NotificationTime
+-    struct NotificationTime {
+-        u32 hour;
+-        u32 minute;
+-    };
+-    static_assert(sizeof(NotificationTime) == 0x8, "NotificationTime is an invalid size");
+-
+-    /// This is nn::settings::system::NotificationSettings
+-    struct NotificationSettings {
+-        NotificationFlag flags;
+-        NotificationVolume volume;
+-        NotificationTime start_time;
+-        NotificationTime stop_time;
+-    };
+-    static_assert(sizeof(NotificationSettings) == 0x18, "NotificationSettings is an invalid size");
+-
+-    /// This is nn::settings::system::AccountSettings
+-    struct AccountSettings {
+-        u32 flags;
+-    };
+-    static_assert(sizeof(AccountSettings) == 0x4, "AccountSettings is an invalid size");
+-
+-    /// This is nn::settings::system::AccountNotificationSettings
+-    struct AccountNotificationSettings {
+-        Common::UUID uid;
+-        AccountNotificationFlag flags;
+-        FriendPresenceOverlayPermission friend_presence_permission;
+-        FriendPresenceOverlayPermission friend_invitation_permission;
+-        INSERT_PADDING_BYTES(0x2);
+-    };
+-    static_assert(sizeof(AccountNotificationSettings) == 0x18,
+-                  "AccountNotificationSettings is an invalid size");
+-
+-    /// This is nn::settings::system::InitialLaunchSettings
+-    struct SleepSettings {
+-        SleepFlag flags;
+-        HandheldSleepPlan handheld_sleep_plan;
+-        ConsoleSleepPlan console_sleep_plan;
+-    };
+-    static_assert(sizeof(SleepSettings) == 0xc, "SleepSettings is incorrect size");
+-
+-    /// This is nn::settings::system::InitialLaunchSettings
+-    struct InitialLaunchSettings {
+-        InitialLaunchFlag flags;
+-        INSERT_PADDING_BYTES(0x4);
+-        Time::Clock::SteadyClockTimePoint timestamp;
+-    };
+-    static_assert(sizeof(InitialLaunchSettings) == 0x20, "InitialLaunchSettings is incorrect size");
+-
+-    /// This is nn::settings::system::InitialLaunchSettings
+-    struct EulaVersion {
+-        u32 version;
+-        RegionCode region_code;
+-        EulaVersionClockType clock_type;
+-        INSERT_PADDING_BYTES(0x4);
+-        s64 posix_time;
+-        Time::Clock::SteadyClockTimePoint timestamp;
+-    };
+-    static_assert(sizeof(EulaVersion) == 0x30, "EulaVersion is incorrect size");
+-
+-    /// This is nn::settings::system::HomeMenuScheme
+-    struct HomeMenuScheme {
+-        u32 main;
+-        u32 back;
+-        u32 sub;
+-        u32 bezel;
+-        u32 extra;
+-    };
+-    static_assert(sizeof(HomeMenuScheme) == 0x14, "HomeMenuScheme is incorrect size");
++    Result GetSettingsItemValue(std::vector<u8>& out_value, const std::string& category,
++                                const std::string& name);
++
++    Result GetExternalSteadyClockSourceId(Common::UUID& out_id);
++    Result SetExternalSteadyClockSourceId(Common::UUID id);
++    Result GetUserSystemClockContext(Service::Time::Clock::SystemClockContext& out_context);
++    Result SetUserSystemClockContext(Service::Time::Clock::SystemClockContext& context);
++    Result GetDeviceTimeZoneLocationName(Service::Time::TimeZone::LocationName& out_name);
++    Result SetDeviceTimeZoneLocationName(Service::Time::TimeZone::LocationName& name);
++    Result GetNetworkSystemClockContext(Service::Time::Clock::SystemClockContext& out_context);
++    Result SetNetworkSystemClockContext(Service::Time::Clock::SystemClockContext& context);
++    Result IsUserSystemClockAutomaticCorrectionEnabled(bool& out_enabled);
++    Result SetUserSystemClockAutomaticCorrectionEnabled(bool enabled);
++    Result SetExternalSteadyClockInternalOffset(s64 offset);
++    Result GetExternalSteadyClockInternalOffset(s64& out_offset);
++    Result GetDeviceTimeZoneLocationUpdatedTime(
++        Service::Time::Clock::SteadyClockTimePoint& out_time_point);
++    Result SetDeviceTimeZoneLocationUpdatedTime(
++        Service::Time::Clock::SteadyClockTimePoint& time_point);
++    Result GetUserSystemClockAutomaticCorrectionUpdatedTime(
++        Service::Time::Clock::SteadyClockTimePoint& out_time_point);
++    Result SetUserSystemClockAutomaticCorrectionUpdatedTime(
++        Service::Time::Clock::SteadyClockTimePoint time_point);
+ 
++private:
+     void SetLanguageCode(HLERequestContext& ctx);
+     void GetFirmwareVersion(HLERequestContext& ctx);
+     void GetFirmwareVersion2(HLERequestContext& ctx);
++    void GetExternalSteadyClockSourceId(HLERequestContext& ctx);
++    void SetExternalSteadyClockSourceId(HLERequestContext& ctx);
++    void GetUserSystemClockContext(HLERequestContext& ctx);
++    void SetUserSystemClockContext(HLERequestContext& ctx);
+     void GetAccountSettings(HLERequestContext& ctx);
+     void SetAccountSettings(HLERequestContext& ctx);
+     void GetEulaVersions(HLERequestContext& ctx);
+@@ -321,7 +99,13 @@ class SET_SYS final : public ServiceFramework<SET_SYS> {
+     void GetTvSettings(HLERequestContext& ctx);
+     void SetTvSettings(HLERequestContext& ctx);
+     void GetQuestFlag(HLERequestContext& ctx);
++    void GetDeviceTimeZoneLocationName(HLERequestContext& ctx);
++    void SetDeviceTimeZoneLocationName(HLERequestContext& ctx);
+     void SetRegionCode(HLERequestContext& ctx);
++    void GetNetworkSystemClockContext(HLERequestContext& ctx);
++    void SetNetworkSystemClockContext(HLERequestContext& ctx);
++    void IsUserSystemClockAutomaticCorrectionEnabled(HLERequestContext& ctx);
++    void SetUserSystemClockAutomaticCorrectionEnabled(HLERequestContext& ctx);
+     void GetPrimaryAlbumStorage(HLERequestContext& ctx);
+     void GetSleepSettings(HLERequestContext& ctx);
+     void SetSleepSettings(HLERequestContext& ctx);
+@@ -333,59 +117,36 @@ class SET_SYS final : public ServiceFramework<SET_SYS> {
+     void GetMiiAuthorId(HLERequestContext& ctx);
+     void GetAutoUpdateEnableFlag(HLERequestContext& ctx);
+     void GetBatteryPercentageFlag(HLERequestContext& ctx);
++    void SetExternalSteadyClockInternalOffset(HLERequestContext& ctx);
++    void GetExternalSteadyClockInternalOffset(HLERequestContext& ctx);
+     void GetErrorReportSharePermission(HLERequestContext& ctx);
+     void GetAppletLaunchFlags(HLERequestContext& ctx);
+     void SetAppletLaunchFlags(HLERequestContext& ctx);
+     void GetKeyboardLayout(HLERequestContext& ctx);
++    void GetDeviceTimeZoneLocationUpdatedTime(HLERequestContext& ctx);
++    void SetDeviceTimeZoneLocationUpdatedTime(HLERequestContext& ctx);
++    void GetUserSystemClockAutomaticCorrectionUpdatedTime(HLERequestContext& ctx);
++    void SetUserSystemClockAutomaticCorrectionUpdatedTime(HLERequestContext& ctx);
+     void GetChineseTraditionalInputMethod(HLERequestContext& ctx);
+-    void GetFieldTestingFlag(HLERequestContext& ctx);
+     void GetHomeMenuScheme(HLERequestContext& ctx);
+     void GetHomeMenuSchemeModel(HLERequestContext& ctx);
++    void GetFieldTestingFlag(HLERequestContext& ctx);
+ 
+-    AccountSettings account_settings{
+-        .flags = {},
+-    };
+-
+-    ColorSet color_set = ColorSet::BasicWhite;
+-
+-    NotificationSettings notification_settings{
+-        .flags = {0x300},
+-        .volume = NotificationVolume::High,
+-        .start_time = {.hour = 9, .minute = 0},
+-        .stop_time = {.hour = 21, .minute = 0},
+-    };
+-
+-    std::vector<AccountNotificationSettings> account_notifications{};
+-
+-    TvSettings tv_settings{
+-        .flags = {0xc},
+-        .tv_resolution = TvResolution::Auto,
+-        .hdmi_content_type = HdmiContentType::Game,
+-        .rgb_range = RgbRange::Auto,
+-        .cmu_mode = CmuMode::None,
+-        .tv_underscan = {},
+-        .tv_gama = 1.0f,
+-        .constrast_ratio = 0.5f,
+-    };
+-
+-    InitialLaunchSettings launch_settings{
+-        .flags = {0x10001},
+-        .timestamp = {},
+-    };
+-
+-    SleepSettings sleep_settings{
+-        .flags = {0x3},
+-        .handheld_sleep_plan = HandheldSleepPlan::Sleep10Min,
+-        .console_sleep_plan = ConsoleSleepPlan::Sleep1Hour,
+-    };
+-
+-    u32 applet_launch_flag{};
+-
+-    std::vector<EulaVersion> eula_versions{};
+-
+-    RegionCode region_code;
+-
+-    LanguageCode language_code_setting;
++    bool LoadSettingsFile(std::filesystem::path& path, auto&& default_func);
++    bool StoreSettingsFile(std::filesystem::path& path, auto& settings);
++    void SetupSettings();
++    void StoreSettings();
++    void StoreSettingsThreadFunc(std::stop_token stop_token);
++    void SetSaveNeeded();
++
++    Core::System& m_system;
++    SystemSettings m_system_settings{};
++    PrivateSettings m_private_settings{};
++    DeviceSettings m_device_settings{};
++    ApplnSettings m_appln_settings{};
++    std::jthread m_save_thread;
++    std::mutex m_save_needed_mutex;
++    bool m_save_needed{false};
+ };
+ 
+ } // namespace Service::Set
+diff --git a/src/core/hle/service/set/system_settings.cpp b/src/core/hle/service/set/system_settings.cpp
+new file mode 100644
+index 000000000000..2723417ad501
+--- /dev/null
++++ b/src/core/hle/service/set/system_settings.cpp
+@@ -0,0 +1,51 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/set/system_settings.h"
++
++namespace Service::Set {
++
++SystemSettings DefaultSystemSettings() {
++    SystemSettings settings{};
++
++    settings.version = 0x140000;
++    settings.flags = 7;
++
++    settings.color_set_id = ColorSet::BasicWhite;
++
++    settings.notification_settings = {
++        .flags{0x300},
++        .volume = NotificationVolume::High,
++        .start_time = {.hour = 9, .minute = 0},
++        .stop_time = {.hour = 21, .minute = 0},
++    };
++
++    settings.tv_settings = {
++        .flags = {0xC},
++        .tv_resolution = TvResolution::Auto,
++        .hdmi_content_type = HdmiContentType::Game,
++        .rgb_range = RgbRange::Auto,
++        .cmu_mode = CmuMode::None,
++        .tv_underscan = {},
++        .tv_gama = 1.0f,
++        .constrast_ratio = 0.5f,
++    };
++
++    settings.initial_launch_settings_packed = {
++        .flags = {0x10001},
++        .timestamp = {},
++    };
++
++    settings.sleep_settings = {
++        .flags = {0x3},
++        .handheld_sleep_plan = HandheldSleepPlan::Sleep10Min,
++        .console_sleep_plan = ConsoleSleepPlan::Sleep1Hour,
++    };
++
++    settings.device_time_zone_location_name = {"UTC"};
++    settings.user_system_clock_automatic_correction_enabled = false;
++
++    return settings;
++}
++
++} // namespace Service::Set
+diff --git a/src/core/hle/service/set/system_settings.h b/src/core/hle/service/set/system_settings.h
+new file mode 100644
+index 000000000000..ded2906addde
+--- /dev/null
++++ b/src/core/hle/service/set/system_settings.h
+@@ -0,0 +1,699 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <array>
++
++#include "common/bit_field.h"
++#include "common/common_funcs.h"
++#include "common/common_types.h"
++#include "core/hle/service/set/private_settings.h"
++#include "core/hle/service/time/clock_types.h"
++
++namespace Service::Set {
++
++/// This is "nn::settings::LanguageCode", which is a NUL-terminated string stored in a u64.
++enum class LanguageCode : u64 {
++    JA = 0x000000000000616A,
++    EN_US = 0x00000053552D6E65,
++    FR = 0x0000000000007266,
++    DE = 0x0000000000006564,
++    IT = 0x0000000000007469,
++    ES = 0x0000000000007365,
++    ZH_CN = 0x0000004E432D687A,
++    KO = 0x0000000000006F6B,
++    NL = 0x0000000000006C6E,
++    PT = 0x0000000000007470,
++    RU = 0x0000000000007572,
++    ZH_TW = 0x00000057542D687A,
++    EN_GB = 0x00000042472D6E65,
++    FR_CA = 0x00000041432D7266,
++    ES_419 = 0x00003931342D7365,
++    ZH_HANS = 0x00736E61482D687A,
++    ZH_HANT = 0x00746E61482D687A,
++    PT_BR = 0x00000052422D7470,
++};
++
++/// This is nn::settings::system::ErrorReportSharePermission
++enum class ErrorReportSharePermission : u32 {
++    NotConfirmed,
++    Granted,
++    Denied,
++};
++
++/// This is nn::settings::system::ChineseTraditionalInputMethod
++enum class ChineseTraditionalInputMethod : u32 {
++    Unknown0 = 0,
++    Unknown1 = 1,
++    Unknown2 = 2,
++};
++
++/// This is nn::settings::system::HomeMenuScheme
++struct HomeMenuScheme {
++    u32 main;
++    u32 back;
++    u32 sub;
++    u32 bezel;
++    u32 extra;
++};
++static_assert(sizeof(HomeMenuScheme) == 0x14, "HomeMenuScheme is incorrect size");
++
++/// Indicates the current theme set by the system settings
++enum class ColorSet : u32 {
++    BasicWhite = 0,
++    BasicBlack = 1,
++};
++
++/// Indicates the current console is a retail or kiosk unit
++enum class QuestFlag : u8 {
++    Retail = 0,
++    Kiosk = 1,
++};
++
++/// This is nn::settings::system::RegionCode
++enum class RegionCode : u32 {
++    Japan,
++    Usa,
++    Europe,
++    Australia,
++    HongKongTaiwanKorea,
++    China,
++};
++
++/// This is nn::settings::system::AccountSettings
++struct AccountSettings {
++    u32 flags;
++};
++static_assert(sizeof(AccountSettings) == 4, "AccountSettings is an invalid size");
++
++/// This is nn::settings::system::NotificationVolume
++enum class NotificationVolume : u32 {
++    Mute,
++    Low,
++    High,
++};
++
++/// This is nn::settings::system::NotificationFlag
++struct NotificationFlag {
++    union {
++        u32 raw{};
++
++        BitField<0, 1, u32> RingtoneFlag;
++        BitField<1, 1, u32> DownloadCompletionFlag;
++        BitField<8, 1, u32> EnablesNews;
++        BitField<9, 1, u32> IncomingLampFlag;
++    };
++};
++static_assert(sizeof(NotificationFlag) == 4, "NotificationFlag is an invalid size");
++
++/// This is nn::settings::system::NotificationTime
++struct NotificationTime {
++    u32 hour;
++    u32 minute;
++};
++static_assert(sizeof(NotificationTime) == 0x8, "NotificationTime is an invalid size");
++
++/// This is nn::settings::system::NotificationSettings
++struct NotificationSettings {
++    NotificationFlag flags;
++    NotificationVolume volume;
++    NotificationTime start_time;
++    NotificationTime stop_time;
++};
++static_assert(sizeof(NotificationSettings) == 0x18, "NotificationSettings is an invalid size");
++
++/// This is nn::settings::system::AccountNotificationFlag
++struct AccountNotificationFlag {
++    union {
++        u32 raw{};
++
++        BitField<0, 1, u32> FriendOnlineFlag;
++        BitField<1, 1, u32> FriendRequestFlag;
++        BitField<8, 1, u32> CoralInvitationFlag;
++    };
++};
++static_assert(sizeof(AccountNotificationFlag) == 4, "AccountNotificationFlag is an invalid size");
++
++/// This is nn::settings::system::FriendPresenceOverlayPermission
++enum class FriendPresenceOverlayPermission : u8 {
++    NotConfirmed,
++    NoDisplay,
++    FavoriteFriends,
++    Friends,
++};
++
++/// This is nn::settings::system::AccountNotificationSettings
++struct AccountNotificationSettings {
++    Common::UUID uid;
++    AccountNotificationFlag flags;
++    FriendPresenceOverlayPermission friend_presence_permission;
++    FriendPresenceOverlayPermission friend_invitation_permission;
++    INSERT_PADDING_BYTES(0x2);
++};
++static_assert(sizeof(AccountNotificationSettings) == 0x18,
++              "AccountNotificationSettings is an invalid size");
++
++/// This is nn::settings::system::TvFlag
++struct TvFlag {
++    union {
++        u32 raw{};
++
++        BitField<0, 1, u32> Allows4k;
++        BitField<1, 1, u32> Allows3d;
++        BitField<2, 1, u32> AllowsCec;
++        BitField<3, 1, u32> PreventsScreenBurnIn;
++    };
++};
++static_assert(sizeof(TvFlag) == 4, "TvFlag is an invalid size");
++
++/// This is nn::settings::system::TvResolution
++enum class TvResolution : u32 {
++    Auto,
++    Resolution1080p,
++    Resolution720p,
++    Resolution480p,
++};
++
++/// This is nn::settings::system::HdmiContentType
++enum class HdmiContentType : u32 {
++    None,
++    Graphics,
++    Cinema,
++    Photo,
++    Game,
++};
++
++/// This is nn::settings::system::RgbRange
++enum class RgbRange : u32 {
++    Auto,
++    Full,
++    Limited,
++};
++
++/// This is nn::settings::system::CmuMode
++enum class CmuMode : u32 {
++    None,
++    ColorInvert,
++    HighContrast,
++    GrayScale,
++};
++
++/// This is nn::settings::system::TvSettings
++struct TvSettings {
++    TvFlag flags;
++    TvResolution tv_resolution;
++    HdmiContentType hdmi_content_type;
++    RgbRange rgb_range;
++    CmuMode cmu_mode;
++    u32 tv_underscan;
++    f32 tv_gama;
++    f32 constrast_ratio;
++};
++static_assert(sizeof(TvSettings) == 0x20, "TvSettings is an invalid size");
++
++/// This is nn::settings::system::PrimaryAlbumStorage
++enum class PrimaryAlbumStorage : u32 {
++    Nand,
++    SdCard,
++};
++
++/// This is nn::settings::system::HandheldSleepPlan
++enum class HandheldSleepPlan : u32 {
++    Sleep1Min,
++    Sleep3Min,
++    Sleep5Min,
++    Sleep10Min,
++    Sleep30Min,
++    Never,
++};
++
++/// This is nn::settings::system::ConsoleSleepPlan
++enum class ConsoleSleepPlan : u32 {
++    Sleep1Hour,
++    Sleep2Hour,
++    Sleep3Hour,
++    Sleep6Hour,
++    Sleep12Hour,
++    Never,
++};
++
++/// This is nn::settings::system::SleepFlag
++struct SleepFlag {
++    union {
++        u32 raw{};
++
++        BitField<0, 1, u32> SleepsWhilePlayingMedia;
++        BitField<1, 1, u32> WakesAtPowerStateChange;
++    };
++};
++static_assert(sizeof(SleepFlag) == 4, "TvFlag is an invalid size");
++
++/// This is nn::settings::system::SleepSettings
++struct SleepSettings {
++    SleepFlag flags;
++    HandheldSleepPlan handheld_sleep_plan;
++    ConsoleSleepPlan console_sleep_plan;
++};
++static_assert(sizeof(SleepSettings) == 0xc, "SleepSettings is incorrect size");
++
++/// This is nn::settings::system::EulaVersionClockType
++enum class EulaVersionClockType : u32 {
++    NetworkSystemClock,
++    SteadyClock,
++};
++
++/// This is nn::settings::system::EulaVersion
++struct EulaVersion {
++    u32 version;
++    RegionCode region_code;
++    EulaVersionClockType clock_type;
++    INSERT_PADDING_BYTES(0x4);
++    s64 posix_time;
++    Time::Clock::SteadyClockTimePoint timestamp;
++};
++static_assert(sizeof(EulaVersion) == 0x30, "EulaVersion is incorrect size");
++
++struct SystemSettings {
++    // 0/unwritten (1.0.0), 0x20000 (2.0.0), 0x30000 (3.0.0-3.0.1), 0x40001 (4.0.0-4.1.0), 0x50000
++    // (5.0.0-5.1.0), 0x60000 (6.0.0-6.2.0), 0x70000 (7.0.0), 0x80000 (8.0.0-8.1.1), 0x90000
++    // (9.0.0-10.0.4), 0x100100 (10.1.0+), 0x120000 (12.0.0-12.1.0), 0x130000 (13.0.0-13.2.1),
++    // 0x140000 (14.0.0+)
++    u32 version;
++    // 0/unwritten (1.0.0), 1 (6.0.0-8.1.0), 2 (8.1.1), 7 (9.0.0+).
++    // if (flags & 2), defaults are written for AnalogStickUserCalibration
++    u32 flags;
++
++    std::array<u8, 0x8> reserved_00008;
++
++    // nn::settings::LanguageCode
++    LanguageCode language_code;
++
++    std::array<u8, 0x38> reserved_00018;
++
++    // nn::settings::system::NetworkSettings
++    u32 network_setting_count;
++    bool wireless_lan_enable_flag;
++    std::array<u8, 0x3> pad_00055;
++
++    std::array<u8, 0x8> reserved_00058;
++
++    // nn::settings::system::NetworkSettings
++    std::array<std::array<u8, 0x400>, 32> network_settings_1B0;
++
++    // nn::settings::system::BluetoothDevicesSettings
++    std::array<u8, 0x4> bluetooth_device_settings_count;
++    bool bluetooth_enable_flag;
++    std::array<u8, 0x3> pad_08065;
++    bool bluetooth_afh_enable_flag;
++    std::array<u8, 0x3> pad_08069;
++    bool bluetooth_boost_enable_flag;
++    std::array<u8, 0x3> pad_0806D;
++    std::array<std::array<u8, 0x200>, 10> bluetooth_device_settings_first_10;
++
++    s32 ldn_channel;
++
++    std::array<u8, 0x3C> reserved_09474;
++
++    // nn::util::Uuid MiiAuthorId
++    std::array<u8, 0x10> mii_author_id;
++
++    std::array<u8, 0x30> reserved_094C0;
++
++    // nn::settings::system::NxControllerSettings
++    u32 nx_controller_settings_count;
++
++    std::array<u8, 0xC> reserved_094F4;
++
++    // nn::settings::system::NxControllerSettings,
++    // nn::settings::system::NxControllerLegacySettings on 13.0.0+
++    std::array<std::array<u8, 0x40>, 10> nx_controller_legacy_settings;
++
++    std::array<u8, 0x170> reserved_09780;
++
++    bool external_rtc_reset_flag;
++    std::array<u8, 0x3> pad_098F1;
++
++    std::array<u8, 0x3C> reserved_098F4;
++
++    s32 push_notification_activity_mode_on_sleep;
++
++    std::array<u8, 0x3C> reserved_09934;
++
++    // nn::settings::system::ErrorReportSharePermission
++    ErrorReportSharePermission error_report_share_permssion;
++
++    std::array<u8, 0x3C> reserved_09974;
++
++    // nn::settings::KeyboardLayout
++    std::array<u8, 0x4> keyboard_layout;
++
++    std::array<u8, 0x3C> reserved_099B4;
++
++    bool web_inspector_flag;
++    std::array<u8, 0x3> pad_099F1;
++
++    // nn::settings::system::AllowedSslHost
++    u32 allowed_ssl_host_count;
++
++    bool memory_usage_rate_flag;
++    std::array<u8, 0x3> pad_099F9;
++
++    std::array<u8, 0x34> reserved_099FC;
++
++    // nn::settings::system::HostFsMountPoint
++    std::array<u8, 0x100> host_fs_mount_point;
++
++    // nn::settings::system::AllowedSslHost
++    std::array<std::array<u8, 0x100>, 8> allowed_ssl_hosts;
++
++    std::array<u8, 0x6C0> reserved_0A330;
++
++    // nn::settings::system::BlePairingSettings
++    u32 ble_pairing_settings_count;
++    std::array<u8, 0xC> reserved_0A9F4;
++    std::array<std::array<u8, 0x80>, 10> ble_pairing_settings;
++
++    // nn::settings::system::AccountOnlineStorageSettings
++    u32 account_online_storage_settings_count;
++    std::array<u8, 0xC> reserved_0AF04;
++    std::array<std::array<u8, 0x40>, 8> account_online_storage_settings;
++
++    bool pctl_ready_flag;
++    std::array<u8, 0x3> pad_0B111;
++
++    std::array<u8, 0x3C> reserved_0B114;
++
++    // nn::settings::system::ThemeId
++    std::array<u8, 0x80> theme_id_type0;
++    std::array<u8, 0x80> theme_id_type1;
++
++    std::array<u8, 0x100> reserved_0B250;
++
++    // nn::settings::ChineseTraditionalInputMethod
++    ChineseTraditionalInputMethod chinese_traditional_input_method;
++
++    std::array<u8, 0x3C> reserved_0B354;
++
++    bool zoom_flag;
++    std::array<u8, 0x3> pad_0B391;
++
++    std::array<u8, 0x3C> reserved_0B394;
++
++    // nn::settings::system::ButtonConfigRegisteredSettings
++    u32 button_config_registered_settings_count;
++    std::array<u8, 0xC> reserved_0B3D4;
++
++    // nn::settings::system::ButtonConfigSettings
++    u32 button_config_settings_count;
++    std::array<u8, 0x4> reserved_0B3E4;
++    std::array<std::array<u8, 0x5A8>, 5> button_config_settings;
++    std::array<u8, 0x13B0> reserved_0D030;
++    u32 button_config_settings_embedded_count;
++    std::array<u8, 0x4> reserved_0E3E4;
++    std::array<std::array<u8, 0x5A8>, 5> button_config_settings_embedded;
++    std::array<u8, 0x13B0> reserved_10030;
++    u32 button_config_settings_left_count;
++    std::array<u8, 0x4> reserved_113E4;
++    std::array<std::array<u8, 0x5A8>, 5> button_config_settings_left;
++    std::array<u8, 0x13B0> reserved_13030;
++    u32 button_config_settings_right_count;
++    std::array<u8, 0x4> reserved_143E4;
++    std::array<std::array<u8, 0x5A8>, 5> button_config_settings_right;
++    std::array<u8, 0x73B0> reserved_16030;
++    // nn::settings::system::ButtonConfigRegisteredSettings
++    std::array<u8, 0x5C8> button_config_registered_settings_embedded;
++    std::array<std::array<u8, 0x5C8>, 10> button_config_registered_settings;
++
++    std::array<u8, 0x7FF8> reserved_21378;
++
++    // nn::settings::system::ConsoleSixAxisSensorAccelerationBias
++    std::array<u8, 0xC> console_six_axis_sensor_acceleration_bias;
++    // nn::settings::system::ConsoleSixAxisSensorAngularVelocityBias
++    std::array<u8, 0xC> console_six_axis_sensor_angular_velocity_bias;
++    // nn::settings::system::ConsoleSixAxisSensorAccelerationGain
++    std::array<u8, 0x24> console_six_axis_sensor_acceleration_gain;
++    // nn::settings::system::ConsoleSixAxisSensorAngularVelocityGain
++    std::array<u8, 0x24> console_six_axis_sensor_angular_velocity_gain;
++    // nn::settings::system::ConsoleSixAxisSensorAngularVelocityTimeBias
++    std::array<u8, 0xC> console_six_axis_sensor_angular_velocity_time_bias;
++    // nn::settings::system::ConsoleSixAxisSensorAngularAcceleration
++    std::array<u8, 0x24> console_six_axis_sensor_angular_velocity_acceleration;
++
++    std::array<u8, 0x70> reserved_29400;
++
++    bool lock_screen_flag;
++    std::array<u8, 0x3> pad_29471;
++
++    std::array<u8, 0x4> reserved_249274;
++
++    ColorSet color_set_id;
++
++    QuestFlag quest_flag;
++
++    // nn::settings::system::RegionCode
++    RegionCode region_code;
++
++    // Different to nn::settings::system::InitialLaunchSettings?
++    InitialLaunchSettingsPacked initial_launch_settings_packed;
++
++    bool battery_percentage_flag;
++    std::array<u8, 0x3> pad_294A1;
++
++    // BitFlagSet<32, nn::settings::system::AppletLaunchFlag>
++    u32 applet_launch_flag;
++
++    // nn::settings::system::ThemeSettings
++    std::array<u8, 0x8> theme_settings;
++    // nn::fssystem::ArchiveMacKey
++    std::array<u8, 0x10> theme_key;
++
++    bool field_testing_flag;
++    std::array<u8, 0x3> pad_294C1;
++
++    s32 panel_crc_mode;
++
++    std::array<u8, 0x28> reserved_294C8;
++
++    // nn::settings::system::BacklightSettings
++    std::array<u8, 0x2C> backlight_settings_mixed_up;
++
++    std::array<u8, 0x64> reserved_2951C;
++
++    // nn::time::SystemClockContext
++    Service::Time::Clock::SystemClockContext user_system_clock_context;
++    Service::Time::Clock::SystemClockContext network_system_clock_context;
++    bool user_system_clock_automatic_correction_enabled;
++    std::array<u8, 0x3> pad_295C1;
++    std::array<u8, 0x4> reserved_295C4;
++    // nn::time::SteadyClockTimePoint
++    Service::Time::Clock::SteadyClockTimePoint
++        user_system_clock_automatic_correction_updated_time_point;
++
++    std::array<u8, 0x10> reserved_295E0;
++
++    // nn::settings::system::AccountSettings
++    AccountSettings account_settings;
++
++    std::array<u8, 0xFC> reserved_295F4;
++
++    // nn::settings::system::AudioVolume
++    std::array<u8, 0x8> audio_volume_type0;
++    std::array<u8, 0x8> audio_volume_type1;
++    // nn::settings::system::AudioOutputMode
++    s32 audio_output_mode_type0;
++    s32 audio_output_mode_type1;
++    s32 audio_output_mode_type2;
++    bool force_mute_on_headphone_removed;
++    std::array<u8, 0x3> pad_2970D;
++    s32 headphone_volume_warning_count;
++    bool heaphone_volume_update_flag;
++    std::array<u8, 0x3> pad_29715;
++    // nn::settings::system::AudioVolume
++    std::array<u8, 0x8> audio_volume_type2;
++    // nn::settings::system::AudioOutputMode
++    s32 audio_output_mode_type3;
++    s32 audio_output_mode_type4;
++    bool hearing_protection_safeguard_flag;
++    std::array<u8, 0x3> pad_29729;
++    std::array<u8, 0x4> reserved_2972C;
++    s64 hearing_protection_safeguard_remaining_time;
++    std::array<u8, 0x38> reserved_29738;
++
++    bool console_information_upload_flag;
++    std::array<u8, 0x3> pad_29771;
++
++    std::array<u8, 0x3C> reserved_29774;
++
++    bool automatic_application_download_flag;
++    std::array<u8, 0x3> pad_297B1;
++
++    std::array<u8, 0x4> reserved_297B4;
++
++    // nn::settings::system::NotificationSettings
++    NotificationSettings notification_settings;
++
++    std::array<u8, 0x60> reserved_297D0;
++
++    // nn::settings::system::AccountNotificationSettings
++    u32 account_notification_settings_count;
++    std::array<u8, 0xC> reserved_29834;
++    std::array<AccountNotificationSettings, 8> account_notification_settings;
++
++    std::array<u8, 0x140> reserved_29900;
++
++    f32 vibration_master_volume;
++
++    bool usb_full_key_enable_flag;
++    std::array<u8, 0x3> pad_29A45;
++
++    // nn::settings::system::AnalogStickUserCalibration
++    std::array<u8, 0x10> analog_stick_user_calibration_left;
++    std::array<u8, 0x10> analog_stick_user_calibration_right;
++
++    // nn::settings::system::TouchScreenMode
++    s32 touch_screen_mode;
++
++    std::array<u8, 0x14> reserved_29A6C;
++
++    // nn::settings::system::TvSettings
++    TvSettings tv_settings;
++
++    // nn::settings::system::Edid
++    std::array<u8, 0x100> edid;
++
++    std::array<u8, 0x2E0> reserved_29BA0;
++
++    // nn::settings::system::DataDeletionSettings
++    std::array<u8, 0x8> data_deletion_settings;
++
++    std::array<u8, 0x38> reserved_29E88;
++
++    // nn::ncm::ProgramId
++    std::array<u8, 0x8> initial_system_applet_program_id;
++    std::array<u8, 0x8> overlay_disp_program_id;
++
++    std::array<u8, 0x4> reserved_29ED0;
++
++    bool requires_run_repair_time_reviser;
++
++    std::array<u8, 0x6B> reserved_29ED5;
++
++    // nn::time::LocationName
++    Service::Time::TimeZone::LocationName device_time_zone_location_name;
++    std::array<u8, 0x4> reserved_29F64;
++    // nn::time::SteadyClockTimePoint
++    Service::Time::Clock::SteadyClockTimePoint device_time_zone_location_updated_time;
++
++    std::array<u8, 0xC0> reserved_29F80;
++
++    // nn::settings::system::PrimaryAlbumStorage
++    PrimaryAlbumStorage primary_album_storage;
++
++    std::array<u8, 0x3C> reserved_2A044;
++
++    bool usb_30_enable_flag;
++    std::array<u8, 0x3> pad_2A081;
++    bool usb_30_host_enable_flag;
++    std::array<u8, 0x3> pad_2A085;
++    bool usb_30_device_enable_flag;
++    std::array<u8, 0x3> pad_2A089;
++
++    std::array<u8, 0x34> reserved_2A08C;
++
++    bool nfc_enable_flag;
++    std::array<u8, 0x3> pad_2A0C1;
++
++    std::array<u8, 0x3C> reserved_2A0C4;
++
++    // nn::settings::system::SleepSettings
++    SleepSettings sleep_settings;
++
++    std::array<u8, 0x34> reserved_2A10C;
++
++    // nn::settings::system::EulaVersion
++    u32 eula_version_count;
++    std::array<u8, 0xC> reserved_2A144;
++    std::array<EulaVersion, 32> eula_versions;
++
++    std::array<u8, 0x200> reserved_2A750;
++
++    // nn::settings::system::DeviceNickName
++    std::array<u8, 0x80> device_nick_name;
++
++    std::array<u8, 0x80> reserved_2A9D0;
++
++    bool auto_update_enable_flag;
++    std::array<u8, 0x3> pad_2AA51;
++
++    std::array<u8, 0x4C> reserved_2AA54;
++
++    // nn::settings::system::BluetoothDevicesSettings
++    std::array<std::array<u8, 0x200>, 14> bluetooth_device_settings_last_14;
++
++    std::array<u8, 0x2000> reserved_2C6A0;
++
++    // nn::settings::system::NxControllerSettings
++    std::array<std::array<u8, 0x800>, 10> nx_controller_settings_data_from_offset_30;
++};
++
++static_assert(offsetof(SystemSettings, language_code) == 0x10);
++static_assert(offsetof(SystemSettings, network_setting_count) == 0x50);
++static_assert(offsetof(SystemSettings, network_settings_1B0) == 0x60);
++static_assert(offsetof(SystemSettings, bluetooth_device_settings_count) == 0x8060);
++static_assert(offsetof(SystemSettings, bluetooth_enable_flag) == 0x8064);
++static_assert(offsetof(SystemSettings, bluetooth_device_settings_first_10) == 0x8070);
++static_assert(offsetof(SystemSettings, ldn_channel) == 0x9470);
++static_assert(offsetof(SystemSettings, mii_author_id) == 0x94B0);
++static_assert(offsetof(SystemSettings, nx_controller_settings_count) == 0x94F0);
++static_assert(offsetof(SystemSettings, nx_controller_legacy_settings) == 0x9500);
++static_assert(offsetof(SystemSettings, external_rtc_reset_flag) == 0x98F0);
++static_assert(offsetof(SystemSettings, push_notification_activity_mode_on_sleep) == 0x9930);
++static_assert(offsetof(SystemSettings, allowed_ssl_host_count) == 0x99F4);
++static_assert(offsetof(SystemSettings, host_fs_mount_point) == 0x9A30);
++static_assert(offsetof(SystemSettings, allowed_ssl_hosts) == 0x9B30);
++static_assert(offsetof(SystemSettings, ble_pairing_settings_count) == 0xA9F0);
++static_assert(offsetof(SystemSettings, ble_pairing_settings) == 0xAA00);
++static_assert(offsetof(SystemSettings, account_online_storage_settings_count) == 0xAF00);
++static_assert(offsetof(SystemSettings, account_online_storage_settings) == 0xAF10);
++static_assert(offsetof(SystemSettings, pctl_ready_flag) == 0xB110);
++static_assert(offsetof(SystemSettings, theme_id_type0) == 0xB150);
++static_assert(offsetof(SystemSettings, chinese_traditional_input_method) == 0xB350);
++static_assert(offsetof(SystemSettings, button_config_registered_settings_count) == 0xB3D0);
++static_assert(offsetof(SystemSettings, button_config_settings_count) == 0xB3E0);
++static_assert(offsetof(SystemSettings, button_config_settings) == 0xB3E8);
++static_assert(offsetof(SystemSettings, button_config_registered_settings_embedded) == 0x1D3E0);
++static_assert(offsetof(SystemSettings, console_six_axis_sensor_acceleration_bias) == 0x29370);
++static_assert(offsetof(SystemSettings, lock_screen_flag) == 0x29470);
++static_assert(offsetof(SystemSettings, battery_percentage_flag) == 0x294A0);
++static_assert(offsetof(SystemSettings, field_testing_flag) == 0x294C0);
++static_assert(offsetof(SystemSettings, backlight_settings_mixed_up) == 0x294F0);
++static_assert(offsetof(SystemSettings, user_system_clock_context) == 0x29580);
++static_assert(offsetof(SystemSettings, network_system_clock_context) == 0x295A0);
++static_assert(offsetof(SystemSettings, user_system_clock_automatic_correction_enabled) == 0x295C0);
++static_assert(offsetof(SystemSettings, user_system_clock_automatic_correction_updated_time_point) ==
++              0x295C8);
++static_assert(offsetof(SystemSettings, account_settings) == 0x295F0);
++static_assert(offsetof(SystemSettings, audio_volume_type0) == 0x296F0);
++static_assert(offsetof(SystemSettings, hearing_protection_safeguard_remaining_time) == 0x29730);
++static_assert(offsetof(SystemSettings, automatic_application_download_flag) == 0x297B0);
++static_assert(offsetof(SystemSettings, notification_settings) == 0x297B8);
++static_assert(offsetof(SystemSettings, account_notification_settings) == 0x29840);
++static_assert(offsetof(SystemSettings, vibration_master_volume) == 0x29A40);
++static_assert(offsetof(SystemSettings, analog_stick_user_calibration_left) == 0x29A48);
++static_assert(offsetof(SystemSettings, touch_screen_mode) == 0x29A68);
++static_assert(offsetof(SystemSettings, edid) == 0x29AA0);
++static_assert(offsetof(SystemSettings, data_deletion_settings) == 0x29E80);
++static_assert(offsetof(SystemSettings, requires_run_repair_time_reviser) == 0x29ED4);
++static_assert(offsetof(SystemSettings, device_time_zone_location_name) == 0x29F40);
++static_assert(offsetof(SystemSettings, nfc_enable_flag) == 0x2A0C0);
++static_assert(offsetof(SystemSettings, eula_version_count) == 0x2A140);
++static_assert(offsetof(SystemSettings, device_nick_name) == 0x2A950);
++static_assert(offsetof(SystemSettings, bluetooth_device_settings_last_14) == 0x2AAA0);
++static_assert(offsetof(SystemSettings, nx_controller_settings_data_from_offset_30) == 0x2E6A0);
++
++static_assert(sizeof(SystemSettings) == 0x336A0, "SystemSettings has the wrong size!");
++
++SystemSettings DefaultSystemSettings();
++
++} // namespace Service::Set

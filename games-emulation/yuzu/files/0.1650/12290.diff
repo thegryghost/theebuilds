@@ -1,0 +1,165 @@
+diff --git a/src/common/fs/path_util.cpp b/src/common/fs/path_util.cpp
+index c3a81f9a9d54..d2f50432a6c0 100644
+--- a/src/common/fs/path_util.cpp
++++ b/src/common/fs/path_util.cpp
+@@ -354,18 +354,36 @@ std::string_view RemoveTrailingSlash(std::string_view path) {
+     return path;
+ }
+ 
+-std::vector<std::string> SplitPathComponents(std::string_view filename) {
+-    std::string copy(filename);
+-    std::replace(copy.begin(), copy.end(), '\\', '/');
+-    std::vector<std::string> out;
+-
+-    std::stringstream stream(copy);
+-    std::string item;
+-    while (std::getline(stream, item, '/')) {
+-        out.push_back(std::move(item));
++template <typename F>
++static void ForEachPathComponent(std::string_view filename, F&& cb) {
++    const char* component_begin = filename.data();
++    const char* const end = component_begin + filename.size();
++    for (const char* it = component_begin; it != end; ++it) {
++        const char c = *it;
++        if (c == '\\' || c == '/') {
++            if (component_begin != it) {
++                cb(std::string_view{component_begin, it});
++            }
++            component_begin = it + 1;
++        }
+     }
++    if (component_begin != end) {
++        cb(std::string_view{component_begin, end});
++    }
++}
++
++std::vector<std::string_view> SplitPathComponents(std::string_view filename) {
++    std::vector<std::string_view> components;
++    ForEachPathComponent(filename, [&](auto component) { components.emplace_back(component); });
++
++    return components;
++}
++
++std::vector<std::string> SplitPathComponentsCopy(std::string_view filename) {
++    std::vector<std::string> components;
++    ForEachPathComponent(filename, [&](auto component) { components.emplace_back(component); });
+ 
+-    return out;
++    return components;
+ }
+ 
+ std::string SanitizePath(std::string_view path_, DirectorySeparator directory_separator) {
+diff --git a/src/common/fs/path_util.h b/src/common/fs/path_util.h
+index 2874ea73859e..23c8b1359638 100644
+--- a/src/common/fs/path_util.h
++++ b/src/common/fs/path_util.h
+@@ -289,7 +289,11 @@ enum class DirectorySeparator {
+ 
+ // Splits the path on '/' or '\' and put the components into a vector
+ // i.e. "C:\Users\Yuzu\Documents\save.bin" becomes {"C:", "Users", "Yuzu", "Documents", "save.bin" }
+-[[nodiscard]] std::vector<std::string> SplitPathComponents(std::string_view filename);
++[[nodiscard]] std::vector<std::string_view> SplitPathComponents(std::string_view filename);
++
++// Splits the path on '/' or '\' and put the components into a vector
++// i.e. "C:\Users\Yuzu\Documents\save.bin" becomes {"C:", "Users", "Yuzu", "Documents", "save.bin" }
++[[nodiscard]] std::vector<std::string> SplitPathComponentsCopy(std::string_view filename);
+ 
+ // Removes trailing slash, makes all '\\' into '/', and removes duplicate '/'. Makes '/' into '\\'
+ // depending if directory_separator is BackwardSlash or PlatformDefault and running on windows
+diff --git a/src/core/file_sys/vfs.cpp b/src/core/file_sys/vfs.cpp
+index 639842401564..b7105c8ff394 100644
+--- a/src/core/file_sys/vfs.cpp
++++ b/src/core/file_sys/vfs.cpp
+@@ -201,8 +201,6 @@ std::string VfsFile::GetFullPath() const {
+ 
+ VirtualFile VfsDirectory::GetFileRelative(std::string_view path) const {
+     auto vec = Common::FS::SplitPathComponents(path);
+-    vec.erase(std::remove_if(vec.begin(), vec.end(), [](const auto& str) { return str.empty(); }),
+-              vec.end());
+     if (vec.empty()) {
+         return nullptr;
+     }
+@@ -237,8 +235,6 @@ VirtualFile VfsDirectory::GetFileAbsolute(std::string_view path) const {
+ 
+ VirtualDir VfsDirectory::GetDirectoryRelative(std::string_view path) const {
+     auto vec = Common::FS::SplitPathComponents(path);
+-    vec.erase(std::remove_if(vec.begin(), vec.end(), [](const auto& str) { return str.empty(); }),
+-              vec.end());
+     if (vec.empty()) {
+         // TODO(DarkLordZach): Return this directory if path is '/' or similar. Can't currently
+         // because of const-ness
+@@ -303,8 +299,6 @@ std::size_t VfsDirectory::GetSize() const {
+ 
+ VirtualFile VfsDirectory::CreateFileRelative(std::string_view path) {
+     auto vec = Common::FS::SplitPathComponents(path);
+-    vec.erase(std::remove_if(vec.begin(), vec.end(), [](const auto& str) { return str.empty(); }),
+-              vec.end());
+     if (vec.empty()) {
+         return nullptr;
+     }
+@@ -334,8 +328,6 @@ VirtualFile VfsDirectory::CreateFileAbsolute(std::string_view path) {
+ 
+ VirtualDir VfsDirectory::CreateDirectoryRelative(std::string_view path) {
+     auto vec = Common::FS::SplitPathComponents(path);
+-    vec.erase(std::remove_if(vec.begin(), vec.end(), [](const auto& str) { return str.empty(); }),
+-              vec.end());
+     if (vec.empty()) {
+         return nullptr;
+     }
+diff --git a/src/core/file_sys/vfs_real.cpp b/src/core/file_sys/vfs_real.cpp
+index 1c706e4d8f2f..cd9b79786651 100644
+--- a/src/core/file_sys/vfs_real.cpp
++++ b/src/core/file_sys/vfs_real.cpp
+@@ -268,7 +268,7 @@ void RealVfsFilesystem::RemoveReferenceFromListLocked(FileReference& reference)
+ RealVfsFile::RealVfsFile(RealVfsFilesystem& base_, std::unique_ptr<FileReference> reference_,
+                          const std::string& path_, Mode perms_, std::optional<u64> size_)
+     : base(base_), reference(std::move(reference_)), path(path_),
+-      parent_path(FS::GetParentPath(path_)), path_components(FS::SplitPathComponents(path_)),
++      parent_path(FS::GetParentPath(path_)), path_components(FS::SplitPathComponentsCopy(path_)),
+       size(size_), perms(perms_) {}
+ 
+ RealVfsFile::~RealVfsFile() {
+@@ -276,7 +276,7 @@ RealVfsFile::~RealVfsFile() {
+ }
+ 
+ std::string RealVfsFile::GetName() const {
+-    return path_components.back();
++    return path_components.empty() ? "" : std::string(path_components.back());
+ }
+ 
+ std::size_t RealVfsFile::GetSize() const {
+@@ -375,7 +375,7 @@ std::vector<VirtualDir> RealVfsDirectory::IterateEntries<RealVfsDirectory, VfsDi
+ 
+ RealVfsDirectory::RealVfsDirectory(RealVfsFilesystem& base_, const std::string& path_, Mode perms_)
+     : base(base_), path(FS::RemoveTrailingSlash(path_)), parent_path(FS::GetParentPath(path)),
+-      path_components(FS::SplitPathComponents(path)), perms(perms_) {
++      path_components(FS::SplitPathComponentsCopy(path)), perms(perms_) {
+     if (!FS::Exists(path) && True(perms & Mode::Write)) {
+         void(FS::CreateDirs(path));
+     }
+@@ -464,7 +464,7 @@ bool RealVfsDirectory::IsReadable() const {
+ }
+ 
+ std::string RealVfsDirectory::GetName() const {
+-    return path_components.back();
++    return path_components.empty() ? "" : std::string(path_components.back());
+ }
+ 
+ VirtualDir RealVfsDirectory::GetParentDirectory() const {
+diff --git a/src/core/hle/service/filesystem/filesystem.cpp b/src/core/hle/service/filesystem/filesystem.cpp
+index 508db73603e1..780f8c74d4d2 100644
+--- a/src/core/hle/service/filesystem/filesystem.cpp
++++ b/src/core/hle/service/filesystem/filesystem.cpp
+@@ -104,11 +104,7 @@ Result VfsDirectoryServiceWrapper::CreateDirectory(const std::string& path_) con
+     const auto components = Common::FS::SplitPathComponents(path);
+     std::string relative_path;
+     for (const auto& component : components) {
+-        // Skip empty path components
+-        if (component.empty()) {
+-            continue;
+-        }
+-        relative_path = Common::FS::SanitizePath(relative_path + '/' + component);
++        relative_path = Common::FS::SanitizePath(fmt::format("{}/{}", relative_path, component));
+         auto new_dir = backing->CreateSubdirectory(relative_path);
+         if (new_dir == nullptr) {
+             // TODO(DarkLordZach): Find a better error code for this

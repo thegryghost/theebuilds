@@ -1,0 +1,54 @@
+diff --git a/src/video_core/renderer_vulkan/vk_present_manager.cpp b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+index 8e4c74b5cea8..3a598b2e77d7 100644
+--- a/src/video_core/renderer_vulkan/vk_present_manager.cpp
++++ b/src/video_core/renderer_vulkan/vk_present_manager.cpp
+@@ -165,6 +165,12 @@ void PresentManager::Present(Frame* frame) {
+         return;
+     }
+ 
++    {
++        // If we have run too far ahead of command processing, wait.
++        std::unique_lock lock{queue_mutex};
++        frame_cv.wait(lock, [&] { return present_queue.size() < FRAMES_IN_FLIGHT - 1; });
++    }
++
+     scheduler.Record([this, frame](vk::CommandBuffer) {
+         std::unique_lock lock{queue_mutex};
+         present_queue.push(frame);
+diff --git a/src/video_core/renderer_vulkan/vk_present_manager.h b/src/video_core/renderer_vulkan/vk_present_manager.h
+index 337171a09bef..493f0aae2669 100644
+--- a/src/video_core/renderer_vulkan/vk_present_manager.h
++++ b/src/video_core/renderer_vulkan/vk_present_manager.h
+@@ -22,6 +22,10 @@ class Device;
+ class Scheduler;
+ class Swapchain;
+ 
++// This should be plenty for the vast majority of cases. Most desktop platforms only
++// provide up to 3 swapchain images.
++constexpr size_t FRAMES_IN_FLIGHT = 7;
++
+ struct Frame {
+     u32 width;
+     u32 height;
+diff --git a/src/video_core/renderer_vulkan/vk_update_descriptor.h b/src/video_core/renderer_vulkan/vk_update_descriptor.h
+index e77b576ec9f2..fad0dc584cdd 100644
+--- a/src/video_core/renderer_vulkan/vk_update_descriptor.h
++++ b/src/video_core/renderer_vulkan/vk_update_descriptor.h
+@@ -5,6 +5,7 @@
+ 
+ #include <array>
+ 
++#include "video_core/renderer_vulkan/vk_present_manager.h"
+ #include "video_core/vulkan_common/vulkan_wrapper.h"
+ 
+ namespace Vulkan {
+@@ -29,9 +30,6 @@ struct DescriptorUpdateEntry {
+ };
+ 
+ class UpdateDescriptorQueue final {
+-    // This should be plenty for the vast majority of cases. Most desktop platforms only
+-    // provide up to 3 swapchain images.
+-    static constexpr size_t FRAMES_IN_FLIGHT = 7;
+     static constexpr size_t FRAME_PAYLOAD_SIZE = 0x20000;
+     static constexpr size_t PAYLOAD_SIZE = FRAME_PAYLOAD_SIZE * FRAMES_IN_FLIGHT;
+ 

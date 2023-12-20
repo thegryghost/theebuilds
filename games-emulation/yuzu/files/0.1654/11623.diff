@@ -1,0 +1,201 @@
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_image.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_image.cpp
+index 8decdf3992c4..e3657b880bc8 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_image.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_image.cpp
+@@ -196,34 +196,42 @@ Id Texture(EmitContext& ctx, IR::TextureInstInfo info, [[maybe_unused]] const IR
+ }
+ 
+ Id TextureImage(EmitContext& ctx, IR::TextureInstInfo info, const IR::Value& index) {
+-    if (!index.IsImmediate() || index.U32() != 0) {
+-        throw NotImplementedException("Indirect image indexing");
+-    }
+     if (info.type == TextureType::Buffer) {
+         const TextureBufferDefinition& def{ctx.texture_buffers.at(info.descriptor_index)};
+         if (def.count > 1) {
+-            throw NotImplementedException("Indirect texture sample");
++            const Id buffer_pointer{ctx.OpAccessChain(def.pointer_type, def.id, ctx.Def(index))};
++            return ctx.OpLoad(ctx.image_buffer_type, buffer_pointer);
++        } else {
++            return ctx.OpLoad(ctx.image_buffer_type, def.id);
+         }
+-        return ctx.OpLoad(ctx.image_buffer_type, def.id);
+     } else {
+         const TextureDefinition& def{ctx.textures.at(info.descriptor_index)};
+         if (def.count > 1) {
+-            throw NotImplementedException("Indirect texture sample");
++            const Id texture_pointer{ctx.OpAccessChain(def.pointer_type, def.id, ctx.Def(index))};
++            return ctx.OpImage(def.image_type, ctx.OpLoad(def.sampled_type, texture_pointer));
++        } else {
++            return ctx.OpImage(def.image_type, ctx.OpLoad(def.sampled_type, def.id));
+         }
+-        return ctx.OpImage(def.image_type, ctx.OpLoad(def.sampled_type, def.id));
+     }
+ }
+ 
+ Id Image(EmitContext& ctx, const IR::Value& index, IR::TextureInstInfo info) {
+-    if (!index.IsImmediate() || index.U32() != 0) {
+-        throw NotImplementedException("Indirect image indexing");
+-    }
+     if (info.type == TextureType::Buffer) {
+         const ImageBufferDefinition def{ctx.image_buffers.at(info.descriptor_index)};
+-        return ctx.OpLoad(def.image_type, def.id);
++        if (def.count > 1) {
++            const Id image_pointer{ctx.OpAccessChain(def.pointer_type, def.id, ctx.Def(index))};
++            return ctx.OpLoad(def.image_type, image_pointer);
++        } else {
++            return ctx.OpLoad(def.image_type, def.id);
++        }
+     } else {
+         const ImageDefinition def{ctx.images.at(info.descriptor_index)};
+-        return ctx.OpLoad(def.image_type, def.id);
++        if (def.count > 1) {
++            const Id image_pointer{ctx.OpAccessChain(def.pointer_type, def.id, ctx.Def(index))};
++            return ctx.OpLoad(def.image_type, image_pointer);
++        } else {
++            return ctx.OpLoad(def.image_type, def.id);
++        }
+     }
+ }
+ 
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_image_atomic.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_image_atomic.cpp
+index dde0f6e9ca21..801539d950cd 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_image_atomic.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_image_atomic.cpp
+@@ -7,13 +7,21 @@
+ 
+ namespace Shader::Backend::SPIRV {
+ namespace {
+-Id Image(EmitContext& ctx, IR::TextureInstInfo info) {
++Id ImagePointer(EmitContext& ctx, const IR::Value& index, IR::TextureInstInfo info) {
+     if (info.type == TextureType::Buffer) {
+         const ImageBufferDefinition def{ctx.image_buffers.at(info.descriptor_index)};
+-        return def.id;
++        if (def.count > 1) {
++            return ctx.OpAccessChain(def.pointer_type, def.id, ctx.Def(index));
++        } else {
++            return def.id;
++        }
+     } else {
+         const ImageDefinition def{ctx.images.at(info.descriptor_index)};
+-        return def.id;
++        if (def.count > 1) {
++            return ctx.OpAccessChain(def.pointer_type, def.id, ctx.Def(index));
++        } else {
++            return def.id;
++        }
+     }
+ }
+ 
+@@ -25,15 +33,12 @@ std::pair<Id, Id> AtomicArgs(EmitContext& ctx) {
+ 
+ Id ImageAtomicU32(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id coords, Id value,
+                   Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
+-    if (!index.IsImmediate() || index.U32() != 0) {
+-        // TODO: handle layers
+-        throw NotImplementedException("Image indexing");
+-    }
+     const auto info{inst->Flags<IR::TextureInstInfo>()};
+-    const Id image{Image(ctx, info)};
+-    const Id pointer{ctx.OpImageTexelPointer(ctx.image_u32, image, coords, ctx.Const(0U))};
++    const Id image_pointer{ImagePointer(ctx, index, info)};
++    const Id texel_pointer{
++        ctx.OpImageTexelPointer(ctx.image_u32, image_pointer, coords, ctx.Const(0U))};
+     const auto [scope, semantics]{AtomicArgs(ctx)};
+-    return (ctx.*atomic_func)(ctx.U32[1], pointer, scope, semantics, value);
++    return (ctx.*atomic_func)(ctx.U32[1], texel_pointer, scope, semantics, value);
+ }
+ } // Anonymous namespace
+ 
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index 57df6fc34aa2..cbddda174549 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -1243,18 +1243,20 @@ void EmitContext::DefineTextureBuffers(const Info& info, u32& binding) {
+     const spv::ImageFormat format{spv::ImageFormat::Unknown};
+     image_buffer_type = TypeImage(F32[1], spv::Dim::Buffer, 0U, false, false, 1, format);
+ 
+-    const Id type{TypePointer(spv::StorageClass::UniformConstant, image_buffer_type)};
++    const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_buffer_type)};
+     texture_buffers.reserve(info.texture_buffer_descriptors.size());
+     for (const TextureBufferDescriptor& desc : info.texture_buffer_descriptors) {
+         if (desc.count != 1) {
+-            throw NotImplementedException("Array of texture buffers");
++            LOG_WARNING(Shader_SPIRV, "Array of texture buffers");
+         }
+-        const Id id{AddGlobalVariable(type, spv::StorageClass::UniformConstant)};
++        const Id desc_type{DescType(*this, image_buffer_type, pointer_type, desc.count)};
++        const Id id{AddGlobalVariable(desc_type, spv::StorageClass::UniformConstant)};
+         Decorate(id, spv::Decoration::Binding, binding);
+         Decorate(id, spv::Decoration::DescriptorSet, 0U);
+         Name(id, NameOf(stage, desc, "texbuf"));
+         texture_buffers.push_back({
+             .id = id,
++            .pointer_type = pointer_type,
+             .count = desc.count,
+         });
+         if (profile.supported_spirv >= 0x00010400) {
+@@ -1268,7 +1270,7 @@ void EmitContext::DefineImageBuffers(const Info& info, u32& binding) {
+     image_buffers.reserve(info.image_buffer_descriptors.size());
+     for (const ImageBufferDescriptor& desc : info.image_buffer_descriptors) {
+         if (desc.count != 1) {
+-            throw NotImplementedException("Array of image buffers");
++            LOG_WARNING(Shader_SPIRV, "Array of image buffers");
+         }
+         const spv::ImageFormat format{GetImageFormat(desc.format)};
+         const Id image_type{TypeImage(U32[1], spv::Dim::Buffer, false, false, false, 2, format)};
+@@ -1280,6 +1282,7 @@ void EmitContext::DefineImageBuffers(const Info& info, u32& binding) {
+         image_buffers.push_back({
+             .id = id,
+             .image_type = image_type,
++            .pointer_type = pointer_type,
+             .count = desc.count,
+         });
+         if (profile.supported_spirv >= 0x00010400) {
+@@ -1323,17 +1326,19 @@ void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_inde
+     images.reserve(info.image_descriptors.size());
+     for (const ImageDescriptor& desc : info.image_descriptors) {
+         if (desc.count != 1) {
+-            throw NotImplementedException("Array of images");
++            LOG_WARNING(Shader_SPIRV, "Array of images");
+         }
+         const Id image_type{ImageType(*this, desc)};
+         const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
+-        const Id id{AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant)};
++        const Id desc_type{DescType(*this, image_type, pointer_type, desc.count)};
++        const Id id{AddGlobalVariable(desc_type, spv::StorageClass::UniformConstant)};
+         Decorate(id, spv::Decoration::Binding, binding);
+         Decorate(id, spv::Decoration::DescriptorSet, 0U);
+         Name(id, NameOf(stage, desc, "img"));
+         images.push_back({
+             .id = id,
+             .image_type = image_type,
++            .pointer_type = pointer_type,
+             .count = desc.count,
+         });
+         if (profile.supported_spirv >= 0x00010400) {
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.h b/src/shader_recompiler/backend/spirv/spirv_emit_context.h
+index 1aa79863de02..8c168665f8a9 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.h
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.h
+@@ -40,18 +40,21 @@ struct TextureDefinition {
+ 
+ struct TextureBufferDefinition {
+     Id id;
++    Id pointer_type;
+     u32 count;
+ };
+ 
+ struct ImageBufferDefinition {
+     Id id;
+     Id image_type;
++    Id pointer_type;
+     u32 count;
+ };
+ 
+ struct ImageDefinition {
+     Id id;
+     Id image_type;
++    Id pointer_type;
+     u32 count;
+ };
+ 

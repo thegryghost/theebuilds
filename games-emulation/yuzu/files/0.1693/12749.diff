@@ -1,0 +1,299 @@
+diff --git a/src/common/CMakeLists.txt b/src/common/CMakeLists.txt
+index 8c57d47c6fb1..f829c1dfa9f5 100644
+--- a/src/common/CMakeLists.txt
++++ b/src/common/CMakeLists.txt
+@@ -106,6 +106,7 @@ add_library(common STATIC
+     precompiled_headers.h
+     quaternion.h
+     range_map.h
++    range_mutex.h
+     reader_writer_queue.h
+     ring_buffer.h
+     ${CMAKE_CURRENT_BINARY_DIR}/scm_rev.cpp
+diff --git a/src/common/range_mutex.h b/src/common/range_mutex.h
+new file mode 100644
+index 000000000000..d6c949811c06
+--- /dev/null
++++ b/src/common/range_mutex.h
+@@ -0,0 +1,93 @@
++// SPDX-FileCopyrightText: 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <condition_variable>
++#include <mutex>
++
++#include "common/intrusive_list.h"
++
++namespace Common {
++
++class ScopedRangeLock;
++
++class RangeMutex {
++public:
++    explicit RangeMutex() = default;
++    ~RangeMutex() = default;
++
++private:
++    friend class ScopedRangeLock;
++
++    void Lock(ScopedRangeLock& l);
++    void Unlock(ScopedRangeLock& l);
++    bool HasIntersectionLocked(ScopedRangeLock& l);
++
++private:
++    std::mutex m_mutex;
++    std::condition_variable m_cv;
++
++    using LockList = Common::IntrusiveListBaseTraits<ScopedRangeLock>::ListType;
++    LockList m_list;
++};
++
++class ScopedRangeLock : public Common::IntrusiveListBaseNode<ScopedRangeLock> {
++public:
++    explicit ScopedRangeLock(RangeMutex& mutex, u64 address, u64 size)
++        : m_mutex(mutex), m_address(address), m_size(size) {
++        if (m_size > 0) {
++            m_mutex.Lock(*this);
++        }
++    }
++    ~ScopedRangeLock() {
++        if (m_size > 0) {
++            m_mutex.Unlock(*this);
++        }
++    }
++
++    u64 GetAddress() const {
++        return m_address;
++    }
++
++    u64 GetSize() const {
++        return m_size;
++    }
++
++private:
++    RangeMutex& m_mutex;
++    const u64 m_address{};
++    const u64 m_size{};
++};
++
++inline void RangeMutex::Lock(ScopedRangeLock& l) {
++    std::unique_lock lk{m_mutex};
++    m_cv.wait(lk, [&] { return !HasIntersectionLocked(l); });
++    m_list.push_back(l);
++}
++
++inline void RangeMutex::Unlock(ScopedRangeLock& l) {
++    {
++        std::scoped_lock lk{m_mutex};
++        m_list.erase(m_list.iterator_to(l));
++    }
++    m_cv.notify_all();
++}
++
++inline bool RangeMutex::HasIntersectionLocked(ScopedRangeLock& l) {
++    const auto cur_begin = l.GetAddress();
++    const auto cur_last = l.GetAddress() + l.GetSize() - 1;
++
++    for (const auto& other : m_list) {
++        const auto other_begin = other.GetAddress();
++        const auto other_last = other.GetAddress() + other.GetSize() - 1;
++
++        if (cur_begin <= other_last && other_begin <= cur_last) {
++            return true;
++        }
++    }
++
++    return false;
++}
++
++} // namespace Common
+diff --git a/src/core/device_memory_manager.h b/src/core/device_memory_manager.h
+index ffeed46ccdaa..63823602c221 100644
+--- a/src/core/device_memory_manager.h
++++ b/src/core/device_memory_manager.h
+@@ -10,6 +10,7 @@
+ #include <mutex>
+ 
+ #include "common/common_types.h"
++#include "common/range_mutex.h"
+ #include "common/scratch_buffer.h"
+ #include "common/virtual_buffer.h"
+ 
+@@ -204,7 +205,7 @@ class DeviceMemoryManager {
+         (1ULL << (device_virtual_bits - page_bits)) / subentries;
+     using CachedPages = std::array<CounterEntry, num_counter_entries>;
+     std::unique_ptr<CachedPages> cached_pages;
+-    std::mutex counter_guard;
++    Common::RangeMutex counter_guard;
+     std::mutex mapping_guard;
+ };
+ 
+diff --git a/src/core/device_memory_manager.inc b/src/core/device_memory_manager.inc
+index 8ce12287292d..413dc2890e2d 100644
+--- a/src/core/device_memory_manager.inc
++++ b/src/core/device_memory_manager.inc
+@@ -509,12 +509,7 @@ void DeviceMemoryManager<Traits>::UnregisterProcess(Asid asid) {
+ 
+ template <typename Traits>
+ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size, s32 delta) {
+-    std::unique_lock<std::mutex> lk(counter_guard, std::defer_lock);
+-    const auto Lock = [&] {
+-        if (!lk) {
+-            lk.lock();
+-        }
+-    };
++    Common::ScopedRangeLock lk(counter_guard, addr, size);
+     u64 uncache_begin = 0;
+     u64 cache_begin = 0;
+     u64 uncache_bytes = 0;
+@@ -549,7 +544,6 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size
+             }
+             uncache_bytes += Memory::YUZU_PAGESIZE;
+         } else if (uncache_bytes > 0) {
+-            Lock();
+             MarkRegionCaching(memory_device_inter, uncache_begin << Memory::YUZU_PAGEBITS,
+                               uncache_bytes, false);
+             uncache_bytes = 0;
+@@ -560,7 +554,6 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size
+             }
+             cache_bytes += Memory::YUZU_PAGESIZE;
+         } else if (cache_bytes > 0) {
+-            Lock();
+             MarkRegionCaching(memory_device_inter, cache_begin << Memory::YUZU_PAGEBITS, cache_bytes,
+                               true);
+             cache_bytes = 0;
+@@ -568,12 +561,10 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size
+         vpage++;
+     }
+     if (uncache_bytes > 0) {
+-        Lock();
+         MarkRegionCaching(memory_device_inter, uncache_begin << Memory::YUZU_PAGEBITS, uncache_bytes,
+                           false);
+     }
+     if (cache_bytes > 0) {
+-        Lock();
+         MarkRegionCaching(memory_device_inter, cache_begin << Memory::YUZU_PAGEBITS, cache_bytes,
+                           true);
+     }
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 1c218566fdd2..86555623ca29 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -1093,6 +1093,20 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
+         [&] { rasterizer = true; });
+     if (rasterizer) {
+         impl->InvalidateGPUMemory(ptr, size);
++
++        const auto type = impl->current_page_table->pointers[vaddr >> YUZU_PAGEBITS].Type();
++        if (type == Common::PageType::RasterizerCachedMemory) {
++            // Check if device mapped. If not, this bugged and we can unmark.
++            DAddr addr{};
++            Common::ScratchBuffer<u32> buffer;
++            impl->gpu_device_memory->ApplyOpOnPointer(ptr, buffer,
++                                                      [&](DAddr address) { addr = address; });
++
++            if (addr == 0) {
++                LOG_ERROR(HW_Memory, "Fixing unmapped cached region {:#x}", GetInteger(vaddr));
++                impl->RasterizerMarkRegionCached(GetInteger(vaddr), size, false);
++            }
++        }
+     }
+ 
+ #ifdef __linux__
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index b4bf369d1687..8446f34cce0d 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -1546,7 +1546,10 @@ void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
+             std::span<const u8> upload_span;
+             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
+             if (IsRangeGranular(device_addr, copy.size)) {
+-                upload_span = std::span(device_memory.GetPointer<u8>(device_addr), copy.size);
++                auto* const ptr = device_memory.GetPointer<u8>(device_addr);
++                if (ptr != nullptr) {
++                    upload_span = std::span(ptr, copy.size);
++                }
+             } else {
+                 if (immediate_buffer.empty()) {
+                     immediate_buffer = ImmediateBuffer(largest_copy);
+diff --git a/src/video_core/renderer_opengl/renderer_opengl.cpp b/src/video_core/renderer_opengl/renderer_opengl.cpp
+index b75376fdbc28..1dc0e884e67e 100644
+--- a/src/video_core/renderer_opengl/renderer_opengl.cpp
++++ b/src/video_core/renderer_opengl/renderer_opengl.cpp
+@@ -243,10 +243,12 @@ void RendererOpenGL::LoadFBToScreenInfo(const Tegra::FramebufferConfig& framebuf
+     const u64 size_in_bytes{Tegra::Texture::CalculateSize(
+         true, bytes_per_pixel, framebuffer.stride, framebuffer.height, 1, block_height_log2, 0)};
+     const u8* const host_ptr{device_memory.GetPointer<u8>(framebuffer_addr)};
+-    const std::span<const u8> input_data(host_ptr, size_in_bytes);
+-    Tegra::Texture::UnswizzleTexture(gl_framebuffer_data, input_data, bytes_per_pixel,
+-                                     framebuffer.width, framebuffer.height, 1, block_height_log2,
+-                                     0);
++    if (host_ptr != nullptr) {
++        const std::span<const u8> input_data(host_ptr, size_in_bytes);
++        Tegra::Texture::UnswizzleTexture(gl_framebuffer_data, input_data, bytes_per_pixel,
++                                         framebuffer.width, framebuffer.height, 1,
++                                         block_height_log2, 0);
++    }
+ 
+     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+     glPixelStorei(GL_UNPACK_ROW_LENGTH, static_cast<GLint>(framebuffer.stride));
+diff --git a/src/video_core/renderer_vulkan/vk_blit_screen.cpp b/src/video_core/renderer_vulkan/vk_blit_screen.cpp
+index 610f27c84670..3a61ddb7631a 100644
+--- a/src/video_core/renderer_vulkan/vk_blit_screen.cpp
++++ b/src/video_core/renderer_vulkan/vk_blit_screen.cpp
+@@ -230,9 +230,11 @@ void BlitScreen::Draw(const Tegra::FramebufferConfig& framebuffer,
+         const u64 tiled_size{Tegra::Texture::CalculateSize(true, bytes_per_pixel,
+                                                            framebuffer.stride, framebuffer.height,
+                                                            1, block_height_log2, 0)};
+-        Tegra::Texture::UnswizzleTexture(
+-            mapped_span.subspan(image_offset, linear_size), std::span(host_ptr, tiled_size),
+-            bytes_per_pixel, framebuffer.width, framebuffer.height, 1, block_height_log2, 0);
++        if (host_ptr != nullptr) {
++            Tegra::Texture::UnswizzleTexture(
++                mapped_span.subspan(image_offset, linear_size), std::span(host_ptr, tiled_size),
++                bytes_per_pixel, framebuffer.width, framebuffer.height, 1, block_height_log2, 0);
++        }
+ 
+         const VkBufferImageCopy copy{
+             .bufferOffset = image_offset,
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 7cbc9c73c524..a28296bdafae 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -1064,8 +1064,6 @@ class PrimitivesSucceededStreamer : public VideoCommon::SimpleStreamer<Primitive
+                 }
+             });
+         }
+-        auto* ptr = device_memory.GetPointer<u8>(new_query->dependant_address);
+-        ASSERT(ptr != nullptr);
+ 
+         new_query->dependant_manage = must_manage_dependance;
+         pending_flush_queries.push_back(index);
+@@ -1104,9 +1102,11 @@ class PrimitivesSucceededStreamer : public VideoCommon::SimpleStreamer<Primitive
+                 tfb_streamer.Free(query->dependant_index);
+             } else {
+                 u8* pointer = device_memory.GetPointer<u8>(query->dependant_address);
+-                u32 result;
+-                std::memcpy(&result, pointer, sizeof(u32));
+-                num_vertices = static_cast<u64>(result) / query->stride;
++                if (pointer != nullptr) {
++                    u32 result;
++                    std::memcpy(&result, pointer, sizeof(u32));
++                    num_vertices = static_cast<u64>(result) / query->stride;
++                }
+             }
+             query->value = [&]() -> u64 {
+                 switch (query->topology) {
+@@ -1360,7 +1360,9 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
+     const auto check_value = [&](DAddr address) {
+         u8* ptr = impl->device_memory.GetPointer<u8>(address);
+         u64 value{};
+-        std::memcpy(&value, ptr, sizeof(value));
++        if (ptr != nullptr) {
++            std::memcpy(&value, ptr, sizeof(value));
++        }
+         return value == 0;
+     };
+     std::array<VideoCommon::LookupData*, 2> objects{&object_1, &object_2};

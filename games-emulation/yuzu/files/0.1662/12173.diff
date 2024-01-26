@@ -1,0 +1,117 @@
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index e0ab1eaacdc8..c5f4638cdd09 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1034,37 +1034,16 @@ void RasterizerVulkan::UpdateDepthBias(Tegra::Engines::Maxwell3D::Regs& regs) {
+                         regs.zeta.format == Tegra::DepthFormat::X8Z24_UNORM ||
+                         regs.zeta.format == Tegra::DepthFormat::S8Z24_UNORM ||
+                         regs.zeta.format == Tegra::DepthFormat::V8Z24_UNORM;
+-    bool force_unorm = ([&] {
+-        if (!is_d24 || device.SupportsD24DepthBuffer()) {
+-            return false;
+-        }
+-        if (device.IsExtDepthBiasControlSupported()) {
+-            return true;
+-        }
+-        if (!Settings::values.renderer_amdvlk_depth_bias_workaround) {
+-            return false;
+-        }
++    if (is_d24 && !device.SupportsD24DepthBuffer() &&
++        Settings::values.renderer_amdvlk_depth_bias_workaround) {
+         // the base formulas can be obtained from here:
+         //   https://docs.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-output-merger-stage-depth-bias
+         const double rescale_factor =
+             static_cast<double>(1ULL << (32 - 24)) / (static_cast<double>(0x1.ep+127));
+         units = static_cast<float>(static_cast<double>(units) * rescale_factor);
+-        return false;
+-    })();
++    }
+     scheduler.Record([constant = units, clamp = regs.depth_bias_clamp,
+-                      factor = regs.slope_scale_depth_bias, force_unorm,
+-                      precise = device.HasExactDepthBiasControl()](vk::CommandBuffer cmdbuf) {
+-        if (force_unorm) {
+-            VkDepthBiasRepresentationInfoEXT info{
+-                .sType = VK_STRUCTURE_TYPE_DEPTH_BIAS_REPRESENTATION_INFO_EXT,
+-                .pNext = nullptr,
+-                .depthBiasRepresentation =
+-                    VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT,
+-                .depthBiasExact = precise ? VK_TRUE : VK_FALSE,
+-            };
+-            cmdbuf.SetDepthBias(constant, clamp, factor, &info);
+-            return;
+-        }
++                      factor = regs.slope_scale_depth_bias](vk::CommandBuffer cmdbuf) {
+         cmdbuf.SetDepthBias(constant, clamp, factor);
+     });
+ }
+diff --git a/src/video_core/vulkan_common/vulkan_device.cpp b/src/video_core/vulkan_common/vulkan_device.cpp
+index fde36a49c075..3bfe0443af74 100644
+--- a/src/video_core/vulkan_common/vulkan_device.cpp
++++ b/src/video_core/vulkan_common/vulkan_device.cpp
+@@ -1093,13 +1093,6 @@ void Device::RemoveUnsuitableExtensions() {
+     RemoveExtensionFeatureIfUnsuitable(extensions.custom_border_color, features.custom_border_color,
+                                        VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+ 
+-    // VK_EXT_depth_bias_control
+-    extensions.depth_bias_control =
+-        features.depth_bias_control.depthBiasControl &&
+-        features.depth_bias_control.leastRepresentableValueForceUnormRepresentation;
+-    RemoveExtensionFeatureIfUnsuitable(extensions.depth_bias_control, features.depth_bias_control,
+-                                       VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME);
+-
+     // VK_EXT_depth_clip_control
+     extensions.depth_clip_control = features.depth_clip_control.depthClipControl;
+     RemoveExtensionFeatureIfUnsuitable(extensions.depth_clip_control, features.depth_clip_control,
+diff --git a/src/video_core/vulkan_common/vulkan_device.h b/src/video_core/vulkan_common/vulkan_device.h
+index 4f3846345c91..da39a68c9e99 100644
+--- a/src/video_core/vulkan_common/vulkan_device.h
++++ b/src/video_core/vulkan_common/vulkan_device.h
+@@ -41,7 +41,6 @@ VK_DEFINE_HANDLE(VmaAllocator)
+ // Define all features which may be used by the implementation and require an extension here.
+ #define FOR_EACH_VK_FEATURE_EXT(FEATURE)                                                           \
+     FEATURE(EXT, CustomBorderColor, CUSTOM_BORDER_COLOR, custom_border_color)                      \
+-    FEATURE(EXT, DepthBiasControl, DEPTH_BIAS_CONTROL, depth_bias_control)                         \
+     FEATURE(EXT, DepthClipControl, DEPTH_CLIP_CONTROL, depth_clip_control)                         \
+     FEATURE(EXT, ExtendedDynamicState, EXTENDED_DYNAMIC_STATE, extended_dynamic_state)             \
+     FEATURE(EXT, ExtendedDynamicState2, EXTENDED_DYNAMIC_STATE_2, extended_dynamic_state2)         \
+@@ -97,7 +96,6 @@ VK_DEFINE_HANDLE(VmaAllocator)
+ #define FOR_EACH_VK_RECOMMENDED_EXTENSION(EXTENSION_NAME)                                          \
+     EXTENSION_NAME(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME)                                    \
+     EXTENSION_NAME(VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME)                               \
+-    EXTENSION_NAME(VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME)                                       \
+     EXTENSION_NAME(VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME)                                 \
+     EXTENSION_NAME(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME)                                   \
+     EXTENSION_NAME(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME)                                 \
+@@ -150,9 +148,6 @@ VK_DEFINE_HANDLE(VmaAllocator)
+ // Define features where the absence of the feature may result in a degraded experience.
+ #define FOR_EACH_VK_RECOMMENDED_FEATURE(FEATURE_NAME)                                              \
+     FEATURE_NAME(custom_border_color, customBorderColors)                                          \
+-    FEATURE_NAME(depth_bias_control, depthBiasControl)                                             \
+-    FEATURE_NAME(depth_bias_control, leastRepresentableValueForceUnormRepresentation)              \
+-    FEATURE_NAME(depth_bias_control, depthBiasExact)                                               \
+     FEATURE_NAME(extended_dynamic_state, extendedDynamicState)                                     \
+     FEATURE_NAME(format_a4b4g4r4, formatA4B4G4R4)                                                  \
+     FEATURE_NAME(index_type_uint8, indexTypeUint8)                                                 \
+@@ -479,11 +474,6 @@ class Device {
+         return extensions.depth_clip_control;
+     }
+ 
+-    /// Returns true if the device supports VK_EXT_depth_bias_control.
+-    bool IsExtDepthBiasControlSupported() const {
+-        return extensions.depth_bias_control;
+-    }
+-
+     /// Returns true if the device supports VK_EXT_shader_viewport_index_layer.
+     bool IsExtShaderViewportIndexLayerSupported() const {
+         return extensions.shader_viewport_index_layer;
+@@ -649,10 +639,6 @@ class Device {
+         return features.robustness2.nullDescriptor;
+     }
+ 
+-    bool HasExactDepthBiasControl() const {
+-        return features.depth_bias_control.depthBiasExact;
+-    }
+-
+     u32 GetMaxVertexInputAttributes() const {
+         return properties.properties.limits.maxVertexInputAttributes;
+     }

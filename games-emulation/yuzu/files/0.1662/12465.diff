@@ -1,0 +1,460 @@
+diff --git a/src/core/hle/kernel/k_handle_table.h b/src/core/hle/kernel/k_handle_table.h
+index 4e6dcd66bbc2..1bf68e6b0422 100644
+--- a/src/core/hle/kernel/k_handle_table.h
++++ b/src/core/hle/kernel/k_handle_table.h
+@@ -30,7 +30,7 @@ class KHandleTable {
+ public:
+     explicit KHandleTable(KernelCore& kernel) : m_kernel(kernel) {}
+ 
+-    Result Initialize(KProcess* owner, s32 size) {
++    Result Initialize(s32 size) {
+         // Check that the table size is valid.
+         R_UNLESS(size <= static_cast<s32>(MaxTableSize), ResultOutOfMemory);
+ 
+@@ -44,7 +44,6 @@ class KHandleTable {
+         m_next_linear_id = MinLinearId;
+         m_count = 0;
+         m_free_head_index = -1;
+-        m_owner = owner;
+ 
+         // Free all entries.
+         for (s32 i = 0; i < static_cast<s32>(m_table_size); ++i) {
+@@ -91,8 +90,7 @@ class KHandleTable {
+         // Handle pseudo-handles.
+         if constexpr (std::derived_from<KProcess, T>) {
+             if (handle == Svc::PseudoHandle::CurrentProcess) {
+-                // TODO: this should be the current process
+-                auto* const cur_process = m_owner;
++                auto* const cur_process = GetCurrentProcessPointer(m_kernel);
+                 ASSERT(cur_process != nullptr);
+                 return cur_process;
+             }
+@@ -302,7 +300,6 @@ class KHandleTable {
+ 
+ private:
+     KernelCore& m_kernel;
+-    KProcess* m_owner{};
+     std::array<EntryInfo, MaxTableSize> m_entry_infos{};
+     std::array<KAutoObject*, MaxTableSize> m_objects{};
+     mutable KSpinLock m_lock;
+diff --git a/src/core/hle/kernel/k_process.h b/src/core/hle/kernel/k_process.h
+index b5c6867a18e9..53c0e331620a 100644
+--- a/src/core/hle/kernel/k_process.h
++++ b/src/core/hle/kernel/k_process.h
+@@ -552,7 +552,7 @@ class KProcess final : public KAutoObjectWithSlabHeapAndContainer<KProcess, KWor
+ 
+     Result InitializeHandleTable(s32 size) {
+         // Try to initialize the handle table.
+-        R_TRY(m_handle_table.Initialize(this, size));
++        R_TRY(m_handle_table.Initialize(size));
+ 
+         // We succeeded, so note that we did.
+         m_is_handle_table_initialized = true;
+diff --git a/src/core/hle/kernel/k_server_session.cpp b/src/core/hle/kernel/k_server_session.cpp
+index f6ca3dc4838d..adaabdd6d641 100644
+--- a/src/core/hle/kernel/k_server_session.cpp
++++ b/src/core/hle/kernel/k_server_session.cpp
+@@ -1147,8 +1147,7 @@ Result KServerSession::ReceiveRequest(uintptr_t server_message, uintptr_t server
+         *out_context =
+             std::make_shared<Service::HLERequestContext>(m_kernel, memory, this, client_thread);
+         (*out_context)->SetSessionRequestManager(manager);
+-        (*out_context)
+-            ->PopulateFromIncomingCommandBuffer(*client_thread->GetOwnerProcess(), cmd_buf);
++        (*out_context)->PopulateFromIncomingCommandBuffer(cmd_buf);
+         // We succeeded.
+         R_SUCCEED();
+     } else {
+diff --git a/src/core/hle/service/am/am.cpp b/src/core/hle/service/am/am.cpp
+index a266d7c21434..97eb56ff0bdf 100644
+--- a/src/core/hle/service/am/am.cpp
++++ b/src/core/hle/service/am/am.cpp
+@@ -1513,8 +1513,7 @@ void ILibraryAppletCreator::CreateTransferMemoryStorage(HLERequestContext& ctx)
+         return;
+     }
+ 
+-    auto transfer_mem =
+-        system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(handle);
++    auto transfer_mem = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(handle);
+ 
+     if (transfer_mem.IsNull()) {
+         LOG_ERROR(Service_AM, "transfer_mem is a nullptr for handle={:08X}", handle);
+@@ -1524,8 +1523,7 @@ void ILibraryAppletCreator::CreateTransferMemoryStorage(HLERequestContext& ctx)
+     }
+ 
+     std::vector<u8> memory(transfer_mem->GetSize());
+-    system.ApplicationMemory().ReadBlock(transfer_mem->GetSourceAddress(), memory.data(),
+-                                         memory.size());
++    ctx.GetMemory().ReadBlock(transfer_mem->GetSourceAddress(), memory.data(), memory.size());
+ 
+     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+     rb.Push(ResultSuccess);
+@@ -1547,8 +1545,7 @@ void ILibraryAppletCreator::CreateHandleStorage(HLERequestContext& ctx) {
+         return;
+     }
+ 
+-    auto transfer_mem =
+-        system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(handle);
++    auto transfer_mem = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(handle);
+ 
+     if (transfer_mem.IsNull()) {
+         LOG_ERROR(Service_AM, "transfer_mem is a nullptr for handle={:08X}", handle);
+@@ -1558,8 +1555,7 @@ void ILibraryAppletCreator::CreateHandleStorage(HLERequestContext& ctx) {
+     }
+ 
+     std::vector<u8> memory(transfer_mem->GetSize());
+-    system.ApplicationMemory().ReadBlock(transfer_mem->GetSourceAddress(), memory.data(),
+-                                         memory.size());
++    ctx.GetMemory().ReadBlock(transfer_mem->GetSourceAddress(), memory.data(), memory.size());
+ 
+     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+     rb.Push(ResultSuccess);
+diff --git a/src/core/hle/service/audio/audren_u.cpp b/src/core/hle/service/audio/audren_u.cpp
+index 23e56c77a640..bd4ca753b46d 100644
+--- a/src/core/hle/service/audio/audren_u.cpp
++++ b/src/core/hle/service/audio/audren_u.cpp
+@@ -454,10 +454,8 @@ void AudRenU::OpenAudioRenderer(HLERequestContext& ctx) {
+         return;
+     }
+ 
+-    const auto& handle_table{system.ApplicationProcess()->GetHandleTable()};
+-    auto process{handle_table.GetObject<Kernel::KProcess>(process_handle)};
+-    auto transfer_memory{
+-        process->GetHandleTable().GetObject<Kernel::KTransferMemory>(transfer_memory_handle)};
++    auto process{ctx.GetObjectFromHandle<Kernel::KProcess>(process_handle)};
++    auto transfer_memory{ctx.GetObjectFromHandle<Kernel::KTransferMemory>(transfer_memory_handle)};
+ 
+     const auto session_id{impl->GetSessionId()};
+     if (session_id == -1) {
+diff --git a/src/core/hle/service/audio/hwopus.cpp b/src/core/hle/service/audio/hwopus.cpp
+index 6a7bf9416214..91f33aabdb2f 100644
+--- a/src/core/hle/service/audio/hwopus.cpp
++++ b/src/core/hle/service/audio/hwopus.cpp
+@@ -278,9 +278,7 @@ void HwOpus::OpenHardwareOpusDecoder(HLERequestContext& ctx) {
+     auto params = rp.PopRaw<OpusParameters>();
+     auto transfer_memory_size{rp.Pop<u32>()};
+     auto transfer_memory_handle{ctx.GetCopyHandle(0)};
+-    auto transfer_memory{
+-        system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-            transfer_memory_handle)};
++    auto transfer_memory{ctx.GetObjectFromHandle<Kernel::KTransferMemory>(transfer_memory_handle)};
+ 
+     LOG_DEBUG(Service_Audio, "sample_rate {} channel_count {} transfer_memory_size 0x{:X}",
+               params.sample_rate, params.channel_count, transfer_memory_size);
+@@ -323,9 +321,7 @@ void HwOpus::OpenHardwareOpusDecoderForMultiStream(HLERequestContext& ctx) {
+ 
+     auto transfer_memory_size{rp.Pop<u32>()};
+     auto transfer_memory_handle{ctx.GetCopyHandle(0)};
+-    auto transfer_memory{
+-        system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-            transfer_memory_handle)};
++    auto transfer_memory{ctx.GetObjectFromHandle<Kernel::KTransferMemory>(transfer_memory_handle)};
+ 
+     LOG_DEBUG(Service_Audio,
+               "sample_rate {} channel_count {} total_stream_count {} stereo_stream_count {} "
+@@ -374,9 +370,7 @@ void HwOpus::OpenHardwareOpusDecoderEx(HLERequestContext& ctx) {
+     auto params = rp.PopRaw<OpusParametersEx>();
+     auto transfer_memory_size{rp.Pop<u32>()};
+     auto transfer_memory_handle{ctx.GetCopyHandle(0)};
+-    auto transfer_memory{
+-        system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-            transfer_memory_handle)};
++    auto transfer_memory{ctx.GetObjectFromHandle<Kernel::KTransferMemory>(transfer_memory_handle)};
+ 
+     LOG_DEBUG(Service_Audio, "sample_rate {} channel_count {} transfer_memory_size 0x{:X}",
+               params.sample_rate, params.channel_count, transfer_memory_size);
+@@ -414,9 +408,7 @@ void HwOpus::OpenHardwareOpusDecoderForMultiStreamEx(HLERequestContext& ctx) {
+ 
+     auto transfer_memory_size{rp.Pop<u32>()};
+     auto transfer_memory_handle{ctx.GetCopyHandle(0)};
+-    auto transfer_memory{
+-        system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-            transfer_memory_handle)};
++    auto transfer_memory{ctx.GetObjectFromHandle<Kernel::KTransferMemory>(transfer_memory_handle)};
+ 
+     LOG_DEBUG(Service_Audio,
+               "sample_rate {} channel_count {} total_stream_count {} stereo_stream_count {} "
+diff --git a/src/core/hle/service/hid/hid_server.cpp b/src/core/hle/service/hid/hid_server.cpp
+index 06a01c02c69a..3174672afb0f 100644
+--- a/src/core/hle/service/hid/hid_server.cpp
++++ b/src/core/hle/service/hid/hid_server.cpp
+@@ -1850,8 +1850,7 @@ void IHidServer::InitializeSevenSixAxisSensor(HLERequestContext& ctx) {
+     ASSERT_MSG(t_mem_1_size == 0x1000, "t_mem_1_size is not 0x1000 bytes");
+     ASSERT_MSG(t_mem_2_size == 0x7F000, "t_mem_2_size is not 0x7F000 bytes");
+ 
+-    auto t_mem_1 = system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-        t_mem_1_handle);
++    auto t_mem_1 = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(t_mem_1_handle);
+ 
+     if (t_mem_1.IsNull()) {
+         LOG_ERROR(Service_HID, "t_mem_1 is a nullptr for handle=0x{:08X}", t_mem_1_handle);
+@@ -1860,8 +1859,7 @@ void IHidServer::InitializeSevenSixAxisSensor(HLERequestContext& ctx) {
+         return;
+     }
+ 
+-    auto t_mem_2 = system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-        t_mem_2_handle);
++    auto t_mem_2 = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(t_mem_2_handle);
+ 
+     if (t_mem_2.IsNull()) {
+         LOG_ERROR(Service_HID, "t_mem_2 is a nullptr for handle=0x{:08X}", t_mem_2_handle);
+@@ -2142,8 +2140,7 @@ void IHidServer::WritePalmaWaveEntry(HLERequestContext& ctx) {
+ 
+     ASSERT_MSG(t_mem_size == 0x3000, "t_mem_size is not 0x3000 bytes");
+ 
+-    auto t_mem = system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-        t_mem_handle);
++    auto t_mem = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(t_mem_handle);
+ 
+     if (t_mem.IsNull()) {
+         LOG_ERROR(Service_HID, "t_mem is a nullptr for handle=0x{:08X}", t_mem_handle);
+diff --git a/src/core/hle/service/hid/hidbus.cpp b/src/core/hle/service/hid/hidbus.cpp
+index 80aac221b8c4..d12f9beb0008 100644
+--- a/src/core/hle/service/hid/hidbus.cpp
++++ b/src/core/hle/service/hid/hidbus.cpp
+@@ -448,8 +448,7 @@ void HidBus::EnableJoyPollingReceiveMode(HLERequestContext& ctx) {
+ 
+     ASSERT_MSG(t_mem_size == 0x1000, "t_mem_size is not 0x1000 bytes");
+ 
+-    auto t_mem = system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-        t_mem_handle);
++    auto t_mem = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(t_mem_handle);
+ 
+     if (t_mem.IsNull()) {
+         LOG_ERROR(Service_HID, "t_mem is a nullptr for handle=0x{:08X}", t_mem_handle);
+diff --git a/src/core/hle/service/hid/irs.cpp b/src/core/hle/service/hid/irs.cpp
+index 39b9a4474b8b..008debfd1aa0 100644
+--- a/src/core/hle/service/hid/irs.cpp
++++ b/src/core/hle/service/hid/irs.cpp
+@@ -197,8 +197,7 @@ void IRS::RunImageTransferProcessor(HLERequestContext& ctx) {
+     const auto parameters{rp.PopRaw<Parameters>()};
+     const auto t_mem_handle{ctx.GetCopyHandle(0)};
+ 
+-    auto t_mem = system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-        t_mem_handle);
++    auto t_mem = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(t_mem_handle);
+ 
+     if (t_mem.IsNull()) {
+         LOG_ERROR(Service_IRS, "t_mem is a nullptr for handle=0x{:08X}", t_mem_handle);
+@@ -444,8 +443,7 @@ void IRS::RunImageTransferExProcessor(HLERequestContext& ctx) {
+     const auto parameters{rp.PopRaw<Parameters>()};
+     const auto t_mem_handle{ctx.GetCopyHandle(0)};
+ 
+-    auto t_mem = system.ApplicationProcess()->GetHandleTable().GetObject<Kernel::KTransferMemory>(
+-        t_mem_handle);
++    auto t_mem = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(t_mem_handle);
+ 
+     LOG_INFO(Service_IRS,
+              "called, npad_type={}, npad_id={}, transfer_memory_size={}, "
+diff --git a/src/core/hle/service/hle_ipc.cpp b/src/core/hle/service/hle_ipc.cpp
+index 38955932cddc..39df77e4301c 100644
+--- a/src/core/hle/service/hle_ipc.cpp
++++ b/src/core/hle/service/hle_ipc.cpp
+@@ -146,10 +146,7 @@ HLERequestContext::HLERequestContext(Kernel::KernelCore& kernel_, Core::Memory::
+ 
+ HLERequestContext::~HLERequestContext() = default;
+ 
+-void HLERequestContext::ParseCommandBuffer(Kernel::KProcess& process, u32_le* src_cmdbuf,
+-                                           bool incoming) {
+-    client_handle_table = &process.GetHandleTable();
+-
++void HLERequestContext::ParseCommandBuffer(u32_le* src_cmdbuf, bool incoming) {
+     IPC::RequestParser rp(src_cmdbuf);
+     command_header = rp.PopRaw<IPC::CommandHeader>();
+ 
+@@ -162,7 +159,7 @@ void HLERequestContext::ParseCommandBuffer(Kernel::KProcess& process, u32_le* sr
+     if (command_header->enable_handle_descriptor) {
+         handle_descriptor_header = rp.PopRaw<IPC::HandleDescriptorHeader>();
+         if (handle_descriptor_header->send_current_pid) {
+-            pid = process.GetProcessId();
++            pid = thread->GetOwnerProcess()->GetProcessId();
+             rp.Skip(2, false);
+         }
+         if (incoming) {
+@@ -270,9 +267,10 @@ void HLERequestContext::ParseCommandBuffer(Kernel::KProcess& process, u32_le* sr
+     rp.Skip(1, false); // The command is actually an u64, but we don't use the high part.
+ }
+ 
+-Result HLERequestContext::PopulateFromIncomingCommandBuffer(Kernel::KProcess& process,
+-                                                            u32_le* src_cmdbuf) {
+-    ParseCommandBuffer(process, src_cmdbuf, true);
++Result HLERequestContext::PopulateFromIncomingCommandBuffer(u32_le* src_cmdbuf) {
++    client_handle_table = &thread->GetOwnerProcess()->GetHandleTable();
++
++    ParseCommandBuffer(src_cmdbuf, true);
+ 
+     if (command_header->IsCloseCommand()) {
+         // Close does not populate the rest of the IPC header
+@@ -284,9 +282,9 @@ Result HLERequestContext::PopulateFromIncomingCommandBuffer(Kernel::KProcess& pr
+     return ResultSuccess;
+ }
+ 
+-Result HLERequestContext::WriteToOutgoingCommandBuffer(Kernel::KThread& requesting_thread) {
++Result HLERequestContext::WriteToOutgoingCommandBuffer() {
+     auto current_offset = handles_offset;
+-    auto& owner_process = *requesting_thread.GetOwnerProcess();
++    auto& owner_process = *thread->GetOwnerProcess();
+     auto& handle_table = owner_process.GetHandleTable();
+ 
+     for (auto& object : outgoing_copy_objects) {
+@@ -319,7 +317,7 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer(Kernel::KThread& requesti
+     }
+ 
+     // Copy the translated command buffer back into the thread's command buffer area.
+-    memory.WriteBlock(requesting_thread.GetTlsAddress(), cmd_buf.data(), write_size * sizeof(u32));
++    memory.WriteBlock(thread->GetTlsAddress(), cmd_buf.data(), write_size * sizeof(u32));
+ 
+     return ResultSuccess;
+ }
+diff --git a/src/core/hle/service/hle_ipc.h b/src/core/hle/service/hle_ipc.h
+index 18d464c63bdc..40d86943e015 100644
+--- a/src/core/hle/service/hle_ipc.h
++++ b/src/core/hle/service/hle_ipc.h
+@@ -17,6 +17,7 @@
+ #include "common/concepts.h"
+ #include "common/swap.h"
+ #include "core/hle/ipc.h"
++#include "core/hle/kernel/k_handle_table.h"
+ #include "core/hle/kernel/svc_common.h"
+ 
+ union Result;
+@@ -196,10 +197,10 @@ class HLERequestContext {
+     }
+ 
+     /// Populates this context with data from the requesting process/thread.
+-    Result PopulateFromIncomingCommandBuffer(Kernel::KProcess& process, u32_le* src_cmdbuf);
++    Result PopulateFromIncomingCommandBuffer(u32_le* src_cmdbuf);
+ 
+     /// Writes data from this context back to the requesting process/thread.
+-    Result WriteToOutgoingCommandBuffer(Kernel::KThread& requesting_thread);
++    Result WriteToOutgoingCommandBuffer();
+ 
+     [[nodiscard]] u32_le GetHipcCommand() const {
+         return command;
+@@ -359,8 +360,17 @@ class HLERequestContext {
+         return *thread;
+     }
+ 
+-    Kernel::KHandleTable& GetClientHandleTable() {
+-        return *client_handle_table;
++    [[nodiscard]] Core::Memory::Memory& GetMemory() const {
++        return memory;
++    }
++
++    template <typename T>
++    Kernel::KScopedAutoObject<T> GetObjectFromHandle(u32 handle) {
++        auto obj = client_handle_table->GetObjectForIpc(handle, thread);
++        if (obj.IsNotNull()) {
++            return obj->DynamicCast<T*>();
++        }
++        return nullptr;
+     }
+ 
+     [[nodiscard]] std::shared_ptr<SessionRequestManager> GetManager() const {
+@@ -378,7 +388,7 @@ class HLERequestContext {
+ private:
+     friend class IPC::ResponseBuilder;
+ 
+-    void ParseCommandBuffer(Kernel::KProcess& process, u32_le* src_cmdbuf, bool incoming);
++    void ParseCommandBuffer(u32_le* src_cmdbuf, bool incoming);
+ 
+     std::array<u32, IPC::COMMAND_BUFFER_LENGTH> cmd_buf;
+     Kernel::KServerSession* server_session{};
+diff --git a/src/core/hle/service/jit/jit.cpp b/src/core/hle/service/jit/jit.cpp
+index 65851fc05808..a94d05e1970f 100644
+--- a/src/core/hle/service/jit/jit.cpp
++++ b/src/core/hle/service/jit/jit.cpp
+@@ -26,7 +26,7 @@ class IJitEnvironment final : public ServiceFramework<IJitEnvironment> {
+     explicit IJitEnvironment(Core::System& system_, Kernel::KProcess& process_, CodeRange user_rx,
+                              CodeRange user_ro)
+         : ServiceFramework{system_, "IJitEnvironment"}, process{&process_},
+-          context{system_.ApplicationMemory()} {
++          context{process->GetMemory()} {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+             {0, &IJitEnvironment::GenerateCode, "GenerateCode"},
+@@ -188,7 +188,7 @@ class IJitEnvironment final : public ServiceFramework<IJitEnvironment> {
+             return;
+         }
+ 
+-        auto tmem{process->GetHandleTable().GetObject<Kernel::KTransferMemory>(tmem_handle)};
++        auto tmem{ctx.GetObjectFromHandle<Kernel::KTransferMemory>(tmem_handle)};
+         if (tmem.IsNull()) {
+             LOG_ERROR(Service_JIT, "attempted to load plugin with invalid transfer memory handle");
+             IPC::ResponseBuilder rb{ctx, 2};
+@@ -356,11 +356,7 @@ class JITU final : public ServiceFramework<JITU> {
+             return;
+         }
+ 
+-        // Fetch using the handle table for the application process here,
+-        // since we are not multiprocess yet.
+-        const auto& handle_table{system.ApplicationProcess()->GetHandleTable()};
+-
+-        auto process{handle_table.GetObject<Kernel::KProcess>(process_handle)};
++        auto process{ctx.GetObjectFromHandle<Kernel::KProcess>(process_handle)};
+         if (process.IsNull()) {
+             LOG_ERROR(Service_JIT, "process is null for handle=0x{:08X}", process_handle);
+             IPC::ResponseBuilder rb{ctx, 2};
+@@ -368,7 +364,7 @@ class JITU final : public ServiceFramework<JITU> {
+             return;
+         }
+ 
+-        auto rx_mem{handle_table.GetObject<Kernel::KCodeMemory>(rx_mem_handle)};
++        auto rx_mem{ctx.GetObjectFromHandle<Kernel::KCodeMemory>(rx_mem_handle)};
+         if (rx_mem.IsNull()) {
+             LOG_ERROR(Service_JIT, "rx_mem is null for handle=0x{:08X}", rx_mem_handle);
+             IPC::ResponseBuilder rb{ctx, 2};
+@@ -376,7 +372,7 @@ class JITU final : public ServiceFramework<JITU> {
+             return;
+         }
+ 
+-        auto ro_mem{handle_table.GetObject<Kernel::KCodeMemory>(ro_mem_handle)};
++        auto ro_mem{ctx.GetObjectFromHandle<Kernel::KCodeMemory>(ro_mem_handle)};
+         if (ro_mem.IsNull()) {
+             LOG_ERROR(Service_JIT, "ro_mem is null for handle=0x{:08X}", ro_mem_handle);
+             IPC::ResponseBuilder rb{ctx, 2};
+diff --git a/src/core/hle/service/ro/ro.cpp b/src/core/hle/service/ro/ro.cpp
+index 17110d3f1d7a..f0658bb5dbeb 100644
+--- a/src/core/hle/service/ro/ro.cpp
++++ b/src/core/hle/service/ro/ro.cpp
+@@ -651,10 +651,9 @@ class IRoInterface : public ServiceFramework<IRoInterface> {
+     void RegisterProcessHandle(HLERequestContext& ctx) {
+         LOG_DEBUG(Service_LDR, "(called)");
+ 
+-        auto process_h = ctx.GetClientHandleTable().GetObject(ctx.GetCopyHandle(0));
++        auto process = ctx.GetObjectFromHandle<Kernel::KProcess>(ctx.GetCopyHandle(0));
+         auto client_pid = ctx.GetPID();
+-        auto result = interface.RegisterProcessHandle(client_pid,
+-                                                      process_h->DynamicCast<Kernel::KProcess*>());
++        auto result = interface.RegisterProcessHandle(client_pid, process.GetPointerUnsafe());
+ 
+         IPC::ResponseBuilder rb{ctx, 2};
+         rb.Push(result);
+@@ -671,12 +670,11 @@ class IRoInterface : public ServiceFramework<IRoInterface> {
+ 
+         IPC::RequestParser rp{ctx};
+         auto params = rp.PopRaw<InputParameters>();
+-        auto process_h = ctx.GetClientHandleTable().GetObject(ctx.GetCopyHandle(0));
++        auto process = ctx.GetObjectFromHandle<Kernel::KProcess>(ctx.GetCopyHandle(0));
+ 
+         auto client_pid = ctx.GetPID();
+-        auto result =
+-            interface.RegisterProcessModuleInfo(client_pid, params.nrr_address, params.nrr_size,
+-                                                process_h->DynamicCast<Kernel::KProcess*>());
++        auto result = interface.RegisterProcessModuleInfo(
++            client_pid, params.nrr_address, params.nrr_size, process.GetPointerUnsafe());
+ 
+         IPC::ResponseBuilder rb{ctx, 2};
+         rb.Push(result);
+diff --git a/src/core/hle/service/service.cpp b/src/core/hle/service/service.cpp
+index 00531b021555..39124c5fdc1d 100644
+--- a/src/core/hle/service/service.cpp
++++ b/src/core/hle/service/service.cpp
+@@ -203,7 +203,7 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
+     // If emulation was shutdown, we are closing service threads, do not write the response back to
+     // memory that may be shutting down as well.
+     if (system.IsPoweredOn()) {
+-        ctx.WriteToOutgoingCommandBuffer(ctx.GetThread());
++        ctx.WriteToOutgoingCommandBuffer();
+     }
+ 
+     return result;

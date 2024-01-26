@@ -1,0 +1,242 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 96ab39cb8810..a8b3d480c818 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -987,6 +987,8 @@ if (ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64)
+         arm/dynarmic/dynarmic_cp15.h
+         arm/dynarmic/dynarmic_exclusive_monitor.cpp
+         arm/dynarmic/dynarmic_exclusive_monitor.h
++        hle/service/jit/jit_code_memory.cpp
++        hle/service/jit/jit_code_memory.h
+         hle/service/jit/jit_context.cpp
+         hle/service/jit/jit_context.h
+         hle/service/jit/jit.cpp
+diff --git a/src/core/hle/service/jit/jit.cpp b/src/core/hle/service/jit/jit.cpp
+index a94d05e1970f..77aa6d7d13a5 100644
+--- a/src/core/hle/service/jit/jit.cpp
++++ b/src/core/hle/service/jit/jit.cpp
+@@ -4,11 +4,11 @@
+ #include "core/arm/debug.h"
+ #include "core/arm/symbols.h"
+ #include "core/core.h"
+-#include "core/hle/kernel/k_code_memory.h"
+ #include "core/hle/kernel/k_transfer_memory.h"
+ #include "core/hle/result.h"
+ #include "core/hle/service/ipc_helpers.h"
+ #include "core/hle/service/jit/jit.h"
++#include "core/hle/service/jit/jit_code_memory.h"
+ #include "core/hle/service/jit/jit_context.h"
+ #include "core/hle/service/server_manager.h"
+ #include "core/hle/service/service.h"
+@@ -23,10 +23,12 @@ struct CodeRange {
+ 
+ class IJitEnvironment final : public ServiceFramework<IJitEnvironment> {
+ public:
+-    explicit IJitEnvironment(Core::System& system_, Kernel::KProcess& process_, CodeRange user_rx,
+-                             CodeRange user_ro)
+-        : ServiceFramework{system_, "IJitEnvironment"}, process{&process_},
+-          context{process->GetMemory()} {
++    explicit IJitEnvironment(Core::System& system_,
++                             Kernel::KScopedAutoObject<Kernel::KProcess>&& process_,
++                             CodeMemory&& user_rx_, CodeMemory&& user_ro_)
++        : ServiceFramework{system_, "IJitEnvironment"}, process{std::move(process_)},
++          user_rx{std::move(user_rx_)}, user_ro{std::move(user_ro_)},
++          context{system_.ApplicationMemory()} {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+             {0, &IJitEnvironment::GenerateCode, "GenerateCode"},
+@@ -39,10 +41,13 @@ class IJitEnvironment final : public ServiceFramework<IJitEnvironment> {
+         RegisterHandlers(functions);
+ 
+         // Identity map user code range into sysmodule context
+-        configuration.user_ro_memory = user_ro;
+-        configuration.user_rx_memory = user_rx;
+-        configuration.sys_ro_memory = user_ro;
+-        configuration.sys_rx_memory = user_rx;
++        configuration.user_rx_memory.size = user_rx.GetSize();
++        configuration.user_rx_memory.offset = user_rx.GetAddress();
++        configuration.user_ro_memory.size = user_ro.GetSize();
++        configuration.user_ro_memory.offset = user_ro.GetAddress();
++
++        configuration.sys_rx_memory = configuration.user_rx_memory;
++        configuration.sys_ro_memory = configuration.user_ro_memory;
+     }
+ 
+     void GenerateCode(HLERequestContext& ctx) {
+@@ -318,6 +323,8 @@ class IJitEnvironment final : public ServiceFramework<IJitEnvironment> {
+     }
+ 
+     Kernel::KScopedAutoObject<Kernel::KProcess> process;
++    CodeMemory user_rx;
++    CodeMemory user_ro;
+     GuestCallbacks callbacks;
+     JITConfiguration configuration;
+     JITContext context;
+@@ -335,6 +342,7 @@ class JITU final : public ServiceFramework<JITU> {
+         RegisterHandlers(functions);
+     }
+ 
++private:
+     void CreateJitEnvironment(HLERequestContext& ctx) {
+         LOG_DEBUG(Service_JIT, "called");
+ 
+@@ -380,20 +388,35 @@ class JITU final : public ServiceFramework<JITU> {
+             return;
+         }
+ 
+-        const CodeRange user_rx{
+-            .offset = GetInteger(rx_mem->GetSourceAddress()),
+-            .size = parameters.rx_size,
+-        };
++        CodeMemory rx, ro;
++        Result res;
+ 
+-        const CodeRange user_ro{
+-            .offset = GetInteger(ro_mem->GetSourceAddress()),
+-            .size = parameters.ro_size,
+-        };
++        res = rx.Initialize(*process, *rx_mem, parameters.rx_size,
++                            Kernel::Svc::MemoryPermission::ReadExecute, generate_random);
++        if (R_FAILED(res)) {
++            LOG_ERROR(Service_JIT, "rx_mem could not be mapped for handle=0x{:08X}", rx_mem_handle);
++            IPC::ResponseBuilder rb{ctx, 2};
++            rb.Push(res);
++            return;
++        }
++
++        res = ro.Initialize(*process, *ro_mem, parameters.ro_size,
++                            Kernel::Svc::MemoryPermission::Read, generate_random);
++        if (R_FAILED(res)) {
++            LOG_ERROR(Service_JIT, "ro_mem could not be mapped for handle=0x{:08X}", ro_mem_handle);
++            IPC::ResponseBuilder rb{ctx, 2};
++            rb.Push(res);
++            return;
++        }
+ 
+         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+         rb.Push(ResultSuccess);
+-        rb.PushIpcInterface<IJitEnvironment>(system, *process, user_rx, user_ro);
++        rb.PushIpcInterface<IJitEnvironment>(system, std::move(process), std::move(rx),
++                                             std::move(ro));
+     }
++
++private:
++    std::mt19937_64 generate_random{};
+ };
+ 
+ void LoopProcess(Core::System& system) {
+diff --git a/src/core/hle/service/jit/jit_code_memory.cpp b/src/core/hle/service/jit/jit_code_memory.cpp
+new file mode 100644
+index 000000000000..2b480488a8bc
+--- /dev/null
++++ b/src/core/hle/service/jit/jit_code_memory.cpp
+@@ -0,0 +1,54 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/jit/jit_code_memory.h"
++
++namespace Service::JIT {
++
++Result CodeMemory::Initialize(Kernel::KProcess& process, Kernel::KCodeMemory& code_memory,
++                              size_t size, Kernel::Svc::MemoryPermission perm,
++                              std::mt19937_64& generate_random) {
++    auto& page_table = process.GetPageTable();
++    const u64 alias_code_start =
++        GetInteger(page_table.GetAliasCodeRegionStart()) / Kernel::PageSize;
++    const u64 alias_code_size = page_table.GetAliasCodeRegionSize() / Kernel::PageSize;
++
++    // NOTE: This will retry indefinitely until mapping the code memory succeeds.
++    while (true) {
++        // Generate a new trial address.
++        const u64 mapped_address =
++            (alias_code_start + (generate_random() % alias_code_size)) * Kernel::PageSize;
++
++        // Try to map the address
++        R_TRY_CATCH(code_memory.MapToOwner(mapped_address, size, perm)) {
++            R_CATCH(Kernel::ResultInvalidMemoryRegion) {
++                // If we could not map here, retry.
++                continue;
++            }
++        }
++        R_END_TRY_CATCH;
++
++        // Set members.
++        m_code_memory = std::addressof(code_memory);
++        m_size = size;
++        m_address = mapped_address;
++        m_perm = perm;
++
++        // Open a new reference to the code memory.
++        m_code_memory->Open();
++
++        // We succeeded.
++        R_SUCCEED();
++    }
++}
++
++void CodeMemory::Finalize() {
++    if (m_code_memory) {
++        R_ASSERT(m_code_memory->UnmapFromOwner(m_address, m_size));
++        m_code_memory->Close();
++    }
++
++    m_code_memory = nullptr;
++}
++
++} // namespace Service::JIT
+diff --git a/src/core/hle/service/jit/jit_code_memory.h b/src/core/hle/service/jit/jit_code_memory.h
+new file mode 100644
+index 000000000000..6376d4c4eb88
+--- /dev/null
++++ b/src/core/hle/service/jit/jit_code_memory.h
+@@ -0,0 +1,49 @@
++// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <random>
++
++#include "core/hle/kernel/k_code_memory.h"
++
++namespace Service::JIT {
++
++class CodeMemory {
++public:
++    YUZU_NON_COPYABLE(CodeMemory);
++
++    explicit CodeMemory() = default;
++
++    CodeMemory(CodeMemory&& rhs) {
++        std::swap(m_code_memory, rhs.m_code_memory);
++        std::swap(m_size, rhs.m_size);
++        std::swap(m_address, rhs.m_address);
++        std::swap(m_perm, rhs.m_perm);
++    }
++
++    ~CodeMemory() {
++        this->Finalize();
++    }
++
++public:
++    Result Initialize(Kernel::KProcess& process, Kernel::KCodeMemory& code_memory, size_t size,
++                      Kernel::Svc::MemoryPermission perm, std::mt19937_64& generate_random);
++    void Finalize();
++
++    size_t GetSize() const {
++        return m_size;
++    }
++
++    u64 GetAddress() const {
++        return m_address;
++    }
++
++private:
++    Kernel::KCodeMemory* m_code_memory{};
++    size_t m_size{};
++    u64 m_address{};
++    Kernel::Svc::MemoryPermission m_perm{};
++};
++
++} // namespace Service::JIT

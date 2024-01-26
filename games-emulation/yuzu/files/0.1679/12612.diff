@@ -1,0 +1,1146 @@
+diff --git a/src/android/app/src/main/jni/native.cpp b/src/android/app/src/main/jni/native.cpp
+index 136c8dee6342..8017eb58dc15 100644
+--- a/src/android/app/src/main/jni/native.cpp
++++ b/src/android/app/src/main/jni/native.cpp
+@@ -770,8 +770,8 @@ void Java_org_yuzu_yuzu_1emu_NativeLibrary_initializeEmptyUserDirectory(JNIEnv*
+     ASSERT(user_id);
+ 
+     const auto user_save_data_path = FileSys::SaveDataFactory::GetFullPath(
+-        EmulationSession::GetInstance().System(), vfs_nand_dir, FileSys::SaveDataSpaceId::NandUser,
+-        FileSys::SaveDataType::SaveData, 1, user_id->AsU128(), 0);
++        {}, vfs_nand_dir, FileSys::SaveDataSpaceId::NandUser, FileSys::SaveDataType::SaveData, 1,
++        user_id->AsU128(), 0);
+ 
+     const auto full_path = Common::FS::ConcatPathSafe(nand_dir, user_save_data_path);
+     if (!Common::FS::CreateParentDirs(full_path)) {
+@@ -878,7 +878,7 @@ jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getSavePath(JNIEnv* env, jobject j
+                                                             FileSys::Mode::Read);
+ 
+     const auto user_save_data_path = FileSys::SaveDataFactory::GetFullPath(
+-        system, vfsNandDir, FileSys::SaveDataSpaceId::NandUser, FileSys::SaveDataType::SaveData,
++        {}, vfsNandDir, FileSys::SaveDataSpaceId::NandUser, FileSys::SaveDataType::SaveData,
+         program_id, user_id->AsU128(), 0);
+     return ToJString(env, user_save_data_path);
+ }
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 753f55ebe614..293d9647b85e 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -490,6 +490,10 @@ add_library(core STATIC
+     hle/service/filesystem/fsp_pr.h
+     hle/service/filesystem/fsp_srv.cpp
+     hle/service/filesystem/fsp_srv.h
++    hle/service/filesystem/romfs_controller.cpp
++    hle/service/filesystem/romfs_controller.h
++    hle/service/filesystem/save_data_controller.cpp
++    hle/service/filesystem/save_data_controller.h
+     hle/service/fgm/fgm.cpp
+     hle/service/fgm/fgm.h
+     hle/service/friend/friend.cpp
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index c063f7719f28..461eea9c8c12 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -413,6 +413,7 @@ struct System::Impl {
+         kernel.ShutdownCores();
+         services.reset();
+         service_manager.reset();
++        fs_controller.Reset();
+         cheat_engine.reset();
+         telemetry_session.reset();
+         time_manager.Shutdown();
+diff --git a/src/core/file_sys/savedata_factory.cpp b/src/core/file_sys/savedata_factory.cpp
+index 12b3bd797380..23196cd5f9e6 100644
+--- a/src/core/file_sys/savedata_factory.cpp
++++ b/src/core/file_sys/savedata_factory.cpp
+@@ -97,8 +97,9 @@ std::string SaveDataAttribute::DebugInfo() const {
+                        static_cast<u8>(rank), index);
+ }
+ 
+-SaveDataFactory::SaveDataFactory(Core::System& system_, VirtualDir save_directory_)
+-    : dir{std::move(save_directory_)}, system{system_} {
++SaveDataFactory::SaveDataFactory(Core::System& system_, ProgramId program_id_,
++                                 VirtualDir save_directory_)
++    : system{system_}, program_id{program_id_}, dir{std::move(save_directory_)} {
+     // Delete all temporary storages
+     // On hardware, it is expected that temporary storage be empty at first use.
+     dir->DeleteSubdirectoryRecursive("temp");
+@@ -110,7 +111,7 @@ VirtualDir SaveDataFactory::Create(SaveDataSpaceId space, const SaveDataAttribut
+     PrintSaveDataAttributeWarnings(meta);
+ 
+     const auto save_directory =
+-        GetFullPath(system, dir, space, meta.type, meta.title_id, meta.user_id, meta.save_id);
++        GetFullPath(program_id, dir, space, meta.type, meta.title_id, meta.user_id, meta.save_id);
+ 
+     return dir->CreateDirectoryRelative(save_directory);
+ }
+@@ -118,7 +119,7 @@ VirtualDir SaveDataFactory::Create(SaveDataSpaceId space, const SaveDataAttribut
+ VirtualDir SaveDataFactory::Open(SaveDataSpaceId space, const SaveDataAttribute& meta) const {
+ 
+     const auto save_directory =
+-        GetFullPath(system, dir, space, meta.type, meta.title_id, meta.user_id, meta.save_id);
++        GetFullPath(program_id, dir, space, meta.type, meta.title_id, meta.user_id, meta.save_id);
+ 
+     auto out = dir->GetDirectoryRelative(save_directory);
+ 
+@@ -147,14 +148,14 @@ std::string SaveDataFactory::GetSaveDataSpaceIdPath(SaveDataSpaceId space) {
+     }
+ }
+ 
+-std::string SaveDataFactory::GetFullPath(Core::System& system, VirtualDir dir,
++std::string SaveDataFactory::GetFullPath(ProgramId program_id, VirtualDir dir,
+                                          SaveDataSpaceId space, SaveDataType type, u64 title_id,
+                                          u128 user_id, u64 save_id) {
+     // According to switchbrew, if a save is of type SaveData and the title id field is 0, it should
+     // be interpreted as the title id of the current process.
+     if (type == SaveDataType::SaveData || type == SaveDataType::DeviceSaveData) {
+         if (title_id == 0) {
+-            title_id = system.GetApplicationProcessProgramID();
++            title_id = program_id;
+         }
+     }
+ 
+@@ -201,7 +202,7 @@ std::string SaveDataFactory::GetUserGameSaveDataRoot(u128 user_id, bool future)
+ SaveDataSize SaveDataFactory::ReadSaveDataSize(SaveDataType type, u64 title_id,
+                                                u128 user_id) const {
+     const auto path =
+-        GetFullPath(system, dir, SaveDataSpaceId::NandUser, type, title_id, user_id, 0);
++        GetFullPath(program_id, dir, SaveDataSpaceId::NandUser, type, title_id, user_id, 0);
+     const auto relative_dir = GetOrCreateDirectoryRelative(dir, path);
+ 
+     const auto size_file = relative_dir->GetFile(GetSaveDataSizeFileName());
+@@ -220,7 +221,7 @@ SaveDataSize SaveDataFactory::ReadSaveDataSize(SaveDataType type, u64 title_id,
+ void SaveDataFactory::WriteSaveDataSize(SaveDataType type, u64 title_id, u128 user_id,
+                                         SaveDataSize new_value) const {
+     const auto path =
+-        GetFullPath(system, dir, SaveDataSpaceId::NandUser, type, title_id, user_id, 0);
++        GetFullPath(program_id, dir, SaveDataSpaceId::NandUser, type, title_id, user_id, 0);
+     const auto relative_dir = GetOrCreateDirectoryRelative(dir, path);
+ 
+     const auto size_file = relative_dir->CreateFile(GetSaveDataSizeFileName());
+diff --git a/src/core/file_sys/savedata_factory.h b/src/core/file_sys/savedata_factory.h
+index fd4887e99714..30d96928ec4e 100644
+--- a/src/core/file_sys/savedata_factory.h
++++ b/src/core/file_sys/savedata_factory.h
+@@ -87,10 +87,13 @@ constexpr const char* GetSaveDataSizeFileName() {
+     return ".yuzu_save_size";
+ }
+ 
++using ProgramId = u64;
++
+ /// File system interface to the SaveData archive
+ class SaveDataFactory {
+ public:
+-    explicit SaveDataFactory(Core::System& system_, VirtualDir save_directory_);
++    explicit SaveDataFactory(Core::System& system_, ProgramId program_id_,
++                             VirtualDir save_directory_);
+     ~SaveDataFactory();
+ 
+     VirtualDir Create(SaveDataSpaceId space, const SaveDataAttribute& meta) const;
+@@ -99,7 +102,7 @@ class SaveDataFactory {
+     VirtualDir GetSaveDataSpaceDirectory(SaveDataSpaceId space) const;
+ 
+     static std::string GetSaveDataSpaceIdPath(SaveDataSpaceId space);
+-    static std::string GetFullPath(Core::System& system, VirtualDir dir, SaveDataSpaceId space,
++    static std::string GetFullPath(ProgramId program_id, VirtualDir dir, SaveDataSpaceId space,
+                                    SaveDataType type, u64 title_id, u128 user_id, u64 save_id);
+     static std::string GetUserGameSaveDataRoot(u128 user_id, bool future);
+ 
+@@ -110,8 +113,9 @@ class SaveDataFactory {
+     void SetAutoCreate(bool state);
+ 
+ private:
+-    VirtualDir dir;
+     Core::System& system;
++    ProgramId program_id;
++    VirtualDir dir;
+     bool auto_create{true};
+ };
+ 
+diff --git a/src/core/hle/service/am/am.cpp b/src/core/hle/service/am/am.cpp
+index 9e05bdafaa80..a768bdc54fb0 100644
+--- a/src/core/hle/service/am/am.cpp
++++ b/src/core/hle/service/am/am.cpp
+@@ -36,6 +36,7 @@
+ #include "core/hle/service/caps/caps_su.h"
+ #include "core/hle/service/caps/caps_types.h"
+ #include "core/hle/service/filesystem/filesystem.h"
++#include "core/hle/service/filesystem/save_data_controller.h"
+ #include "core/hle/service/ipc_helpers.h"
+ #include "core/hle/service/ns/ns.h"
+ #include "core/hle/service/nvnflinger/fb_share_buffer_manager.h"
+@@ -2178,7 +2179,7 @@ void IApplicationFunctions::EnsureSaveData(HLERequestContext& ctx) {
+     attribute.type = FileSys::SaveDataType::SaveData;
+ 
+     FileSys::VirtualDir save_data{};
+-    const auto res = system.GetFileSystemController().CreateSaveData(
++    const auto res = system.GetFileSystemController().OpenSaveDataController()->CreateSaveData(
+         &save_data, FileSys::SaveDataSpaceId::NandUser, attribute);
+ 
+     IPC::ResponseBuilder rb{ctx, 4};
+@@ -2353,7 +2354,7 @@ void IApplicationFunctions::ExtendSaveData(HLERequestContext& ctx) {
+               "new_journal={:016X}",
+               static_cast<u8>(type), user_id[1], user_id[0], new_normal_size, new_journal_size);
+ 
+-    system.GetFileSystemController().WriteSaveDataSize(
++    system.GetFileSystemController().OpenSaveDataController()->WriteSaveDataSize(
+         type, system.GetApplicationProcessProgramID(), user_id,
+         {new_normal_size, new_journal_size});
+ 
+@@ -2378,7 +2379,7 @@ void IApplicationFunctions::GetSaveDataSize(HLERequestContext& ctx) {
+     LOG_DEBUG(Service_AM, "called with type={:02X}, user_id={:016X}{:016X}", type, user_id[1],
+               user_id[0]);
+ 
+-    const auto size = system.GetFileSystemController().ReadSaveDataSize(
++    const auto size = system.GetFileSystemController().OpenSaveDataController()->ReadSaveDataSize(
+         type, system.GetApplicationProcessProgramID(), user_id);
+ 
+     IPC::ResponseBuilder rb{ctx, 6};
+diff --git a/src/core/hle/service/filesystem/filesystem.cpp b/src/core/hle/service/filesystem/filesystem.cpp
+index 780f8c74d4d2..ca6d8d607432 100644
+--- a/src/core/hle/service/filesystem/filesystem.cpp
++++ b/src/core/hle/service/filesystem/filesystem.cpp
+@@ -24,15 +24,13 @@
+ #include "core/hle/service/filesystem/fsp_ldr.h"
+ #include "core/hle/service/filesystem/fsp_pr.h"
+ #include "core/hle/service/filesystem/fsp_srv.h"
++#include "core/hle/service/filesystem/romfs_controller.h"
++#include "core/hle/service/filesystem/save_data_controller.h"
+ #include "core/hle/service/server_manager.h"
+ #include "core/loader/loader.h"
+ 
+ namespace Service::FileSystem {
+ 
+-// A default size for normal/journal save data size if application control metadata cannot be found.
+-// This should be large enough to satisfy even the most extreme requirements (~4.2GB)
+-constexpr u64 SUFFICIENT_SAVE_DATA_SIZE = 0xF0000000;
+-
+ static FileSys::VirtualDir GetDirectoryRelativeWrapped(FileSys::VirtualDir base,
+                                                        std::string_view dir_name_) {
+     std::string dir_name(Common::FS::SanitizePath(dir_name_));
+@@ -297,145 +295,65 @@ FileSystemController::FileSystemController(Core::System& system_) : system{syste
+ 
+ FileSystemController::~FileSystemController() = default;
+ 
+-Result FileSystemController::RegisterRomFS(std::unique_ptr<FileSys::RomFSFactory>&& factory) {
+-    romfs_factory = std::move(factory);
+-    LOG_DEBUG(Service_FS, "Registered RomFS");
+-    return ResultSuccess;
+-}
+-
+-Result FileSystemController::RegisterSaveData(std::unique_ptr<FileSys::SaveDataFactory>&& factory) {
+-    ASSERT_MSG(save_data_factory == nullptr, "Tried to register a second save data");
+-    save_data_factory = std::move(factory);
+-    LOG_DEBUG(Service_FS, "Registered save data");
+-    return ResultSuccess;
+-}
++Result FileSystemController::RegisterProcess(
++    ProcessId process_id, ProgramId program_id,
++    std::shared_ptr<FileSys::RomFSFactory>&& romfs_factory) {
++    std::scoped_lock lk{registration_lock};
+ 
+-Result FileSystemController::RegisterSDMC(std::unique_ptr<FileSys::SDMCFactory>&& factory) {
+-    ASSERT_MSG(sdmc_factory == nullptr, "Tried to register a second SDMC");
+-    sdmc_factory = std::move(factory);
+-    LOG_DEBUG(Service_FS, "Registered SDMC");
+-    return ResultSuccess;
+-}
++    registrations.emplace(process_id, Registration{
++                                          .program_id = program_id,
++                                          .romfs_factory = std::move(romfs_factory),
++                                          .save_data_factory = CreateSaveDataFactory(program_id),
++                                      });
+ 
+-Result FileSystemController::RegisterBIS(std::unique_ptr<FileSys::BISFactory>&& factory) {
+-    ASSERT_MSG(bis_factory == nullptr, "Tried to register a second BIS");
+-    bis_factory = std::move(factory);
+-    LOG_DEBUG(Service_FS, "Registered BIS");
++    LOG_DEBUG(Service_FS, "Registered for process {}", process_id);
+     return ResultSuccess;
+ }
+ 
+-void FileSystemController::SetPackedUpdate(FileSys::VirtualFile update_raw) {
+-    LOG_TRACE(Service_FS, "Setting packed update for romfs");
+-
+-    if (romfs_factory == nullptr)
+-        return;
+-
+-    romfs_factory->SetPackedUpdate(std::move(update_raw));
+-}
+-
+-FileSys::VirtualFile FileSystemController::OpenRomFSCurrentProcess() const {
+-    LOG_TRACE(Service_FS, "Opening RomFS for current process");
+-
+-    if (romfs_factory == nullptr) {
+-        return nullptr;
+-    }
+-
+-    return romfs_factory->OpenCurrentProcess(system.GetApplicationProcessProgramID());
+-}
+-
+-FileSys::VirtualFile FileSystemController::OpenPatchedRomFS(u64 title_id,
+-                                                            FileSys::ContentRecordType type) const {
+-    LOG_TRACE(Service_FS, "Opening patched RomFS for title_id={:016X}", title_id);
+-
+-    if (romfs_factory == nullptr) {
+-        return nullptr;
+-    }
+-
+-    return romfs_factory->OpenPatchedRomFS(title_id, type);
+-}
+-
+-FileSys::VirtualFile FileSystemController::OpenPatchedRomFSWithProgramIndex(
+-    u64 title_id, u8 program_index, FileSys::ContentRecordType type) const {
+-    LOG_TRACE(Service_FS, "Opening patched RomFS for title_id={:016X}, program_index={}", title_id,
+-              program_index);
+-
+-    if (romfs_factory == nullptr) {
+-        return nullptr;
+-    }
+-
+-    return romfs_factory->OpenPatchedRomFSWithProgramIndex(title_id, program_index, type);
+-}
+-
+-FileSys::VirtualFile FileSystemController::OpenRomFS(u64 title_id, FileSys::StorageId storage_id,
+-                                                     FileSys::ContentRecordType type) const {
+-    LOG_TRACE(Service_FS, "Opening RomFS for title_id={:016X}, storage_id={:02X}, type={:02X}",
+-              title_id, storage_id, type);
+-
+-    if (romfs_factory == nullptr) {
+-        return nullptr;
+-    }
+-
+-    return romfs_factory->Open(title_id, storage_id, type);
+-}
+-
+-std::shared_ptr<FileSys::NCA> FileSystemController::OpenBaseNca(
+-    u64 title_id, FileSys::StorageId storage_id, FileSys::ContentRecordType type) const {
+-    return romfs_factory->GetEntry(title_id, storage_id, type);
+-}
+-
+-Result FileSystemController::CreateSaveData(FileSys::VirtualDir* out_save_data,
+-                                            FileSys::SaveDataSpaceId space,
+-                                            const FileSys::SaveDataAttribute& save_struct) const {
+-    LOG_TRACE(Service_FS, "Creating Save Data for space_id={:01X}, save_struct={}", space,
+-              save_struct.DebugInfo());
++Result FileSystemController::OpenProcess(
++    ProgramId* out_program_id, std::shared_ptr<SaveDataController>* out_save_data_controller,
++    std::shared_ptr<RomFsController>* out_romfs_controller, ProcessId process_id) {
++    std::scoped_lock lk{registration_lock};
+ 
+-    if (save_data_factory == nullptr) {
++    const auto it = registrations.find(process_id);
++    if (it == registrations.end()) {
+         return FileSys::ERROR_ENTITY_NOT_FOUND;
+     }
+ 
+-    auto save_data = save_data_factory->Create(space, save_struct);
+-    if (save_data == nullptr) {
+-        return FileSys::ERROR_ENTITY_NOT_FOUND;
+-    }
+-
+-    *out_save_data = save_data;
++    *out_program_id = it->second.program_id;
++    *out_save_data_controller =
++        std::make_shared<SaveDataController>(system, it->second.save_data_factory);
++    *out_romfs_controller =
++        std::make_shared<RomFsController>(it->second.romfs_factory, it->second.program_id);
+     return ResultSuccess;
+ }
+ 
+-Result FileSystemController::OpenSaveData(FileSys::VirtualDir* out_save_data,
+-                                          FileSys::SaveDataSpaceId space,
+-                                          const FileSys::SaveDataAttribute& attribute) const {
+-    LOG_TRACE(Service_FS, "Opening Save Data for space_id={:01X}, save_struct={}", space,
+-              attribute.DebugInfo());
+-
+-    if (save_data_factory == nullptr) {
+-        return FileSys::ERROR_ENTITY_NOT_FOUND;
+-    }
++void FileSystemController::SetPackedUpdate(ProcessId process_id, FileSys::VirtualFile update_raw) {
++    LOG_TRACE(Service_FS, "Setting packed update for romfs");
+ 
+-    auto save_data = save_data_factory->Open(space, attribute);
+-    if (save_data == nullptr) {
+-        return FileSys::ERROR_ENTITY_NOT_FOUND;
++    std::scoped_lock lk{registration_lock};
++    const auto it = registrations.find(process_id);
++    if (it == registrations.end()) {
++        return;
+     }
+ 
+-    *out_save_data = save_data;
+-    return ResultSuccess;
++    it->second.romfs_factory->SetPackedUpdate(std::move(update_raw));
+ }
+ 
+-Result FileSystemController::OpenSaveDataSpace(FileSys::VirtualDir* out_save_data_space,
+-                                               FileSys::SaveDataSpaceId space) const {
+-    LOG_TRACE(Service_FS, "Opening Save Data Space for space_id={:01X}", space);
+-
+-    if (save_data_factory == nullptr) {
+-        return FileSys::ERROR_ENTITY_NOT_FOUND;
+-    }
++std::shared_ptr<SaveDataController> FileSystemController::OpenSaveDataController() {
++    return std::make_shared<SaveDataController>(system, CreateSaveDataFactory(ProgramId{}));
++}
+ 
+-    auto save_data_space = save_data_factory->GetSaveDataSpaceDirectory(space);
+-    if (save_data_space == nullptr) {
+-        return FileSys::ERROR_ENTITY_NOT_FOUND;
+-    }
++std::shared_ptr<FileSys::SaveDataFactory> FileSystemController::CreateSaveDataFactory(
++    ProgramId program_id) {
++    using YuzuPath = Common::FS::YuzuPath;
++    const auto rw_mode = FileSys::Mode::ReadWrite;
+ 
+-    *out_save_data_space = save_data_space;
+-    return ResultSuccess;
++    auto vfs = system.GetFilesystem();
++    const auto nand_directory =
++        vfs->OpenDirectory(Common::FS::GetYuzuPathString(YuzuPath::NANDDir), rw_mode);
++    return std::make_shared<FileSys::SaveDataFactory>(system, program_id,
++                                                      std::move(nand_directory));
+ }
+ 
+ Result FileSystemController::OpenSDMC(FileSys::VirtualDir* out_sdmc) const {
+@@ -540,48 +458,6 @@ u64 FileSystemController::GetTotalSpaceSize(FileSys::StorageId id) const {
+     return 0;
+ }
+ 
+-FileSys::SaveDataSize FileSystemController::ReadSaveDataSize(FileSys::SaveDataType type,
+-                                                             u64 title_id, u128 user_id) const {
+-    if (save_data_factory == nullptr) {
+-        return {0, 0};
+-    }
+-
+-    const auto value = save_data_factory->ReadSaveDataSize(type, title_id, user_id);
+-
+-    if (value.normal == 0 && value.journal == 0) {
+-        FileSys::SaveDataSize new_size{SUFFICIENT_SAVE_DATA_SIZE, SUFFICIENT_SAVE_DATA_SIZE};
+-
+-        FileSys::NACP nacp;
+-        const auto res = system.GetAppLoader().ReadControlData(nacp);
+-
+-        if (res != Loader::ResultStatus::Success) {
+-            const FileSys::PatchManager pm{system.GetApplicationProcessProgramID(),
+-                                           system.GetFileSystemController(),
+-                                           system.GetContentProvider()};
+-            const auto metadata = pm.GetControlMetadata();
+-            const auto& nacp_unique = metadata.first;
+-
+-            if (nacp_unique != nullptr) {
+-                new_size = {nacp_unique->GetDefaultNormalSaveSize(),
+-                            nacp_unique->GetDefaultJournalSaveSize()};
+-            }
+-        } else {
+-            new_size = {nacp.GetDefaultNormalSaveSize(), nacp.GetDefaultJournalSaveSize()};
+-        }
+-
+-        WriteSaveDataSize(type, title_id, user_id, new_size);
+-        return new_size;
+-    }
+-
+-    return value;
+-}
+-
+-void FileSystemController::WriteSaveDataSize(FileSys::SaveDataType type, u64 title_id, u128 user_id,
+-                                             FileSys::SaveDataSize new_value) const {
+-    if (save_data_factory != nullptr)
+-        save_data_factory->WriteSaveDataSize(type, title_id, user_id, new_value);
+-}
+-
+ void FileSystemController::SetGameCard(FileSys::VirtualFile file) {
+     gamecard = std::make_unique<FileSys::XCI>(file);
+     const auto dir = gamecard->ConcatenatedPseudoDirectory();
+@@ -801,14 +677,9 @@ FileSys::VirtualDir FileSystemController::GetBCATDirectory(u64 title_id) const {
+     return bis_factory->GetBCATDirectory(title_id);
+ }
+ 
+-void FileSystemController::SetAutoSaveDataCreation(bool enable) {
+-    save_data_factory->SetAutoCreate(enable);
+-}
+-
+ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool overwrite) {
+     if (overwrite) {
+         bis_factory = nullptr;
+-        save_data_factory = nullptr;
+         sdmc_factory = nullptr;
+     }
+ 
+@@ -836,11 +707,6 @@ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool ove
+                                        bis_factory->GetUserNANDContents());
+     }
+ 
+-    if (save_data_factory == nullptr) {
+-        save_data_factory =
+-            std::make_unique<FileSys::SaveDataFactory>(system, std::move(nand_directory));
+-    }
+-
+     if (sdmc_factory == nullptr) {
+         sdmc_factory = std::make_unique<FileSys::SDMCFactory>(std::move(sd_directory),
+                                                               std::move(sd_load_directory));
+@@ -849,12 +715,19 @@ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool ove
+     }
+ }
+ 
++void FileSystemController::Reset() {
++    std::scoped_lock lk{registration_lock};
++    registrations.clear();
++}
++
+ void LoopProcess(Core::System& system) {
+     auto server_manager = std::make_unique<ServerManager>(system);
+ 
++    const auto FileSystemProxyFactory = [&] { return std::make_shared<FSP_SRV>(system); };
++
+     server_manager->RegisterNamedService("fsp-ldr", std::make_shared<FSP_LDR>(system));
+     server_manager->RegisterNamedService("fsp:pr", std::make_shared<FSP_PR>(system));
+-    server_manager->RegisterNamedService("fsp-srv", std::make_shared<FSP_SRV>(system));
++    server_manager->RegisterNamedService("fsp-srv", std::move(FileSystemProxyFactory));
+     ServerManager::RunServer(std::move(server_manager));
+ }
+ 
+diff --git a/src/core/hle/service/filesystem/filesystem.h b/src/core/hle/service/filesystem/filesystem.h
+index 276d264e100b..48f37d289846 100644
+--- a/src/core/hle/service/filesystem/filesystem.h
++++ b/src/core/hle/service/filesystem/filesystem.h
+@@ -43,6 +43,9 @@ class ServiceManager;
+ 
+ namespace FileSystem {
+ 
++class RomFsController;
++class SaveDataController;
++
+ enum class ContentStorageId : u32 {
+     System,
+     User,
+@@ -61,32 +64,24 @@ enum class OpenDirectoryMode : u64 {
+ };
+ DECLARE_ENUM_FLAG_OPERATORS(OpenDirectoryMode);
+ 
++using ProcessId = u64;
++using ProgramId = u64;
++
+ class FileSystemController {
+ public:
+     explicit FileSystemController(Core::System& system_);
+     ~FileSystemController();
+ 
+-    Result RegisterRomFS(std::unique_ptr<FileSys::RomFSFactory>&& factory);
+-    Result RegisterSaveData(std::unique_ptr<FileSys::SaveDataFactory>&& factory);
+-    Result RegisterSDMC(std::unique_ptr<FileSys::SDMCFactory>&& factory);
+-    Result RegisterBIS(std::unique_ptr<FileSys::BISFactory>&& factory);
+-
+-    void SetPackedUpdate(FileSys::VirtualFile update_raw);
+-    FileSys::VirtualFile OpenRomFSCurrentProcess() const;
+-    FileSys::VirtualFile OpenPatchedRomFS(u64 title_id, FileSys::ContentRecordType type) const;
+-    FileSys::VirtualFile OpenPatchedRomFSWithProgramIndex(u64 title_id, u8 program_index,
+-                                                          FileSys::ContentRecordType type) const;
+-    FileSys::VirtualFile OpenRomFS(u64 title_id, FileSys::StorageId storage_id,
+-                                   FileSys::ContentRecordType type) const;
+-    std::shared_ptr<FileSys::NCA> OpenBaseNca(u64 title_id, FileSys::StorageId storage_id,
+-                                              FileSys::ContentRecordType type) const;
+-
+-    Result CreateSaveData(FileSys::VirtualDir* out_save_data, FileSys::SaveDataSpaceId space,
+-                          const FileSys::SaveDataAttribute& save_struct) const;
+-    Result OpenSaveData(FileSys::VirtualDir* out_save_data, FileSys::SaveDataSpaceId space,
+-                        const FileSys::SaveDataAttribute& save_struct) const;
+-    Result OpenSaveDataSpace(FileSys::VirtualDir* out_save_data_space,
+-                             FileSys::SaveDataSpaceId space) const;
++    Result RegisterProcess(ProcessId process_id, ProgramId program_id,
++                           std::shared_ptr<FileSys::RomFSFactory>&& factory);
++    Result OpenProcess(ProgramId* out_program_id,
++                       std::shared_ptr<SaveDataController>* out_save_data_controller,
++                       std::shared_ptr<RomFsController>* out_romfs_controller,
++                       ProcessId process_id);
++    void SetPackedUpdate(ProcessId process_id, FileSys::VirtualFile update_raw);
++
++    std::shared_ptr<SaveDataController> OpenSaveDataController();
++
+     Result OpenSDMC(FileSys::VirtualDir* out_sdmc) const;
+     Result OpenBISPartition(FileSys::VirtualDir* out_bis_partition,
+                             FileSys::BisPartitionId id) const;
+@@ -96,11 +91,6 @@ class FileSystemController {
+     u64 GetFreeSpaceSize(FileSys::StorageId id) const;
+     u64 GetTotalSpaceSize(FileSys::StorageId id) const;
+ 
+-    FileSys::SaveDataSize ReadSaveDataSize(FileSys::SaveDataType type, u64 title_id,
+-                                           u128 user_id) const;
+-    void WriteSaveDataSize(FileSys::SaveDataType type, u64 title_id, u128 user_id,
+-                           FileSys::SaveDataSize new_value) const;
+-
+     void SetGameCard(FileSys::VirtualFile file);
+     FileSys::XCI* GetGameCard() const;
+ 
+@@ -133,15 +123,24 @@ class FileSystemController {
+ 
+     FileSys::VirtualDir GetBCATDirectory(u64 title_id) const;
+ 
+-    void SetAutoSaveDataCreation(bool enable);
+-
+     // Creates the SaveData, SDMC, and BIS Factories. Should be called once and before any function
+     // above is called.
+     void CreateFactories(FileSys::VfsFilesystem& vfs, bool overwrite = true);
+ 
++    void Reset();
++
+ private:
+-    std::unique_ptr<FileSys::RomFSFactory> romfs_factory;
+-    std::unique_ptr<FileSys::SaveDataFactory> save_data_factory;
++    std::shared_ptr<FileSys::SaveDataFactory> CreateSaveDataFactory(ProgramId program_id);
++
++    struct Registration {
++        ProgramId program_id;
++        std::shared_ptr<FileSys::RomFSFactory> romfs_factory;
++        std::shared_ptr<FileSys::SaveDataFactory> save_data_factory;
++    };
++
++    std::mutex registration_lock;
++    std::map<ProcessId, Registration> registrations;
++
+     std::unique_ptr<FileSys::SDMCFactory> sdmc_factory;
+     std::unique_ptr<FileSys::BISFactory> bis_factory;
+ 
+diff --git a/src/core/hle/service/filesystem/fsp_srv.cpp b/src/core/hle/service/filesystem/fsp_srv.cpp
+index 82ecc1b90997..a2397bec4db7 100644
+--- a/src/core/hle/service/filesystem/fsp_srv.cpp
++++ b/src/core/hle/service/filesystem/fsp_srv.cpp
+@@ -27,6 +27,8 @@
+ #include "core/hle/result.h"
+ #include "core/hle/service/filesystem/filesystem.h"
+ #include "core/hle/service/filesystem/fsp_srv.h"
++#include "core/hle/service/filesystem/romfs_controller.h"
++#include "core/hle/service/filesystem/save_data_controller.h"
+ #include "core/hle/service/hle_ipc.h"
+ #include "core/hle/service/ipc_helpers.h"
+ #include "core/reporter.h"
+@@ -577,9 +579,11 @@ class IFileSystem final : public ServiceFramework<IFileSystem> {
+ 
+ class ISaveDataInfoReader final : public ServiceFramework<ISaveDataInfoReader> {
+ public:
+-    explicit ISaveDataInfoReader(Core::System& system_, FileSys::SaveDataSpaceId space,
+-                                 FileSystemController& fsc_)
+-        : ServiceFramework{system_, "ISaveDataInfoReader"}, fsc{fsc_} {
++    explicit ISaveDataInfoReader(Core::System& system_,
++                                 std::shared_ptr<SaveDataController> save_data_controller_,
++                                 FileSys::SaveDataSpaceId space)
++        : ServiceFramework{system_, "ISaveDataInfoReader"}, save_data_controller{
++                                                                save_data_controller_} {
+         static const FunctionInfo functions[] = {
+             {0, &ISaveDataInfoReader::ReadSaveDataInfo, "ReadSaveDataInfo"},
+         };
+@@ -626,7 +630,7 @@ class ISaveDataInfoReader final : public ServiceFramework<ISaveDataInfoReader> {
+ 
+     void FindAllSaves(FileSys::SaveDataSpaceId space) {
+         FileSys::VirtualDir save_root{};
+-        const auto result = fsc.OpenSaveDataSpace(&save_root, space);
++        const auto result = save_data_controller->OpenSaveDataSpace(&save_root, space);
+ 
+         if (result != ResultSuccess || save_root == nullptr) {
+             LOG_ERROR(Service_FS, "The save root for the space_id={:02X} was invalid!", space);
+@@ -723,7 +727,8 @@ class ISaveDataInfoReader final : public ServiceFramework<ISaveDataInfoReader> {
+     };
+     static_assert(sizeof(SaveDataInfo) == 0x60, "SaveDataInfo has incorrect size.");
+ 
+-    FileSystemController& fsc;
++    ProcessId process_id = 0;
++    std::shared_ptr<SaveDataController> save_data_controller;
+     std::vector<SaveDataInfo> info;
+     u64 next_entry_index = 0;
+ };
+@@ -863,21 +868,20 @@ FSP_SRV::FSP_SRV(Core::System& system_)
+     if (Settings::values.enable_fs_access_log) {
+         access_log_mode = AccessLogMode::SdCard;
+     }
+-
+-    // This should be true on creation
+-    fsc.SetAutoSaveDataCreation(true);
+ }
+ 
+ FSP_SRV::~FSP_SRV() = default;
+ 
+ void FSP_SRV::SetCurrentProcess(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    current_process_id = rp.Pop<u64>();
++    current_process_id = ctx.GetPID();
+ 
+     LOG_DEBUG(Service_FS, "called. current_process_id=0x{:016X}", current_process_id);
+ 
++    const auto res =
++        fsc.OpenProcess(&program_id, &save_data_controller, &romfs_controller, current_process_id);
++
+     IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(ResultSuccess);
++    rb.Push(res);
+ }
+ 
+ void FSP_SRV::OpenFileSystemWithPatch(HLERequestContext& ctx) {
+@@ -916,7 +920,8 @@ void FSP_SRV::CreateSaveDataFileSystem(HLERequestContext& ctx) {
+               uid[1], uid[0]);
+ 
+     FileSys::VirtualDir save_data_dir{};
+-    fsc.CreateSaveData(&save_data_dir, FileSys::SaveDataSpaceId::NandUser, save_struct);
++    save_data_controller->CreateSaveData(&save_data_dir, FileSys::SaveDataSpaceId::NandUser,
++                                         save_struct);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -931,7 +936,8 @@ void FSP_SRV::CreateSaveDataFileSystemBySystemSaveDataId(HLERequestContext& ctx)
+     LOG_DEBUG(Service_FS, "called save_struct = {}", save_struct.DebugInfo());
+ 
+     FileSys::VirtualDir save_data_dir{};
+-    fsc.CreateSaveData(&save_data_dir, FileSys::SaveDataSpaceId::NandSystem, save_struct);
++    save_data_controller->CreateSaveData(&save_data_dir, FileSys::SaveDataSpaceId::NandSystem,
++                                         save_struct);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+@@ -950,7 +956,8 @@ void FSP_SRV::OpenSaveDataFileSystem(HLERequestContext& ctx) {
+     LOG_INFO(Service_FS, "called.");
+ 
+     FileSys::VirtualDir dir{};
+-    auto result = fsc.OpenSaveData(&dir, parameters.space_id, parameters.attribute);
++    auto result =
++        save_data_controller->OpenSaveData(&dir, parameters.space_id, parameters.attribute);
+     if (result != ResultSuccess) {
+         IPC::ResponseBuilder rb{ctx, 2, 0, 0};
+         rb.Push(FileSys::ERROR_ENTITY_NOT_FOUND);
+@@ -1001,7 +1008,7 @@ void FSP_SRV::OpenSaveDataInfoReaderBySaveDataSpaceId(HLERequestContext& ctx) {
+     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+     rb.Push(ResultSuccess);
+     rb.PushIpcInterface<ISaveDataInfoReader>(
+-        std::make_shared<ISaveDataInfoReader>(system, space, fsc));
++        std::make_shared<ISaveDataInfoReader>(system, save_data_controller, space));
+ }
+ 
+ void FSP_SRV::OpenSaveDataInfoReaderOnlyCacheStorage(HLERequestContext& ctx) {
+@@ -1009,8 +1016,8 @@ void FSP_SRV::OpenSaveDataInfoReaderOnlyCacheStorage(HLERequestContext& ctx) {
+ 
+     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+     rb.Push(ResultSuccess);
+-    rb.PushIpcInterface<ISaveDataInfoReader>(system, FileSys::SaveDataSpaceId::TemporaryStorage,
+-                                             fsc);
++    rb.PushIpcInterface<ISaveDataInfoReader>(system, save_data_controller,
++                                             FileSys::SaveDataSpaceId::TemporaryStorage);
+ }
+ 
+ void FSP_SRV::WriteSaveDataFileSystemExtraDataBySaveDataAttribute(HLERequestContext& ctx) {
+@@ -1050,7 +1057,7 @@ void FSP_SRV::OpenDataStorageByCurrentProcess(HLERequestContext& ctx) {
+     LOG_DEBUG(Service_FS, "called");
+ 
+     if (!romfs) {
+-        auto current_romfs = fsc.OpenRomFSCurrentProcess();
++        auto current_romfs = romfs_controller->OpenRomFSCurrentProcess();
+         if (!current_romfs) {
+             // TODO (bunnei): Find the right error code to use here
+             LOG_CRITICAL(Service_FS, "no file system interface available!");
+@@ -1078,7 +1085,7 @@ void FSP_SRV::OpenDataStorageByDataId(HLERequestContext& ctx) {
+     LOG_DEBUG(Service_FS, "called with storage_id={:02X}, unknown={:08X}, title_id={:016X}",
+               storage_id, unknown, title_id);
+ 
+-    auto data = fsc.OpenRomFS(title_id, storage_id, FileSys::ContentRecordType::Data);
++    auto data = romfs_controller->OpenRomFS(title_id, storage_id, FileSys::ContentRecordType::Data);
+ 
+     if (!data) {
+         const auto archive = FileSys::SystemArchive::SynthesizeSystemArchive(title_id);
+@@ -1101,7 +1108,8 @@ void FSP_SRV::OpenDataStorageByDataId(HLERequestContext& ctx) {
+ 
+     const FileSys::PatchManager pm{title_id, fsc, content_provider};
+ 
+-    auto base = fsc.OpenBaseNca(title_id, storage_id, FileSys::ContentRecordType::Data);
++    auto base =
++        romfs_controller->OpenBaseNca(title_id, storage_id, FileSys::ContentRecordType::Data);
+     auto storage = std::make_shared<IStorage>(
+         system, pm.PatchRomFS(base.get(), std::move(data), FileSys::ContentRecordType::Data));
+ 
+@@ -1129,9 +1137,8 @@ void FSP_SRV::OpenDataStorageWithProgramIndex(HLERequestContext& ctx) {
+ 
+     LOG_DEBUG(Service_FS, "called, program_index={}", program_index);
+ 
+-    auto patched_romfs =
+-        fsc.OpenPatchedRomFSWithProgramIndex(system.GetApplicationProcessProgramID(), program_index,
+-                                             FileSys::ContentRecordType::Program);
++    auto patched_romfs = romfs_controller->OpenPatchedRomFSWithProgramIndex(
++        program_id, program_index, FileSys::ContentRecordType::Program);
+ 
+     if (!patched_romfs) {
+         // TODO: Find the right error code to use here
+@@ -1152,7 +1159,7 @@ void FSP_SRV::OpenDataStorageWithProgramIndex(HLERequestContext& ctx) {
+ void FSP_SRV::DisableAutoSaveDataCreation(HLERequestContext& ctx) {
+     LOG_DEBUG(Service_FS, "called");
+ 
+-    fsc.SetAutoSaveDataCreation(false);
++    save_data_controller->SetAutoCreate(false);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+diff --git a/src/core/hle/service/filesystem/fsp_srv.h b/src/core/hle/service/filesystem/fsp_srv.h
+index 280bc9867324..26980af99ca7 100644
+--- a/src/core/hle/service/filesystem/fsp_srv.h
++++ b/src/core/hle/service/filesystem/fsp_srv.h
+@@ -17,6 +17,9 @@ class FileSystemBackend;
+ 
+ namespace Service::FileSystem {
+ 
++class RomFsController;
++class SaveDataController;
++
+ enum class AccessLogVersion : u32 {
+     V7_0_0 = 2,
+ 
+@@ -67,6 +70,9 @@ class FSP_SRV final : public ServiceFramework<FSP_SRV> {
+     u64 current_process_id = 0;
+     u32 access_log_program_index = 0;
+     AccessLogMode access_log_mode = AccessLogMode::None;
++    u64 program_id = 0;
++    std::shared_ptr<SaveDataController> save_data_controller;
++    std::shared_ptr<RomFsController> romfs_controller;
+ };
+ 
+ } // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/romfs_controller.cpp b/src/core/hle/service/filesystem/romfs_controller.cpp
+new file mode 100644
+index 000000000000..19c9cec722aa
+--- /dev/null
++++ b/src/core/hle/service/filesystem/romfs_controller.cpp
+@@ -0,0 +1,37 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/filesystem/romfs_controller.h"
++
++namespace Service::FileSystem {
++
++RomFsController::RomFsController(std::shared_ptr<FileSys::RomFSFactory> factory_, u64 program_id_)
++    : factory{std::move(factory_)}, program_id{program_id_} {}
++RomFsController::~RomFsController() = default;
++
++FileSys::VirtualFile RomFsController::OpenRomFSCurrentProcess() {
++    return factory->OpenCurrentProcess(program_id);
++}
++
++FileSys::VirtualFile RomFsController::OpenPatchedRomFS(u64 title_id,
++                                                       FileSys::ContentRecordType type) {
++    return factory->OpenPatchedRomFS(title_id, type);
++}
++
++FileSys::VirtualFile RomFsController::OpenPatchedRomFSWithProgramIndex(
++    u64 title_id, u8 program_index, FileSys::ContentRecordType type) {
++    return factory->OpenPatchedRomFSWithProgramIndex(title_id, program_index, type);
++}
++
++FileSys::VirtualFile RomFsController::OpenRomFS(u64 title_id, FileSys::StorageId storage_id,
++                                                FileSys::ContentRecordType type) {
++    return factory->Open(title_id, storage_id, type);
++}
++
++std::shared_ptr<FileSys::NCA> RomFsController::OpenBaseNca(u64 title_id,
++                                                           FileSys::StorageId storage_id,
++                                                           FileSys::ContentRecordType type) {
++    return factory->GetEntry(title_id, storage_id, type);
++}
++
++} // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/romfs_controller.h b/src/core/hle/service/filesystem/romfs_controller.h
+new file mode 100644
+index 000000000000..9a478f71d65d
+--- /dev/null
++++ b/src/core/hle/service/filesystem/romfs_controller.h
+@@ -0,0 +1,31 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/file_sys/nca_metadata.h"
++#include "core/file_sys/romfs_factory.h"
++#include "core/file_sys/vfs_types.h"
++
++namespace Service::FileSystem {
++
++class RomFsController {
++public:
++    explicit RomFsController(std::shared_ptr<FileSys::RomFSFactory> factory_, u64 program_id_);
++    ~RomFsController();
++
++    FileSys::VirtualFile OpenRomFSCurrentProcess();
++    FileSys::VirtualFile OpenPatchedRomFS(u64 title_id, FileSys::ContentRecordType type);
++    FileSys::VirtualFile OpenPatchedRomFSWithProgramIndex(u64 title_id, u8 program_index,
++                                                          FileSys::ContentRecordType type);
++    FileSys::VirtualFile OpenRomFS(u64 title_id, FileSys::StorageId storage_id,
++                                   FileSys::ContentRecordType type);
++    std::shared_ptr<FileSys::NCA> OpenBaseNca(u64 title_id, FileSys::StorageId storage_id,
++                                              FileSys::ContentRecordType type);
++
++private:
++    const std::shared_ptr<FileSys::RomFSFactory> factory;
++    const u64 program_id;
++};
++
++} // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/save_data_controller.cpp b/src/core/hle/service/filesystem/save_data_controller.cpp
+new file mode 100644
+index 000000000000..d19b3ea1ed84
+--- /dev/null
++++ b/src/core/hle/service/filesystem/save_data_controller.cpp
+@@ -0,0 +1,99 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/core.h"
++#include "core/file_sys/control_metadata.h"
++#include "core/file_sys/errors.h"
++#include "core/file_sys/patch_manager.h"
++#include "core/hle/service/filesystem/save_data_controller.h"
++#include "core/loader/loader.h"
++
++namespace Service::FileSystem {
++
++namespace {
++
++// A default size for normal/journal save data size if application control metadata cannot be found.
++// This should be large enough to satisfy even the most extreme requirements (~4.2GB)
++constexpr u64 SufficientSaveDataSize = 0xF0000000;
++
++FileSys::SaveDataSize GetDefaultSaveDataSize(Core::System& system, u64 program_id) {
++    const FileSys::PatchManager pm{program_id, system.GetFileSystemController(),
++                                   system.GetContentProvider()};
++    const auto metadata = pm.GetControlMetadata();
++    const auto& nacp = metadata.first;
++
++    if (nacp != nullptr) {
++        return {nacp->GetDefaultNormalSaveSize(), nacp->GetDefaultJournalSaveSize()};
++    }
++
++    return {SufficientSaveDataSize, SufficientSaveDataSize};
++}
++
++} // namespace
++
++SaveDataController::SaveDataController(Core::System& system_,
++                                       std::shared_ptr<FileSys::SaveDataFactory> factory_)
++    : system{system_}, factory{std::move(factory_)} {}
++SaveDataController::~SaveDataController() = default;
++
++Result SaveDataController::CreateSaveData(FileSys::VirtualDir* out_save_data,
++                                          FileSys::SaveDataSpaceId space,
++                                          const FileSys::SaveDataAttribute& attribute) {
++    LOG_TRACE(Service_FS, "Creating Save Data for space_id={:01X}, save_struct={}", space,
++              attribute.DebugInfo());
++
++    auto save_data = factory->Create(space, attribute);
++    if (save_data == nullptr) {
++        return FileSys::ERROR_ENTITY_NOT_FOUND;
++    }
++
++    *out_save_data = save_data;
++    return ResultSuccess;
++}
++
++Result SaveDataController::OpenSaveData(FileSys::VirtualDir* out_save_data,
++                                        FileSys::SaveDataSpaceId space,
++                                        const FileSys::SaveDataAttribute& attribute) {
++    auto save_data = factory->Open(space, attribute);
++    if (save_data == nullptr) {
++        return FileSys::ERROR_ENTITY_NOT_FOUND;
++    }
++
++    *out_save_data = save_data;
++    return ResultSuccess;
++}
++
++Result SaveDataController::OpenSaveDataSpace(FileSys::VirtualDir* out_save_data_space,
++                                             FileSys::SaveDataSpaceId space) {
++    auto save_data_space = factory->GetSaveDataSpaceDirectory(space);
++    if (save_data_space == nullptr) {
++        return FileSys::ERROR_ENTITY_NOT_FOUND;
++    }
++
++    *out_save_data_space = save_data_space;
++    return ResultSuccess;
++}
++
++FileSys::SaveDataSize SaveDataController::ReadSaveDataSize(FileSys::SaveDataType type, u64 title_id,
++                                                           u128 user_id) {
++    const auto value = factory->ReadSaveDataSize(type, title_id, user_id);
++
++    if (value.normal == 0 && value.journal == 0) {
++        const auto size = GetDefaultSaveDataSize(system, title_id);
++        factory->WriteSaveDataSize(type, title_id, user_id, size);
++        return size;
++    }
++
++    return value;
++}
++
++void SaveDataController::WriteSaveDataSize(FileSys::SaveDataType type, u64 title_id, u128 user_id,
++                                           FileSys::SaveDataSize new_value) {
++    factory->WriteSaveDataSize(type, title_id, user_id, new_value);
++}
++
++void SaveDataController::SetAutoCreate(bool state) {
++    factory->SetAutoCreate(state);
++}
++
++} // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/save_data_controller.h b/src/core/hle/service/filesystem/save_data_controller.h
+new file mode 100644
+index 000000000000..863188e4c1a5
+--- /dev/null
++++ b/src/core/hle/service/filesystem/save_data_controller.h
+@@ -0,0 +1,35 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/file_sys/nca_metadata.h"
++#include "core/file_sys/savedata_factory.h"
++#include "core/file_sys/vfs_types.h"
++
++namespace Service::FileSystem {
++
++class SaveDataController {
++public:
++    explicit SaveDataController(Core::System& system,
++                                std::shared_ptr<FileSys::SaveDataFactory> factory_);
++    ~SaveDataController();
++
++    Result CreateSaveData(FileSys::VirtualDir* out_save_data, FileSys::SaveDataSpaceId space,
++                          const FileSys::SaveDataAttribute& attribute);
++    Result OpenSaveData(FileSys::VirtualDir* out_save_data, FileSys::SaveDataSpaceId space,
++                        const FileSys::SaveDataAttribute& attribute);
++    Result OpenSaveDataSpace(FileSys::VirtualDir* out_save_data_space,
++                             FileSys::SaveDataSpaceId space);
++
++    FileSys::SaveDataSize ReadSaveDataSize(FileSys::SaveDataType type, u64 title_id, u128 user_id);
++    void WriteSaveDataSize(FileSys::SaveDataType type, u64 title_id, u128 user_id,
++                           FileSys::SaveDataSize new_value);
++    void SetAutoCreate(bool state);
++
++private:
++    Core::System& system;
++    const std::shared_ptr<FileSys::SaveDataFactory> factory;
++};
++
++} // namespace Service::FileSystem
+diff --git a/src/core/loader/deconstructed_rom_directory.cpp b/src/core/loader/deconstructed_rom_directory.cpp
+index c9f8707b7540..1e599e78b718 100644
+--- a/src/core/loader/deconstructed_rom_directory.cpp
++++ b/src/core/loader/deconstructed_rom_directory.cpp
+@@ -216,20 +216,6 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
+         LOG_DEBUG(Loader, "loaded module {} @ {:#X}", module, load_addr);
+     }
+ 
+-    // Find the RomFS by searching for a ".romfs" file in this directory
+-    const auto& files = dir->GetFiles();
+-    const auto romfs_iter =
+-        std::find_if(files.begin(), files.end(), [](const FileSys::VirtualFile& f) {
+-            return f->GetName().find(".romfs") != std::string::npos;
+-        });
+-
+-    // Register the RomFS if a ".romfs" file was found
+-    if (romfs_iter != files.end() && *romfs_iter != nullptr) {
+-        romfs = *romfs_iter;
+-        system.GetFileSystemController().RegisterRomFS(std::make_unique<FileSys::RomFSFactory>(
+-            *this, system.GetContentProvider(), system.GetFileSystemController()));
+-    }
+-
+     is_loaded = true;
+     return {ResultStatus::Success,
+             LoadParameters{metadata.GetMainThreadPriority(), metadata.GetMainThreadStackSize()}};
+diff --git a/src/core/loader/nca.cpp b/src/core/loader/nca.cpp
+index 8144075358a3..2a32b1276b3c 100644
+--- a/src/core/loader/nca.cpp
++++ b/src/core/loader/nca.cpp
+@@ -74,8 +74,10 @@ AppLoader_NCA::LoadResult AppLoader_NCA::Load(Kernel::KProcess& process, Core::S
+         return load_result;
+     }
+ 
+-    system.GetFileSystemController().RegisterRomFS(std::make_unique<FileSys::RomFSFactory>(
+-        *this, system.GetContentProvider(), system.GetFileSystemController()));
++    system.GetFileSystemController().RegisterProcess(
++        process.GetProcessId(), nca->GetTitleId(),
++        std::make_shared<FileSys::RomFSFactory>(*this, system.GetContentProvider(),
++                                                system.GetFileSystemController()));
+ 
+     is_loaded = true;
+     return load_result;
+diff --git a/src/core/loader/nro.cpp b/src/core/loader/nro.cpp
+index e74697cda9dc..83371fcbd939 100644
+--- a/src/core/loader/nro.cpp
++++ b/src/core/loader/nro.cpp
+@@ -276,8 +276,10 @@ AppLoader_NRO::LoadResult AppLoader_NRO::Load(Kernel::KProcess& process, Core::S
+     }
+ 
+     if (romfs != nullptr) {
+-        system.GetFileSystemController().RegisterRomFS(std::make_unique<FileSys::RomFSFactory>(
+-            *this, system.GetContentProvider(), system.GetFileSystemController()));
++        system.GetFileSystemController().RegisterProcess(
++            process.GetProcessId(), {},
++            std::make_unique<FileSys::RomFSFactory>(*this, system.GetContentProvider(),
++                                                    system.GetFileSystemController()));
+     }
+ 
+     is_loaded = true;
+diff --git a/src/core/loader/nsp.cpp b/src/core/loader/nsp.cpp
+index f4ab75b770c9..28116ff3a1ea 100644
+--- a/src/core/loader/nsp.cpp
++++ b/src/core/loader/nsp.cpp
+@@ -111,7 +111,8 @@ AppLoader_NSP::LoadResult AppLoader_NSP::Load(Kernel::KProcess& process, Core::S
+ 
+     FileSys::VirtualFile update_raw;
+     if (ReadUpdateRaw(update_raw) == ResultStatus::Success && update_raw != nullptr) {
+-        system.GetFileSystemController().SetPackedUpdate(std::move(update_raw));
++        system.GetFileSystemController().SetPackedUpdate(process.GetProcessId(),
++                                                         std::move(update_raw));
+     }
+ 
+     is_loaded = true;
+diff --git a/src/core/loader/xci.cpp b/src/core/loader/xci.cpp
+index 12d72c38096d..e9abb199a179 100644
+--- a/src/core/loader/xci.cpp
++++ b/src/core/loader/xci.cpp
+@@ -78,7 +78,8 @@ AppLoader_XCI::LoadResult AppLoader_XCI::Load(Kernel::KProcess& process, Core::S
+ 
+     FileSys::VirtualFile update_raw;
+     if (ReadUpdateRaw(update_raw) == ResultStatus::Success && update_raw != nullptr) {
+-        system.GetFileSystemController().SetPackedUpdate(std::move(update_raw));
++        system.GetFileSystemController().SetPackedUpdate(process.GetProcessId(),
++                                                         std::move(update_raw));
+     }
+ 
+     is_loaded = true;
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index 4f4c75f5cea6..29f47bf4865d 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -2292,14 +2292,14 @@ void GMainWindow::OnGameListOpenFolder(u64 program_id, GameListOpenTarget target
+             ASSERT(user_id);
+ 
+             const auto user_save_data_path = FileSys::SaveDataFactory::GetFullPath(
+-                *system, vfs_nand_dir, FileSys::SaveDataSpaceId::NandUser,
++                {}, vfs_nand_dir, FileSys::SaveDataSpaceId::NandUser,
+                 FileSys::SaveDataType::SaveData, program_id, user_id->AsU128(), 0);
+ 
+             path = Common::FS::ConcatPathSafe(nand_dir, user_save_data_path);
+         } else {
+             // Device save data
+             const auto device_save_data_path = FileSys::SaveDataFactory::GetFullPath(
+-                *system, vfs_nand_dir, FileSys::SaveDataSpaceId::NandUser,
++                {}, vfs_nand_dir, FileSys::SaveDataSpaceId::NandUser,
+                 FileSys::SaveDataType::SaveData, program_id, {}, 0);
+ 
+             path = Common::FS::ConcatPathSafe(nand_dir, device_save_data_path);
+@@ -2662,8 +2662,8 @@ void GMainWindow::RemoveCacheStorage(u64 program_id) {
+         vfs->OpenDirectory(Common::FS::PathToUTF8String(nand_dir), FileSys::Mode::Read);
+ 
+     const auto cache_storage_path = FileSys::SaveDataFactory::GetFullPath(
+-        *system, vfs_nand_dir, FileSys::SaveDataSpaceId::NandUser,
+-        FileSys::SaveDataType::CacheStorage, 0 /* program_id */, {}, 0);
++        {}, vfs_nand_dir, FileSys::SaveDataSpaceId::NandUser, FileSys::SaveDataType::CacheStorage,
++        0 /* program_id */, {}, 0);
+ 
+     const auto path = Common::FS::ConcatPathSafe(nand_dir, cache_storage_path);
+ 

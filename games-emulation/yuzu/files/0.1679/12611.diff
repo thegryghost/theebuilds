@@ -1,0 +1,907 @@
+diff --git a/src/common/page_table.cpp b/src/common/page_table.cpp
+index 166dc3dceed1..85dc18c11078 100644
+--- a/src/common/page_table.cpp
++++ b/src/common/page_table.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "common/page_table.h"
++#include "common/scope_exit.h"
+ 
+ namespace Common {
+ 
+@@ -11,29 +12,10 @@ PageTable::~PageTable() noexcept = default;
+ 
+ bool PageTable::BeginTraversal(TraversalEntry* out_entry, TraversalContext* out_context,
+                                Common::ProcessAddress address) const {
+-    // Setup invalid defaults.
+-    out_entry->phys_addr = 0;
+-    out_entry->block_size = page_size;
+-    out_context->next_page = 0;
+-
+-    // Validate that we can read the actual entry.
+-    const auto page = address / page_size;
+-    if (page >= backing_addr.size()) {
+-        return false;
+-    }
+-
+-    // Validate that the entry is mapped.
+-    const auto phys_addr = backing_addr[page];
+-    if (phys_addr == 0) {
+-        return false;
+-    }
++    out_context->next_offset = GetInteger(address);
++    out_context->next_page = address / page_size;
+ 
+-    // Populate the results.
+-    out_entry->phys_addr = phys_addr + GetInteger(address);
+-    out_context->next_page = page + 1;
+-    out_context->next_offset = GetInteger(address) + page_size;
+-
+-    return true;
++    return this->ContinueTraversal(out_entry, out_context);
+ }
+ 
+ bool PageTable::ContinueTraversal(TraversalEntry* out_entry, TraversalContext* context) const {
+@@ -41,6 +23,12 @@ bool PageTable::ContinueTraversal(TraversalEntry* out_entry, TraversalContext* c
+     out_entry->phys_addr = 0;
+     out_entry->block_size = page_size;
+ 
++    // Regardless of whether the page was mapped, advance on exit.
++    SCOPE_EXIT({
++        context->next_page += 1;
++        context->next_offset += page_size;
++    });
++
+     // Validate that we can read the actual entry.
+     const auto page = context->next_page;
+     if (page >= backing_addr.size()) {
+@@ -55,8 +43,6 @@ bool PageTable::ContinueTraversal(TraversalEntry* out_entry, TraversalContext* c
+ 
+     // Populate the results.
+     out_entry->phys_addr = phys_addr + context->next_offset;
+-    context->next_page = page + 1;
+-    context->next_offset += page_size;
+ 
+     return true;
+ }
+diff --git a/src/core/debugger/debugger.cpp b/src/core/debugger/debugger.cpp
+index 0e270eb50418..e86aae84604e 100644
+--- a/src/core/debugger/debugger.cpp
++++ b/src/core/debugger/debugger.cpp
+@@ -114,7 +114,7 @@ class DebuggerImpl : public DebuggerBackend {
+     }
+ 
+     Kernel::KThread* GetActiveThread() override {
+-        return state->active_thread;
++        return state->active_thread.GetPointerUnsafe();
+     }
+ 
+ private:
+@@ -147,11 +147,14 @@ class DebuggerImpl : public DebuggerBackend {
+ 
+         std::scoped_lock lk{connection_lock};
+ 
++        // Find the process we are going to debug.
++        SetDebugProcess();
++
+         // Ensure everything is stopped.
+         PauseEmulation();
+ 
+         // Set up the new frontend.
+-        frontend = std::make_unique<GDBStub>(*this, system);
++        frontend = std::make_unique<GDBStub>(*this, system, debug_process.GetPointerUnsafe());
+ 
+         // Set the new state. This will tear down any existing state.
+         state = ConnectionState{
+@@ -194,15 +197,20 @@ class DebuggerImpl : public DebuggerBackend {
+             UpdateActiveThread();
+ 
+             if (state->info.type == SignalType::Watchpoint) {
+-                frontend->Watchpoint(state->active_thread, *state->info.watchpoint);
++                frontend->Watchpoint(std::addressof(*state->active_thread),
++                                     *state->info.watchpoint);
+             } else {
+-                frontend->Stopped(state->active_thread);
++                frontend->Stopped(std::addressof(*state->active_thread));
+             }
+ 
+             break;
+         case SignalType::ShuttingDown:
+             frontend->ShuttingDown();
+ 
++            // Release members.
++            state->active_thread.Reset(nullptr);
++            debug_process.Reset(nullptr);
++
+             // Wait for emulation to shut down gracefully now.
+             state->signal_pipe.close();
+             state->client_socket.shutdown(boost::asio::socket_base::shutdown_both);
+@@ -222,7 +230,7 @@ class DebuggerImpl : public DebuggerBackend {
+                 stopped = true;
+                 PauseEmulation();
+                 UpdateActiveThread();
+-                frontend->Stopped(state->active_thread);
++                frontend->Stopped(state->active_thread.GetPointerUnsafe());
+                 break;
+             }
+             case DebuggerAction::Continue:
+@@ -232,7 +240,7 @@ class DebuggerImpl : public DebuggerBackend {
+                 MarkResumed([&] {
+                     state->active_thread->SetStepState(Kernel::StepState::StepPending);
+                     state->active_thread->Resume(Kernel::SuspendType::Debug);
+-                    ResumeEmulation(state->active_thread);
++                    ResumeEmulation(state->active_thread.GetPointerUnsafe());
+                 });
+                 break;
+             case DebuggerAction::StepThreadLocked: {
+@@ -255,6 +263,7 @@ class DebuggerImpl : public DebuggerBackend {
+     }
+ 
+     void PauseEmulation() {
++        Kernel::KScopedLightLock ll{debug_process->GetListLock()};
+         Kernel::KScopedSchedulerLock sl{system.Kernel()};
+ 
+         // Put all threads to sleep on next scheduler round.
+@@ -264,6 +273,9 @@ class DebuggerImpl : public DebuggerBackend {
+     }
+ 
+     void ResumeEmulation(Kernel::KThread* except = nullptr) {
++        Kernel::KScopedLightLock ll{debug_process->GetListLock()};
++        Kernel::KScopedSchedulerLock sl{system.Kernel()};
++
+         // Wake up all threads.
+         for (auto& thread : ThreadList()) {
+             if (std::addressof(thread) == except) {
+@@ -277,15 +289,16 @@ class DebuggerImpl : public DebuggerBackend {
+ 
+     template <typename Callback>
+     void MarkResumed(Callback&& cb) {
+-        Kernel::KScopedSchedulerLock sl{system.Kernel()};
+         stopped = false;
+         cb();
+     }
+ 
+     void UpdateActiveThread() {
++        Kernel::KScopedLightLock ll{debug_process->GetListLock()};
++
+         auto& threads{ThreadList()};
+         for (auto& thread : threads) {
+-            if (std::addressof(thread) == state->active_thread) {
++            if (std::addressof(thread) == state->active_thread.GetPointerUnsafe()) {
+                 // Thread is still alive, no need to update.
+                 return;
+             }
+@@ -293,12 +306,18 @@ class DebuggerImpl : public DebuggerBackend {
+         state->active_thread = std::addressof(threads.front());
+     }
+ 
++private:
++    void SetDebugProcess() {
++        debug_process = std::move(system.Kernel().GetProcessList().back());
++    }
++
+     Kernel::KProcess::ThreadList& ThreadList() {
+-        return system.ApplicationProcess()->GetThreadList();
++        return debug_process->GetThreadList();
+     }
+ 
+ private:
+     System& system;
++    Kernel::KScopedAutoObject<Kernel::KProcess> debug_process;
+     std::unique_ptr<DebuggerFrontend> frontend;
+ 
+     boost::asio::io_context io_context;
+@@ -310,7 +329,7 @@ class DebuggerImpl : public DebuggerBackend {
+         boost::process::async_pipe signal_pipe;
+ 
+         SignalInfo info;
+-        Kernel::KThread* active_thread;
++        Kernel::KScopedAutoObject<Kernel::KThread> active_thread;
+         std::array<u8, 4096> client_data;
+         bool pipe_data;
+     };
+diff --git a/src/core/debugger/gdbstub.cpp b/src/core/debugger/gdbstub.cpp
+index 4051ed4afc3b..80091cc7e008 100644
+--- a/src/core/debugger/gdbstub.cpp
++++ b/src/core/debugger/gdbstub.cpp
+@@ -108,9 +108,9 @@ static std::string EscapeXML(std::string_view data) {
+     return escaped;
+ }
+ 
+-GDBStub::GDBStub(DebuggerBackend& backend_, Core::System& system_)
+-    : DebuggerFrontend(backend_), system{system_} {
+-    if (system.ApplicationProcess()->Is64Bit()) {
++GDBStub::GDBStub(DebuggerBackend& backend_, Core::System& system_, Kernel::KProcess* debug_process_)
++    : DebuggerFrontend(backend_), system{system_}, debug_process{debug_process_} {
++    if (GetProcess()->Is64Bit()) {
+         arch = std::make_unique<GDBStubA64>();
+     } else {
+         arch = std::make_unique<GDBStubA32>();
+@@ -276,7 +276,7 @@ void GDBStub::ExecuteCommand(std::string_view packet, std::vector<DebuggerAction
+         const size_t size{static_cast<size_t>(strtoll(command.data() + sep, nullptr, 16))};
+ 
+         std::vector<u8> mem(size);
+-        if (system.ApplicationMemory().ReadBlock(addr, mem.data(), size)) {
++        if (GetMemory().ReadBlock(addr, mem.data(), size)) {
+             // Restore any bytes belonging to replaced instructions.
+             auto it = replaced_instructions.lower_bound(addr);
+             for (; it != replaced_instructions.end() && it->first < addr + size; it++) {
+@@ -310,8 +310,8 @@ void GDBStub::ExecuteCommand(std::string_view packet, std::vector<DebuggerAction
+         const auto mem_substr{std::string_view(command).substr(mem_sep)};
+         const auto mem{Common::HexStringToVector(mem_substr, false)};
+ 
+-        if (system.ApplicationMemory().WriteBlock(addr, mem.data(), size)) {
+-            Core::InvalidateInstructionCacheRange(system.ApplicationProcess(), addr, size);
++        if (GetMemory().WriteBlock(addr, mem.data(), size)) {
++            Core::InvalidateInstructionCacheRange(GetProcess(), addr, size);
+             SendReply(GDB_STUB_REPLY_OK);
+         } else {
+             SendReply(GDB_STUB_REPLY_ERR);
+@@ -353,7 +353,7 @@ void GDBStub::HandleBreakpointInsert(std::string_view command) {
+     const size_t addr{static_cast<size_t>(strtoll(command.data() + addr_sep, nullptr, 16))};
+     const size_t size{static_cast<size_t>(strtoll(command.data() + size_sep, nullptr, 16))};
+ 
+-    if (!system.ApplicationMemory().IsValidVirtualAddressRange(addr, size)) {
++    if (!GetMemory().IsValidVirtualAddressRange(addr, size)) {
+         SendReply(GDB_STUB_REPLY_ERR);
+         return;
+     }
+@@ -362,22 +362,20 @@ void GDBStub::HandleBreakpointInsert(std::string_view command) {
+ 
+     switch (type) {
+     case BreakpointType::Software:
+-        replaced_instructions[addr] = system.ApplicationMemory().Read32(addr);
+-        system.ApplicationMemory().Write32(addr, arch->BreakpointInstruction());
+-        Core::InvalidateInstructionCacheRange(system.ApplicationProcess(), addr, sizeof(u32));
++        replaced_instructions[addr] = GetMemory().Read32(addr);
++        GetMemory().Write32(addr, arch->BreakpointInstruction());
++        Core::InvalidateInstructionCacheRange(GetProcess(), addr, sizeof(u32));
+         success = true;
+         break;
+     case BreakpointType::WriteWatch:
+-        success = system.ApplicationProcess()->InsertWatchpoint(addr, size,
+-                                                                Kernel::DebugWatchpointType::Write);
++        success = GetProcess()->InsertWatchpoint(addr, size, Kernel::DebugWatchpointType::Write);
+         break;
+     case BreakpointType::ReadWatch:
+-        success = system.ApplicationProcess()->InsertWatchpoint(addr, size,
+-                                                                Kernel::DebugWatchpointType::Read);
++        success = GetProcess()->InsertWatchpoint(addr, size, Kernel::DebugWatchpointType::Read);
+         break;
+     case BreakpointType::AccessWatch:
+-        success = system.ApplicationProcess()->InsertWatchpoint(
+-            addr, size, Kernel::DebugWatchpointType::ReadOrWrite);
++        success =
++            GetProcess()->InsertWatchpoint(addr, size, Kernel::DebugWatchpointType::ReadOrWrite);
+         break;
+     case BreakpointType::Hardware:
+     default:
+@@ -400,7 +398,7 @@ void GDBStub::HandleBreakpointRemove(std::string_view command) {
+     const size_t addr{static_cast<size_t>(strtoll(command.data() + addr_sep, nullptr, 16))};
+     const size_t size{static_cast<size_t>(strtoll(command.data() + size_sep, nullptr, 16))};
+ 
+-    if (!system.ApplicationMemory().IsValidVirtualAddressRange(addr, size)) {
++    if (!GetMemory().IsValidVirtualAddressRange(addr, size)) {
+         SendReply(GDB_STUB_REPLY_ERR);
+         return;
+     }
+@@ -411,24 +409,22 @@ void GDBStub::HandleBreakpointRemove(std::string_view command) {
+     case BreakpointType::Software: {
+         const auto orig_insn{replaced_instructions.find(addr)};
+         if (orig_insn != replaced_instructions.end()) {
+-            system.ApplicationMemory().Write32(addr, orig_insn->second);
+-            Core::InvalidateInstructionCacheRange(system.ApplicationProcess(), addr, sizeof(u32));
++            GetMemory().Write32(addr, orig_insn->second);
++            Core::InvalidateInstructionCacheRange(GetProcess(), addr, sizeof(u32));
+             replaced_instructions.erase(addr);
+             success = true;
+         }
+         break;
+     }
+     case BreakpointType::WriteWatch:
+-        success = system.ApplicationProcess()->RemoveWatchpoint(addr, size,
+-                                                                Kernel::DebugWatchpointType::Write);
++        success = GetProcess()->RemoveWatchpoint(addr, size, Kernel::DebugWatchpointType::Write);
+         break;
+     case BreakpointType::ReadWatch:
+-        success = system.ApplicationProcess()->RemoveWatchpoint(addr, size,
+-                                                                Kernel::DebugWatchpointType::Read);
++        success = GetProcess()->RemoveWatchpoint(addr, size, Kernel::DebugWatchpointType::Read);
+         break;
+     case BreakpointType::AccessWatch:
+-        success = system.ApplicationProcess()->RemoveWatchpoint(
+-            addr, size, Kernel::DebugWatchpointType::ReadOrWrite);
++        success =
++            GetProcess()->RemoveWatchpoint(addr, size, Kernel::DebugWatchpointType::ReadOrWrite);
+         break;
+     case BreakpointType::Hardware:
+     default:
+@@ -466,10 +462,10 @@ void GDBStub::HandleQuery(std::string_view command) {
+         const auto target_xml{arch->GetTargetXML()};
+         SendReply(PaginateBuffer(target_xml, command.substr(30)));
+     } else if (command.starts_with("Offsets")) {
+-        const auto main_offset = Core::FindMainModuleEntrypoint(system.ApplicationProcess());
++        const auto main_offset = Core::FindMainModuleEntrypoint(GetProcess());
+         SendReply(fmt::format("TextSeg={:x}", GetInteger(main_offset)));
+     } else if (command.starts_with("Xfer:libraries:read::")) {
+-        auto modules = Core::FindModules(system.ApplicationProcess());
++        auto modules = Core::FindModules(GetProcess());
+ 
+         std::string buffer;
+         buffer += R"(<?xml version="1.0"?>)";
+@@ -483,7 +479,7 @@ void GDBStub::HandleQuery(std::string_view command) {
+         SendReply(PaginateBuffer(buffer, command.substr(21)));
+     } else if (command.starts_with("fThreadInfo")) {
+         // beginning of list
+-        const auto& threads = system.ApplicationProcess()->GetThreadList();
++        const auto& threads = GetProcess()->GetThreadList();
+         std::vector<std::string> thread_ids;
+         for (const auto& thread : threads) {
+             thread_ids.push_back(fmt::format("{:x}", thread.GetThreadId()));
+@@ -497,7 +493,7 @@ void GDBStub::HandleQuery(std::string_view command) {
+         buffer += R"(<?xml version="1.0"?>)";
+         buffer += "<threads>";
+ 
+-        const auto& threads = system.ApplicationProcess()->GetThreadList();
++        const auto& threads = GetProcess()->GetThreadList();
+         for (const auto& thread : threads) {
+             auto thread_name{Core::GetThreadName(&thread)};
+             if (!thread_name) {
+@@ -613,7 +609,7 @@ void GDBStub::HandleRcmd(const std::vector<u8>& command) {
+     std::string_view command_str{reinterpret_cast<const char*>(&command[0]), command.size()};
+     std::string reply;
+ 
+-    auto* process = system.ApplicationProcess();
++    auto* process = GetProcess();
+     auto& page_table = process->GetPageTable();
+ 
+     const char* commands = "Commands:\n"
+@@ -714,7 +710,7 @@ void GDBStub::HandleRcmd(const std::vector<u8>& command) {
+ }
+ 
+ Kernel::KThread* GDBStub::GetThreadByID(u64 thread_id) {
+-    auto& threads{system.ApplicationProcess()->GetThreadList()};
++    auto& threads{GetProcess()->GetThreadList()};
+     for (auto& thread : threads) {
+         if (thread.GetThreadId() == thread_id) {
+             return std::addressof(thread);
+@@ -783,4 +779,12 @@ void GDBStub::SendStatus(char status) {
+     backend.WriteToClient(buf);
+ }
+ 
++Kernel::KProcess* GDBStub::GetProcess() {
++    return debug_process;
++}
++
++Core::Memory::Memory& GDBStub::GetMemory() {
++    return GetProcess()->GetMemory();
++}
++
+ } // namespace Core
+diff --git a/src/core/debugger/gdbstub.h b/src/core/debugger/gdbstub.h
+index 3681979204bc..232dcf49f5af 100644
+--- a/src/core/debugger/gdbstub.h
++++ b/src/core/debugger/gdbstub.h
+@@ -12,13 +12,22 @@
+ #include "core/debugger/debugger_interface.h"
+ #include "core/debugger/gdbstub_arch.h"
+ 
++namespace Kernel {
++class KProcess;
++}
++
++namespace Core::Memory {
++class Memory;
++}
++
+ namespace Core {
+ 
+ class System;
+ 
+ class GDBStub : public DebuggerFrontend {
+ public:
+-    explicit GDBStub(DebuggerBackend& backend, Core::System& system);
++    explicit GDBStub(DebuggerBackend& backend, Core::System& system,
++                     Kernel::KProcess* debug_process);
+     ~GDBStub() override;
+ 
+     void Connected() override;
+@@ -42,8 +51,12 @@ class GDBStub : public DebuggerFrontend {
+     void SendReply(std::string_view data);
+     void SendStatus(char status);
+ 
++    Kernel::KProcess* GetProcess();
++    Core::Memory::Memory& GetMemory();
++
+ private:
+     Core::System& system;
++    Kernel::KProcess* debug_process;
+     std::unique_ptr<GDBStubArch> arch;
+     std::vector<char> current_command;
+     std::map<VAddr, u32> replaced_instructions;
+diff --git a/src/core/hle/kernel/k_page_table_base.cpp b/src/core/hle/kernel/k_page_table_base.cpp
+index 73fbda3317bf..f01eaa1641a9 100644
+--- a/src/core/hle/kernel/k_page_table_base.cpp
++++ b/src/core/hle/kernel/k_page_table_base.cpp
+@@ -431,9 +431,82 @@ Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool
+                                                m_memory_block_slab_manager));
+ }
+ 
++Result KPageTableBase::FinalizeProcess() {
++    // Only process tables should be finalized.
++    ASSERT(!this->IsKernel());
++
++    // HLE processes don't have memory mapped.
++    R_SUCCEED_IF(m_impl == nullptr);
++
++    // NOTE: Here Nintendo calls an unknown OnFinalize function.
++    // this->OnFinalize();
++
++    // NOTE: Here Nintendo calls a second unknown OnFinalize function.
++    // this->OnFinalize2();
++
++    // Get implementation objects.
++    auto& impl = this->GetImpl();
++    auto& mm = m_kernel.MemoryManager();
++
++    // Traverse, freeing all pages.
++    {
++        // Get the address space size.
++        const size_t as_size = this->GetAddressSpaceSize();
++
++        // Begin the traversal.
++        TraversalContext context;
++        TraversalEntry cur_entry = {
++            .phys_addr = 0,
++            .block_size = 0,
++        };
++
++        bool cur_valid = false;
++        TraversalEntry next_entry;
++        bool next_valid;
++        size_t tot_size = 0;
++
++        next_valid = impl.BeginTraversal(std::addressof(next_entry), std::addressof(context),
++                                         this->GetAddressSpaceStart());
++
++        // Iterate over entries.
++        while (true) {
++            if ((!next_valid && !cur_valid) ||
++                (next_valid && cur_valid &&
++                 next_entry.phys_addr == cur_entry.phys_addr + cur_entry.block_size)) {
++                cur_entry.block_size += next_entry.block_size;
++            } else {
++                if (cur_valid && IsHeapPhysicalAddressForFinalize(cur_entry.phys_addr)) {
++                    mm.Close(cur_entry.phys_addr, cur_entry.block_size / PageSize);
++                }
++
++                // Update tracking variables.
++                tot_size += cur_entry.block_size;
++                cur_entry = next_entry;
++                cur_valid = next_valid;
++            }
++
++            if (cur_entry.block_size + tot_size >= as_size) {
++                break;
++            }
++
++            next_valid =
++                impl.ContinueTraversal(std::addressof(next_entry), std::addressof(context));
++        }
++
++        // Handle the last block.
++        if (cur_valid && IsHeapPhysicalAddressForFinalize(cur_entry.phys_addr)) {
++            mm.Close(cur_entry.phys_addr, cur_entry.block_size / PageSize);
++        }
++    }
++
++    R_SUCCEED();
++}
++
+ void KPageTableBase::Finalize() {
++    this->FinalizeProcess();
++
+     auto HostUnmapCallback = [&](KProcessAddress addr, u64 size) {
+-        if (Settings::IsFastmemEnabled()) {
++        if (m_impl->fastmem_arena) {
+             m_system.DeviceMemory().buffer.Unmap(GetInteger(addr), size, false);
+         }
+     };
+diff --git a/src/core/hle/kernel/k_page_table_base.h b/src/core/hle/kernel/k_page_table_base.h
+index 077cafc96954..748419f8625c 100644
+--- a/src/core/hle/kernel/k_page_table_base.h
++++ b/src/core/hle/kernel/k_page_table_base.h
+@@ -241,6 +241,7 @@ class KPageTableBase {
+                                 KResourceLimit* resource_limit, Core::Memory::Memory& memory,
+                                 KProcessAddress aslr_space_start);
+ 
++    Result FinalizeProcess();
+     void Finalize();
+ 
+     bool IsKernel() const {
+diff --git a/src/core/hle/kernel/k_process.cpp b/src/core/hle/kernel/k_process.cpp
+index 068e71dffdcb..ae332a55065c 100644
+--- a/src/core/hle/kernel/k_process.cpp
++++ b/src/core/hle/kernel/k_process.cpp
+@@ -171,6 +171,12 @@ void KProcess::Finalize() {
+         m_resource_limit->Close();
+     }
+ 
++    // Clear expensive resources, as the destructor is not called for guest objects.
++    for (auto& interface : m_arm_interfaces) {
++        interface.reset();
++    }
++    m_exclusive_monitor.reset();
++
+     // Perform inherited finalization.
+     KSynchronizationObject::Finalize();
+ }
+diff --git a/src/core/hle/kernel/kernel.cpp b/src/core/hle/kernel/kernel.cpp
+index 1030f0c1244f..f3683cdcc93c 100644
+--- a/src/core/hle/kernel/kernel.cpp
++++ b/src/core/hle/kernel/kernel.cpp
+@@ -112,7 +112,14 @@ struct KernelCore::Impl {
+             old_process->Close();
+         }
+ 
+-        process_list.clear();
++        {
++            std::scoped_lock lk{process_list_lock};
++            for (auto* const process : process_list) {
++                process->Terminate();
++                process->Close();
++            }
++            process_list.clear();
++        }
+ 
+         next_object_id = 0;
+         next_kernel_process_id = KProcess::InitialProcessIdMin;
+@@ -770,6 +777,7 @@ struct KernelCore::Impl {
+     std::atomic<u64> next_thread_id{1};
+ 
+     // Lists all processes that exist in the current session.
++    std::mutex process_list_lock;
+     std::vector<KProcess*> process_list;
+     std::atomic<KProcess*> application_process{};
+     std::unique_ptr<Kernel::GlobalSchedulerContext> global_scheduler_context;
+@@ -869,9 +877,19 @@ KResourceLimit* KernelCore::GetSystemResourceLimit() {
+ }
+ 
+ void KernelCore::AppendNewProcess(KProcess* process) {
++    process->Open();
++
++    std::scoped_lock lk{impl->process_list_lock};
+     impl->process_list.push_back(process);
+ }
+ 
++void KernelCore::RemoveProcess(KProcess* process) {
++    std::scoped_lock lk{impl->process_list_lock};
++    if (std::erase(impl->process_list, process)) {
++        process->Close();
++    }
++}
++
+ void KernelCore::MakeApplicationProcess(KProcess* process) {
+     impl->MakeApplicationProcess(process);
+ }
+@@ -884,8 +902,15 @@ const KProcess* KernelCore::ApplicationProcess() const {
+     return impl->application_process;
+ }
+ 
+-const std::vector<KProcess*>& KernelCore::GetProcessList() const {
+-    return impl->process_list;
++std::list<KScopedAutoObject<KProcess>> KernelCore::GetProcessList() {
++    std::list<KScopedAutoObject<KProcess>> processes;
++    std::scoped_lock lk{impl->process_list_lock};
++
++    for (auto* const process : impl->process_list) {
++        processes.emplace_back(process);
++    }
++
++    return processes;
+ }
+ 
+ Kernel::GlobalSchedulerContext& KernelCore::GlobalSchedulerContext() {
+diff --git a/src/core/hle/kernel/kernel.h b/src/core/hle/kernel/kernel.h
+index 5d41021458ba..8ea5bed1c6bd 100644
+--- a/src/core/hle/kernel/kernel.h
++++ b/src/core/hle/kernel/kernel.h
+@@ -5,6 +5,7 @@
+ 
+ #include <array>
+ #include <functional>
++#include <list>
+ #include <memory>
+ #include <string>
+ #include <unordered_map>
+@@ -116,8 +117,9 @@ class KernelCore {
+     /// Retrieves a shared pointer to the system resource limit instance.
+     KResourceLimit* GetSystemResourceLimit();
+ 
+-    /// Adds the given shared pointer to an internal list of active processes.
++    /// Adds/removes the given pointer to an internal list of active processes.
+     void AppendNewProcess(KProcess* process);
++    void RemoveProcess(KProcess* process);
+ 
+     /// Makes the given process the new application process.
+     void MakeApplicationProcess(KProcess* process);
+@@ -129,7 +131,7 @@ class KernelCore {
+     const KProcess* ApplicationProcess() const;
+ 
+     /// Retrieves the list of processes.
+-    const std::vector<KProcess*>& GetProcessList() const;
++    std::list<KScopedAutoObject<KProcess>> GetProcessList();
+ 
+     /// Gets the sole instance of the global scheduler
+     Kernel::GlobalSchedulerContext& GlobalSchedulerContext();
+diff --git a/src/core/hle/kernel/svc/svc_process.cpp b/src/core/hle/kernel/svc/svc_process.cpp
+index caa8bee9af59..5c3e8829ff34 100644
+--- a/src/core/hle/kernel/svc/svc_process.cpp
++++ b/src/core/hle/kernel/svc/svc_process.cpp
+@@ -74,13 +74,15 @@ Result GetProcessList(Core::System& system, s32* out_num_processes, u64 out_proc
+     }
+ 
+     auto& memory = GetCurrentMemory(kernel);
+-    const auto& process_list = kernel.GetProcessList();
++    auto process_list = kernel.GetProcessList();
++    auto it = process_list.begin();
++
+     const auto num_processes = process_list.size();
+     const auto copy_amount =
+         std::min(static_cast<std::size_t>(out_process_ids_size), num_processes);
+ 
+-    for (std::size_t i = 0; i < copy_amount; ++i) {
+-        memory.Write64(out_process_ids, process_list[i]->GetProcessId());
++    for (std::size_t i = 0; i < copy_amount && it != process_list.end(); ++i, ++it) {
++        memory.Write64(out_process_ids, (*it)->GetProcessId());
+         out_process_ids += sizeof(u64);
+     }
+ 
+diff --git a/src/core/hle/service/glue/arp.cpp b/src/core/hle/service/glue/arp.cpp
+index 6f1151b031c1..1254b6d49c88 100644
+--- a/src/core/hle/service/glue/arp.cpp
++++ b/src/core/hle/service/glue/arp.cpp
+@@ -15,9 +15,10 @@
+ namespace Service::Glue {
+ 
+ namespace {
+-std::optional<u64> GetTitleIDForProcessID(const Core::System& system, u64 process_id) {
+-    const auto& list = system.Kernel().GetProcessList();
+-    const auto iter = std::find_if(list.begin(), list.end(), [&process_id](const auto& process) {
++std::optional<u64> GetTitleIDForProcessID(Core::System& system, u64 process_id) {
++    auto list = system.Kernel().GetProcessList();
++
++    const auto iter = std::find_if(list.begin(), list.end(), [&process_id](auto& process) {
+         return process->GetProcessId() == process_id;
+     });
+ 
+diff --git a/src/core/hle/service/hid/hid.cpp b/src/core/hle/service/hid/hid.cpp
+index fc03a0a5f796..4ce0a9834e26 100644
+--- a/src/core/hle/service/hid/hid.cpp
++++ b/src/core/hle/service/hid/hid.cpp
+@@ -22,12 +22,10 @@ void LoopProcess(Core::System& system) {
+     std::shared_ptr<HidFirmwareSettings> firmware_settings =
+         std::make_shared<HidFirmwareSettings>();
+ 
+-    // TODO: Remove this hack until this service is emulated properly.
+-    const auto process_list = system.Kernel().GetProcessList();
+-    if (!process_list.empty()) {
+-        resource_manager->Initialize();
+-        resource_manager->RegisterAppletResourceUserId(process_list[0]->GetId(), true);
+-    }
++    // TODO: Remove this hack when am is emulated properly.
++    resource_manager->Initialize();
++    resource_manager->RegisterAppletResourceUserId(system.ApplicationProcess()->GetProcessId(),
++                                                   true);
+ 
+     server_manager->RegisterNamedService(
+         "hid", std::make_shared<IHidServer>(system, resource_manager, firmware_settings));
+diff --git a/src/core/hle/service/pm/pm.cpp b/src/core/hle/service/pm/pm.cpp
+index d92499f05b99..b52468e419f9 100644
+--- a/src/core/hle/service/pm/pm.cpp
++++ b/src/core/hle/service/pm/pm.cpp
+@@ -22,27 +22,26 @@ constexpr Result ResultProcessNotFound{ErrorModule::PM, 1};
+ 
+ constexpr u64 NO_PROCESS_FOUND_PID{0};
+ 
+-std::optional<Kernel::KProcess*> SearchProcessList(
+-    const std::vector<Kernel::KProcess*>& process_list,
+-    std::function<bool(Kernel::KProcess*)> predicate) {
++using ProcessList = std::list<Kernel::KScopedAutoObject<Kernel::KProcess>>;
++
++template <typename F>
++Kernel::KScopedAutoObject<Kernel::KProcess> SearchProcessList(ProcessList& process_list,
++                                                              F&& predicate) {
+     const auto iter = std::find_if(process_list.begin(), process_list.end(), predicate);
+ 
+     if (iter == process_list.end()) {
+-        return std::nullopt;
++        return nullptr;
+     }
+ 
+-    return *iter;
++    return iter->GetPointerUnsafe();
+ }
+ 
+-void GetApplicationPidGeneric(HLERequestContext& ctx,
+-                              const std::vector<Kernel::KProcess*>& process_list) {
+-    const auto process = SearchProcessList(process_list, [](const auto& proc) {
+-        return proc->GetProcessId() == Kernel::KProcess::ProcessIdMin;
+-    });
++void GetApplicationPidGeneric(HLERequestContext& ctx, ProcessList& process_list) {
++    auto process = SearchProcessList(process_list, [](auto& p) { return p->IsApplication(); });
+ 
+     IPC::ResponseBuilder rb{ctx, 4};
+     rb.Push(ResultSuccess);
+-    rb.Push(process.has_value() ? (*process)->GetProcessId() : NO_PROCESS_FOUND_PID);
++    rb.Push(process.IsNull() ? NO_PROCESS_FOUND_PID : process->GetProcessId());
+ }
+ 
+ } // Anonymous namespace
+@@ -80,8 +79,7 @@ class BootMode final : public ServiceFramework<BootMode> {
+ 
+ class DebugMonitor final : public ServiceFramework<DebugMonitor> {
+ public:
+-    explicit DebugMonitor(Core::System& system_)
+-        : ServiceFramework{system_, "pm:dmnt"}, kernel{system_.Kernel()} {
++    explicit DebugMonitor(Core::System& system_) : ServiceFramework{system_, "pm:dmnt"} {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+             {0, nullptr, "GetJitDebugProcessIdList"},
+@@ -106,12 +104,11 @@ class DebugMonitor final : public ServiceFramework<DebugMonitor> {
+ 
+         LOG_DEBUG(Service_PM, "called, program_id={:016X}", program_id);
+ 
+-        const auto process =
+-            SearchProcessList(kernel.GetProcessList(), [program_id](const auto& proc) {
+-                return proc->GetProgramId() == program_id;
+-            });
++        auto list = kernel.GetProcessList();
++        auto process = SearchProcessList(
++            list, [program_id](auto& p) { return p->GetProgramId() == program_id; });
+ 
+-        if (!process.has_value()) {
++        if (process.IsNull()) {
+             IPC::ResponseBuilder rb{ctx, 2};
+             rb.Push(ResultProcessNotFound);
+             return;
+@@ -119,12 +116,13 @@ class DebugMonitor final : public ServiceFramework<DebugMonitor> {
+ 
+         IPC::ResponseBuilder rb{ctx, 4};
+         rb.Push(ResultSuccess);
+-        rb.Push((*process)->GetProcessId());
++        rb.Push(process->GetProcessId());
+     }
+ 
+     void GetApplicationProcessId(HLERequestContext& ctx) {
+         LOG_DEBUG(Service_PM, "called");
+-        GetApplicationPidGeneric(ctx, kernel.GetProcessList());
++        auto list = kernel.GetProcessList();
++        GetApplicationPidGeneric(ctx, list);
+     }
+ 
+     void AtmosphereGetProcessInfo(HLERequestContext& ctx) {
+@@ -135,11 +133,10 @@ class DebugMonitor final : public ServiceFramework<DebugMonitor> {
+ 
+         LOG_WARNING(Service_PM, "(Partial Implementation) called, pid={:016X}", pid);
+ 
+-        const auto process = SearchProcessList(kernel.GetProcessList(), [pid](const auto& proc) {
+-            return proc->GetProcessId() == pid;
+-        });
++        auto list = kernel.GetProcessList();
++        auto process = SearchProcessList(list, [pid](auto& p) { return p->GetProcessId() == pid; });
+ 
+-        if (!process.has_value()) {
++        if (process.IsNull()) {
+             IPC::ResponseBuilder rb{ctx, 2};
+             rb.Push(ResultProcessNotFound);
+             return;
+@@ -159,7 +156,7 @@ class DebugMonitor final : public ServiceFramework<DebugMonitor> {
+ 
+         OverrideStatus override_status{};
+         ProgramLocation program_location{
+-            .program_id = (*process)->GetProgramId(),
++            .program_id = process->GetProgramId(),
+             .storage_id = 0,
+         };
+ 
+@@ -169,14 +166,11 @@ class DebugMonitor final : public ServiceFramework<DebugMonitor> {
+         rb.PushRaw(program_location);
+         rb.PushRaw(override_status);
+     }
+-
+-    const Kernel::KernelCore& kernel;
+ };
+ 
+ class Info final : public ServiceFramework<Info> {
+ public:
+-    explicit Info(Core::System& system_, const std::vector<Kernel::KProcess*>& process_list_)
+-        : ServiceFramework{system_, "pm:info"}, process_list{process_list_} {
++    explicit Info(Core::System& system_) : ServiceFramework{system_, "pm:info"} {
+         static const FunctionInfo functions[] = {
+             {0, &Info::GetProgramId, "GetProgramId"},
+             {65000, &Info::AtmosphereGetProcessId, "AtmosphereGetProcessId"},
+@@ -193,11 +187,11 @@ class Info final : public ServiceFramework<Info> {
+ 
+         LOG_DEBUG(Service_PM, "called, process_id={:016X}", process_id);
+ 
+-        const auto process = SearchProcessList(process_list, [process_id](const auto& proc) {
+-            return proc->GetProcessId() == process_id;
+-        });
++        auto list = kernel.GetProcessList();
++        auto process = SearchProcessList(
++            list, [process_id](auto& p) { return p->GetProcessId() == process_id; });
+ 
+-        if (!process.has_value()) {
++        if (process.IsNull()) {
+             IPC::ResponseBuilder rb{ctx, 2};
+             rb.Push(ResultProcessNotFound);
+             return;
+@@ -205,7 +199,7 @@ class Info final : public ServiceFramework<Info> {
+ 
+         IPC::ResponseBuilder rb{ctx, 4};
+         rb.Push(ResultSuccess);
+-        rb.Push((*process)->GetProgramId());
++        rb.Push(process->GetProgramId());
+     }
+ 
+     void AtmosphereGetProcessId(HLERequestContext& ctx) {
+@@ -214,11 +208,11 @@ class Info final : public ServiceFramework<Info> {
+ 
+         LOG_DEBUG(Service_PM, "called, program_id={:016X}", program_id);
+ 
+-        const auto process = SearchProcessList(process_list, [program_id](const auto& proc) {
+-            return proc->GetProgramId() == program_id;
+-        });
++        auto list = system.Kernel().GetProcessList();
++        auto process = SearchProcessList(
++            list, [program_id](auto& p) { return p->GetProgramId() == program_id; });
+ 
+-        if (!process.has_value()) {
++        if (process.IsNull()) {
+             IPC::ResponseBuilder rb{ctx, 2};
+             rb.Push(ResultProcessNotFound);
+             return;
+@@ -226,16 +220,13 @@ class Info final : public ServiceFramework<Info> {
+ 
+         IPC::ResponseBuilder rb{ctx, 4};
+         rb.Push(ResultSuccess);
+-        rb.Push((*process)->GetProcessId());
++        rb.Push(process->GetProcessId());
+     }
+-
+-    const std::vector<Kernel::KProcess*>& process_list;
+ };
+ 
+ class Shell final : public ServiceFramework<Shell> {
+ public:
+-    explicit Shell(Core::System& system_)
+-        : ServiceFramework{system_, "pm:shell"}, kernel{system_.Kernel()} {
++    explicit Shell(Core::System& system_) : ServiceFramework{system_, "pm:shell"} {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+             {0, nullptr, "LaunchProgram"},
+@@ -257,10 +248,9 @@ class Shell final : public ServiceFramework<Shell> {
+ private:
+     void GetApplicationProcessIdForShell(HLERequestContext& ctx) {
+         LOG_DEBUG(Service_PM, "called");
+-        GetApplicationPidGeneric(ctx, kernel.GetProcessList());
++        auto list = kernel.GetProcessList();
++        GetApplicationPidGeneric(ctx, list);
+     }
+-
+-    const Kernel::KernelCore& kernel;
+ };
+ 
+ void LoopProcess(Core::System& system) {
+@@ -268,8 +258,7 @@ void LoopProcess(Core::System& system) {
+ 
+     server_manager->RegisterNamedService("pm:bm", std::make_shared<BootMode>(system));
+     server_manager->RegisterNamedService("pm:dmnt", std::make_shared<DebugMonitor>(system));
+-    server_manager->RegisterNamedService(
+-        "pm:info", std::make_shared<Info>(system, system.Kernel().GetProcessList()));
++    server_manager->RegisterNamedService("pm:info", std::make_shared<Info>(system));
+     server_manager->RegisterNamedService("pm:shell", std::make_shared<Shell>(system));
+     ServerManager::RunServer(std::move(server_manager));
+ }

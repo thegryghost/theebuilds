@@ -1,0 +1,25 @@
+diff --git a/src/core/file_sys/ips_layer.cpp b/src/core/file_sys/ips_layer.cpp
+index 7be1322cc10c..31033634c8a3 100644
+--- a/src/core/file_sys/ips_layer.cpp
++++ b/src/core/file_sys/ips_layer.cpp
+@@ -73,6 +73,9 @@ VirtualFile PatchIPS(const VirtualFile& in, const VirtualFile& ips) {
+         return nullptr;
+ 
+     auto in_data = in->ReadAllBytes();
++    if (in_data.size() == 0) {
++        return nullptr;
++    }
+ 
+     std::vector<u8> temp(type == IPSFileType::IPS ? 3 : 4);
+     u64 offset = 5; // After header
+@@ -88,6 +91,10 @@ VirtualFile PatchIPS(const VirtualFile& in, const VirtualFile& ips) {
+         else
+             real_offset = (temp[0] << 16) | (temp[1] << 8) | temp[2];
+ 
++        if (real_offset > in_data.size()) {
++            return nullptr;
++        }
++
+         u16 data_size{};
+         if (ips->ReadObject(&data_size, offset) != sizeof(u16))
+             return nullptr;

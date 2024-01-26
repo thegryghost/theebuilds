@@ -1,0 +1,3967 @@
+diff --git a/src/android/app/src/main/jni/native.cpp b/src/android/app/src/main/jni/native.cpp
+index 136c8dee6342..e436622e0378 100644
+--- a/src/android/app/src/main/jni/native.cpp
++++ b/src/android/app/src/main/jni/native.cpp
+@@ -410,8 +410,8 @@ void EmulationSession::OnGamepadConnectEvent([[maybe_unused]] int index) {
+         jauto handheld = m_system.HIDCore().GetEmulatedController(Core::HID::NpadIdType::Handheld);
+ 
+         if (controller->GetNpadStyleIndex() == Core::HID::NpadStyleIndex::Handheld) {
+-            handheld->SetNpadStyleIndex(Core::HID::NpadStyleIndex::ProController);
+-            controller->SetNpadStyleIndex(Core::HID::NpadStyleIndex::ProController);
++            handheld->SetNpadStyleIndex(Core::HID::NpadStyleIndex::Fullkey);
++            controller->SetNpadStyleIndex(Core::HID::NpadStyleIndex::Fullkey);
+             handheld->Disconnect();
+         }
+     }
+diff --git a/src/core/frontend/applets/controller.cpp b/src/core/frontend/applets/controller.cpp
+index 34fe23b6a492..e04d884babf8 100644
+--- a/src/core/frontend/applets/controller.cpp
++++ b/src/core/frontend/applets/controller.cpp
+@@ -47,7 +47,7 @@ void DefaultControllerApplet::ReconfigureControllers(ReconfigureCallback callbac
+         // Connect controllers based on the following priority list from highest to lowest priority:
+         // Pro Controller -> Dual Joycons -> Left Joycon/Right Joycon -> Handheld
+         if (parameters.allow_pro_controller) {
+-            controller->SetNpadStyleIndex(Core::HID::NpadStyleIndex::ProController);
++            controller->SetNpadStyleIndex(Core::HID::NpadStyleIndex::Fullkey);
+             controller->Connect(true);
+         } else if (parameters.allow_dual_joycons) {
+             controller->SetNpadStyleIndex(Core::HID::NpadStyleIndex::JoyconDual);
+diff --git a/src/core/hle/service/hid/hid_server.cpp b/src/core/hle/service/hid/hid_server.cpp
+index 74898888a2a8..1951da33ba52 100644
+--- a/src/core/hle/service/hid/hid_server.cpp
++++ b/src/core/hle/service/hid/hid_server.cpp
+@@ -1498,7 +1498,7 @@ void IHidServer::GetVibrationDeviceInfo(HLERequestContext& ctx) {
+     bool check_device_index = false;
+ 
+     switch (vibration_device_handle.npad_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::Handheld:
+     case Core::HID::NpadStyleIndex::JoyconDual:
+     case Core::HID::NpadStyleIndex::JoyconLeft:
+diff --git a/src/hid_core/CMakeLists.txt b/src/hid_core/CMakeLists.txt
+index cce4e685736c..aa85502b56b4 100644
+--- a/src/hid_core/CMakeLists.txt
++++ b/src/hid_core/CMakeLists.txt
+@@ -36,6 +36,30 @@ add_library(hid_core STATIC
+     irsensor/processor_base.h
+     irsensor/tera_plugin_processor.cpp
+     irsensor/tera_plugin_processor.h
++    resources/abstracted_pad/abstract_battery_handler.cpp
++    resources/abstracted_pad/abstract_battery_handler.h
++    resources/abstracted_pad/abstract_button_handler.cpp
++    resources/abstracted_pad/abstract_button_handler.h
++    resources/abstracted_pad/abstract_ir_sensor_handler.cpp
++    resources/abstracted_pad/abstract_ir_sensor_handler.h
++    resources/abstracted_pad/abstract_led_handler.cpp
++    resources/abstracted_pad/abstract_led_handler.h
++    resources/abstracted_pad/abstract_mcu_handler.cpp
++    resources/abstracted_pad/abstract_mcu_handler.h
++    resources/abstracted_pad/abstract_nfc_handler.cpp
++    resources/abstracted_pad/abstract_nfc_handler.h
++    resources/abstracted_pad/abstract_pad.cpp
++    resources/abstracted_pad/abstract_pad.h
++    resources/abstracted_pad/abstract_pad_holder.cpp
++    resources/abstracted_pad/abstract_pad_holder.h
++    resources/abstracted_pad/abstract_palma_handler.cpp
++    resources/abstracted_pad/abstract_palma_handler.h
++    resources/abstracted_pad/abstract_properties_handler.cpp
++    resources/abstracted_pad/abstract_properties_handler.h
++    resources/abstracted_pad/abstract_sixaxis_handler.cpp
++    resources/abstracted_pad/abstract_sixaxis_handler.h
++    resources/abstracted_pad/abstract_vibration_handler.cpp
++    resources/abstracted_pad/abstract_vibration_handler.h
+     resources/debug_pad/debug_pad.cpp
+     resources/debug_pad/debug_pad.h
+     resources/debug_pad/debug_pad_types.h
+@@ -56,6 +80,8 @@ add_library(hid_core STATIC
+     resources/npad/npad_resource.cpp
+     resources/npad/npad_resource.h
+     resources/npad/npad_types.h
++    resources/npad/npad_vibration.cpp
++    resources/npad/npad_vibration.h
+     resources/palma/palma.cpp
+     resources/palma/palma.h
+     resources/six_axis/console_six_axis.cpp
+@@ -78,6 +104,14 @@ add_library(hid_core STATIC
+     resources/touch_screen/touch_types.h
+     resources/unique_pad/unique_pad.cpp
+     resources/unique_pad/unique_pad.h
++    resources/vibration/gc_vibration_device.h
++    resources/vibration/gc_vibration_device.cpp
++    resources/vibration/n64_vibration_device.h
++    resources/vibration/n64_vibration_device.cpp
++    resources/vibration/vibration_base.h
++    resources/vibration/vibration_base.cpp
++    resources/vibration/vibration_device.h
++    resources/vibration/vibration_device.cpp
+     resources/applet_resource.cpp
+     resources/applet_resource.h
+     resources/controller_base.cpp
+diff --git a/src/hid_core/frontend/emulated_controller.cpp b/src/hid_core/frontend/emulated_controller.cpp
+index 3d2d1e9f9fbd..a6a96935da9f 100644
+--- a/src/hid_core/frontend/emulated_controller.cpp
++++ b/src/hid_core/frontend/emulated_controller.cpp
+@@ -27,7 +27,7 @@ EmulatedController::~EmulatedController() = default;
+ NpadStyleIndex EmulatedController::MapSettingsTypeToNPad(Settings::ControllerType type) {
+     switch (type) {
+     case Settings::ControllerType::ProController:
+-        return NpadStyleIndex::ProController;
++        return NpadStyleIndex::Fullkey;
+     case Settings::ControllerType::DualJoyconDetached:
+         return NpadStyleIndex::JoyconDual;
+     case Settings::ControllerType::LeftJoycon:
+@@ -49,13 +49,13 @@ NpadStyleIndex EmulatedController::MapSettingsTypeToNPad(Settings::ControllerTyp
+     case Settings::ControllerType::SegaGenesis:
+         return NpadStyleIndex::SegaGenesis;
+     default:
+-        return NpadStyleIndex::ProController;
++        return NpadStyleIndex::Fullkey;
+     }
+ }
+ 
+ Settings::ControllerType EmulatedController::MapNPadToSettingsType(NpadStyleIndex type) {
+     switch (type) {
+-    case NpadStyleIndex::ProController:
++    case NpadStyleIndex::Fullkey:
+         return Settings::ControllerType::ProController;
+     case NpadStyleIndex::JoyconDual:
+         return Settings::ControllerType::DualJoyconDetached;
+@@ -106,7 +106,7 @@ void EmulatedController::ReloadFromSettings() {
+         SetNpadStyleIndex(MapSettingsTypeToNPad(player.controller_type));
+         original_npad_type = npad_type;
+     } else {
+-        SetNpadStyleIndex(NpadStyleIndex::ProController);
++        SetNpadStyleIndex(NpadStyleIndex::Fullkey);
+         original_npad_type = npad_type;
+     }
+ 
+@@ -1073,7 +1073,7 @@ void EmulatedController::SetColors(const Common::Input::CallbackStatus& callback
+         .body = GetNpadColor(controller.color_values[index].body),
+         .button = GetNpadColor(controller.color_values[index].buttons),
+     };
+-    if (npad_type == NpadStyleIndex::ProController) {
++    if (npad_type == NpadStyleIndex::Fullkey) {
+         controller.colors_state.left = {
+             .body = GetNpadColor(controller.color_values[index].left_grip),
+             .button = GetNpadColor(controller.color_values[index].buttons),
+@@ -1356,7 +1356,7 @@ bool EmulatedController::HasNfc() const {
+     switch (npad_type) {
+     case NpadStyleIndex::JoyconRight:
+     case NpadStyleIndex::JoyconDual:
+-    case NpadStyleIndex::ProController:
++    case NpadStyleIndex::Fullkey:
+     case NpadStyleIndex::Handheld:
+         break;
+     default:
+@@ -1548,7 +1548,7 @@ void EmulatedController::SetSupportedNpadStyleTag(NpadStyleTag supported_styles)
+     // Fallback Fullkey controllers to Pro controllers
+     if (IsControllerFullkey() && supported_style_tag.fullkey) {
+         LOG_WARNING(Service_HID, "Reconnecting controller type {} as Pro controller", npad_type);
+-        SetNpadStyleIndex(NpadStyleIndex::ProController);
++        SetNpadStyleIndex(NpadStyleIndex::Fullkey);
+         Connect();
+         return;
+     }
+@@ -1556,13 +1556,13 @@ void EmulatedController::SetSupportedNpadStyleTag(NpadStyleTag supported_styles)
+     // Fallback Dual joycon controllers to Pro controllers
+     if (npad_type == NpadStyleIndex::JoyconDual && supported_style_tag.fullkey) {
+         LOG_WARNING(Service_HID, "Reconnecting controller type {} as Pro controller", npad_type);
+-        SetNpadStyleIndex(NpadStyleIndex::ProController);
++        SetNpadStyleIndex(NpadStyleIndex::Fullkey);
+         Connect();
+         return;
+     }
+ 
+     // Fallback Pro controllers to Dual joycon
+-    if (npad_type == NpadStyleIndex::ProController && supported_style_tag.joycon_dual) {
++    if (npad_type == NpadStyleIndex::Fullkey && supported_style_tag.joycon_dual) {
+         LOG_WARNING(Service_HID, "Reconnecting controller type {} as Dual Joycons", npad_type);
+         SetNpadStyleIndex(NpadStyleIndex::JoyconDual);
+         Connect();
+@@ -1577,7 +1577,7 @@ bool EmulatedController::IsControllerFullkey(bool use_temporary_value) const {
+     std::scoped_lock lock{mutex};
+     const auto type = is_configuring && use_temporary_value ? tmp_npad_type : npad_type;
+     switch (type) {
+-    case NpadStyleIndex::ProController:
++    case NpadStyleIndex::Fullkey:
+     case NpadStyleIndex::GameCube:
+     case NpadStyleIndex::NES:
+     case NpadStyleIndex::SNES:
+@@ -1593,7 +1593,7 @@ bool EmulatedController::IsControllerSupported(bool use_temporary_value) const {
+     std::scoped_lock lock{mutex};
+     const auto type = is_configuring && use_temporary_value ? tmp_npad_type : npad_type;
+     switch (type) {
+-    case NpadStyleIndex::ProController:
++    case NpadStyleIndex::Fullkey:
+         return supported_style_tag.fullkey.As<bool>();
+     case NpadStyleIndex::Handheld:
+         return supported_style_tag.handheld.As<bool>();
+diff --git a/src/hid_core/hid_types.h b/src/hid_core/hid_types.h
+index a81ed6af03a9..2c3f02f34cf1 100644
+--- a/src/hid_core/hid_types.h
++++ b/src/hid_core/hid_types.h
+@@ -220,6 +220,7 @@ enum class NpadIdType : u32 {
+ };
+ 
+ enum class NpadInterfaceType : u8 {
++    None = 0,
+     Bluetooth = 1,
+     Rail = 2,
+     Usb = 3,
+@@ -229,7 +230,7 @@ enum class NpadInterfaceType : u8 {
+ // This is nn::hid::NpadStyleIndex
+ enum class NpadStyleIndex : u8 {
+     None = 0,
+-    ProController = 3,
++    Fullkey = 3,
+     Handheld = 4,
+     HandheldNES = 4,
+     JoyconDual = 5,
+diff --git a/src/hid_core/hid_util.h b/src/hid_core/hid_util.h
+index 94ff2d23a19f..397a87472fe8 100644
+--- a/src/hid_core/hid_util.h
++++ b/src/hid_core/hid_util.h
+@@ -42,7 +42,7 @@ constexpr Result IsSixaxisHandleValid(const Core::HID::SixAxisSensorHandle& hand
+ 
+ constexpr Result IsVibrationHandleValid(const Core::HID::VibrationDeviceHandle& handle) {
+     switch (handle.npad_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::Handheld:
+     case Core::HID::NpadStyleIndex::JoyconDual:
+     case Core::HID::NpadStyleIndex::JoyconLeft:
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_battery_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_battery_handler.cpp
+new file mode 100644
+index 000000000000..62fbbb0a7ee0
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_battery_handler.cpp
+@@ -0,0 +1,197 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/core_timing.h"
++#include "hid_core/hid_result.h"
++#include "hid_core/hid_util.h"
++#include "hid_core/resources/abstracted_pad/abstract_battery_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/applet_resource.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/shared_memory_format.h"
++
++namespace Service::HID {
++
++NpadAbstractBatteryHandler::NpadAbstractBatteryHandler() {}
++
++NpadAbstractBatteryHandler::~NpadAbstractBatteryHandler() = default;
++
++void NpadAbstractBatteryHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractBatteryHandler::SetAppletResource(AppletResourceHolder* applet_resource) {
++    applet_resource_holder = applet_resource;
++}
++
++void NpadAbstractBatteryHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++}
++
++Result NpadAbstractBatteryHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractBatteryHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++Result NpadAbstractBatteryHandler::UpdateBatteryState(u64 aruid) {
++    const auto npad_index = NpadIdTypeToIndex(properties_handler->GetNpadId());
++    AruidData* aruid_data = applet_resource_holder->applet_resource->GetAruidData(aruid);
++    if (aruid_data == nullptr) {
++        return ResultSuccess;
++    }
++
++    auto& npad_internal_state =
++        aruid_data->shared_memory_format->npad.npad_entry[npad_index].internal_state;
++    auto& system_properties = npad_internal_state.system_properties;
++
++    system_properties.is_charging_joy_dual.Assign(dual_battery.is_charging);
++    system_properties.is_powered_joy_dual.Assign(dual_battery.is_powered);
++    system_properties.is_charging_joy_left.Assign(left_battery.is_charging);
++    system_properties.is_powered_joy_left.Assign(left_battery.is_powered);
++    system_properties.is_charging_joy_right.Assign(right_battery.is_charging);
++    system_properties.is_powered_joy_right.Assign(right_battery.is_powered);
++
++    npad_internal_state.battery_level_dual = dual_battery.battery_level;
++    npad_internal_state.battery_level_left = left_battery.battery_level;
++    npad_internal_state.battery_level_right = right_battery.battery_level;
++
++    return ResultSuccess;
++}
++
++void NpadAbstractBatteryHandler::UpdateBatteryState() {
++    if (ref_counter == 0) {
++        return;
++    }
++    has_new_battery_data = GetNewBatteryState();
++}
++
++bool NpadAbstractBatteryHandler::GetNewBatteryState() {
++    bool has_changed = false;
++    Core::HID::NpadPowerInfo new_dual_battery_state{};
++    Core::HID::NpadPowerInfo new_left_battery_state{};
++    Core::HID::NpadPowerInfo new_right_battery_state{};
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        const auto power_info = abstract_pad->power_info;
++        if (power_info.battery_level > Core::HID::NpadBatteryLevel::Full) {
++            // Abort
++            continue;
++        }
++
++        const auto style = abstract_pad->assignment_style;
++
++        if (style.is_external_assigned || style.is_handheld_assigned) {
++            new_dual_battery_state = power_info;
++        }
++        if (style.is_external_left_assigned || style.is_handheld_left_assigned) {
++            new_left_battery_state = power_info;
++        }
++        if (style.is_external_right_assigned || style.is_handheld_right_assigned) {
++            new_right_battery_state = power_info;
++        }
++
++        if (abstract_pad->internal_flags.is_battery_low_ovln_required) {
++            if (abstract_pad->interface_type == Core::HID::NpadInterfaceType::Rail) {
++                // TODO
++            }
++            abstract_pad->internal_flags.is_battery_low_ovln_required.Assign(false);
++        }
++    }
++
++    if (dual_battery.battery_level != new_dual_battery_state.battery_level ||
++        dual_battery.is_charging != new_dual_battery_state.is_charging ||
++        dual_battery.is_powered != new_dual_battery_state.is_powered) {
++        has_changed = true;
++        dual_battery = new_dual_battery_state;
++    }
++
++    if (left_battery.battery_level != new_left_battery_state.battery_level ||
++        left_battery.is_charging != new_left_battery_state.is_charging ||
++        left_battery.is_powered != new_left_battery_state.is_powered) {
++        has_changed = true;
++        left_battery = new_left_battery_state;
++    }
++
++    if (right_battery.battery_level != new_right_battery_state.battery_level ||
++        right_battery.is_charging != new_right_battery_state.is_charging ||
++        right_battery.is_powered != new_right_battery_state.is_powered) {
++        has_changed = true;
++        right_battery = new_right_battery_state;
++    }
++
++    return has_changed;
++}
++
++void NpadAbstractBatteryHandler::UpdateCoreBatteryState() {
++    if (ref_counter == 0) {
++        return;
++    }
++    if (!has_new_battery_data) {
++        return;
++    }
++
++    UpdateBatteryState(0);
++}
++
++void NpadAbstractBatteryHandler::InitializeBatteryState(u64 aruid) {
++    UpdateBatteryState(aruid);
++}
++
++bool NpadAbstractBatteryHandler::HasBattery() const {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    for (std::size_t i = 0; i < count; i++) {
++        const auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        return abstract_pad->disabled_feature_set.has_fullkey_battery ||
++               abstract_pad->disabled_feature_set.has_left_right_joy_battery;
++    }
++
++    return false;
++}
++
++void NpadAbstractBatteryHandler::HasLeftRightBattery(bool& has_left, bool& has_right) const {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    has_left = false;
++    has_right = false;
++
++    for (std::size_t i = 0; i < count; i++) {
++        const auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        if (!abstract_pad->disabled_feature_set.has_fullkey_battery &&
++            !abstract_pad->disabled_feature_set.has_left_right_joy_battery) {
++            continue;
++        }
++        has_left = abstract_pad->assignment_style.is_external_left_assigned ||
++                   abstract_pad->assignment_style.is_handheld_left_assigned;
++        has_right = abstract_pad->assignment_style.is_external_right_assigned ||
++                    abstract_pad->assignment_style.is_handheld_right_assigned;
++    }
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_battery_handler.h b/src/hid_core/resources/abstracted_pad/abstract_battery_handler.h
+new file mode 100644
+index 000000000000..85ac5eb72f04
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_battery_handler.h
+@@ -0,0 +1,49 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Service::HID {
++struct AppletResourceHolder;
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++
++/// Handles Npad request from HID interfaces
++class NpadAbstractBatteryHandler final {
++public:
++    explicit NpadAbstractBatteryHandler();
++    ~NpadAbstractBatteryHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetAppletResource(AppletResourceHolder* applet_resource);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    Result UpdateBatteryState(u64 aruid);
++    void UpdateBatteryState();
++    bool GetNewBatteryState();
++    void UpdateCoreBatteryState();
++    void InitializeBatteryState(u64 aruid);
++
++    bool HasBattery() const;
++    void HasLeftRightBattery(bool& has_left, bool& has_right) const;
++
++private:
++    AppletResourceHolder* applet_resource_holder{nullptr};
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++
++    s32 ref_counter{};
++    Core::HID::NpadPowerInfo dual_battery{};
++    Core::HID::NpadPowerInfo left_battery{};
++    Core::HID::NpadPowerInfo right_battery{};
++    bool has_new_battery_data{};
++};
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_button_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_button_handler.cpp
+new file mode 100644
+index 000000000000..58716943356d
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_button_handler.cpp
+@@ -0,0 +1,199 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/hid_util.h"
++#include "hid_core/resources/abstracted_pad/abstract_button_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/applet_resource.h"
++#include "hid_core/resources/npad/npad_resource.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/shared_memory_format.h"
++
++namespace Service::HID {
++
++NpadAbstractButtonHandler::NpadAbstractButtonHandler() {}
++
++NpadAbstractButtonHandler::~NpadAbstractButtonHandler() = default;
++
++void NpadAbstractButtonHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractButtonHandler::SetAppletResource(AppletResourceHolder* applet_resource) {
++    applet_resource_holder = applet_resource;
++}
++
++void NpadAbstractButtonHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++}
++
++Result NpadAbstractButtonHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractButtonHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++Result NpadAbstractButtonHandler::UpdateAllButtonWithHomeProtection(u64 aruid) {
++    const Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
++    auto* data = applet_resource_holder->applet_resource->GetAruidData(aruid);
++
++    if (data == nullptr) {
++        return ResultSuccess;
++    }
++
++    auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
++    UpdateButtonLifo(npad_entry, aruid);
++
++    bool is_home_button_protection_enabled{};
++    const auto result = applet_resource_holder->shared_npad_resource->GetHomeProtectionEnabled(
++        is_home_button_protection_enabled, aruid, npad_id);
++
++    if (result.IsError()) {
++        return ResultSuccess;
++    }
++
++    npad_entry.internal_state.button_properties.is_home_button_protection_enabled.Assign(
++        is_home_button_protection_enabled);
++
++    return ResultSuccess;
++}
++
++void NpadAbstractButtonHandler::UpdateAllButtonLifo() {
++    Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
++    for (std::size_t i = 0; i < AruidIndexMax; i++) {
++        auto* data = applet_resource_holder->applet_resource->GetAruidDataByIndex(i);
++        auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
++        UpdateButtonLifo(npad_entry, data->aruid);
++    }
++}
++
++void NpadAbstractButtonHandler::UpdateCoreBatteryState() {
++    Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
++    for (std::size_t i = 0; i < AruidIndexMax; i++) {
++        auto* data = applet_resource_holder->applet_resource->GetAruidDataByIndex(i);
++        auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
++        UpdateButtonLifo(npad_entry, data->aruid);
++    }
++}
++
++void NpadAbstractButtonHandler::UpdateButtonState(u64 aruid) {
++    Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
++    auto* data = applet_resource_holder->applet_resource->GetAruidData(aruid);
++    if (data == nullptr) {
++        return;
++    }
++    auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
++    UpdateButtonLifo(npad_entry, aruid);
++}
++
++Result NpadAbstractButtonHandler::SetHomeProtection(bool is_enabled, u64 aruid) {
++    const Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
++    auto result = applet_resource_holder->shared_npad_resource->SetHomeProtectionEnabled(
++        aruid, npad_id, is_enabled);
++    if (result.IsError()) {
++        return result;
++    }
++
++    auto* data = applet_resource_holder->applet_resource->GetAruidData(aruid);
++    if (data == nullptr) {
++        return ResultSuccess;
++    }
++
++    bool is_home_protection_enabled{};
++    result = applet_resource_holder->shared_npad_resource->GetHomeProtectionEnabled(
++        is_home_protection_enabled, aruid, npad_id);
++    if (result.IsError()) {
++        return ResultSuccess;
++    }
++
++    auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
++    npad_entry.internal_state.button_properties.is_home_button_protection_enabled.Assign(
++        is_home_protection_enabled);
++    return ResultSuccess;
++}
++
++bool NpadAbstractButtonHandler::IsButtonPressedOnConsoleMode() {
++    return is_button_pressed_on_console_mode;
++}
++
++void NpadAbstractButtonHandler::EnableCenterClamp() {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        abstract_pad->internal_flags.use_center_clamp.Assign(true);
++    }
++}
++
++void NpadAbstractButtonHandler::UpdateButtonLifo(NpadSharedMemoryEntry& shared_memory, u64 aruid) {
++    auto* npad_resource = applet_resource_holder->shared_npad_resource;
++    Core::HID::NpadStyleTag style_tag = {properties_handler->GetStyleSet(aruid)};
++    style_tag.system_ext.Assign(npad_resource->GetActiveData()->GetNpadSystemExtState());
++
++    UpdateNpadFullkeyLifo(style_tag, 0, aruid, shared_memory);
++    UpdateHandheldLifo(style_tag, 1, aruid, shared_memory);
++    UpdateJoyconDualLifo(style_tag, 2, aruid, shared_memory);
++    UpdateJoyconLeftLifo(style_tag, 3, aruid, shared_memory);
++    UpdateJoyconRightLifo(style_tag, 4, aruid, shared_memory);
++    UpdatePalmaLifo(style_tag, 5, aruid, shared_memory);
++    UpdateSystemExtLifo(style_tag, 6, aruid, shared_memory);
++}
++
++void NpadAbstractButtonHandler::UpdateNpadFullkeyLifo(Core::HID::NpadStyleTag style_tag,
++                                                      int style_index, u64 aruid,
++                                                      NpadSharedMemoryEntry& shared_memory) {
++    // TODO
++}
++
++void NpadAbstractButtonHandler::UpdateHandheldLifo(Core::HID::NpadStyleTag style_tag,
++                                                   int style_index, u64 aruid,
++                                                   NpadSharedMemoryEntry& shared_memory) {
++    // TODO
++}
++
++void NpadAbstractButtonHandler::UpdateJoyconDualLifo(Core::HID::NpadStyleTag style_tag,
++                                                     int style_index, u64 aruid,
++                                                     NpadSharedMemoryEntry& shared_memory) {
++    // TODO
++}
++
++void NpadAbstractButtonHandler::UpdateJoyconLeftLifo(Core::HID::NpadStyleTag style_tag,
++                                                     int style_index, u64 aruid,
++                                                     NpadSharedMemoryEntry& shared_memory) {
++    // TODO
++}
++
++void NpadAbstractButtonHandler::UpdateJoyconRightLifo(Core::HID::NpadStyleTag style_tag,
++                                                      int style_index, u64 aruid,
++                                                      NpadSharedMemoryEntry& shared_memory) {
++    // TODO
++}
++
++void NpadAbstractButtonHandler::UpdateSystemExtLifo(Core::HID::NpadStyleTag style_tag,
++                                                    int style_index, u64 aruid,
++                                                    NpadSharedMemoryEntry& shared_memory) {
++    // TODO
++}
++
++void NpadAbstractButtonHandler::UpdatePalmaLifo(Core::HID::NpadStyleTag style_tag, int style_index,
++                                                u64 aruid, NpadSharedMemoryEntry& shared_memory) {
++    // TODO
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_button_handler.h b/src/hid_core/resources/abstracted_pad/abstract_button_handler.h
+new file mode 100644
+index 000000000000..01eafe96df88
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_button_handler.h
+@@ -0,0 +1,75 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Service::HID {
++struct NpadSharedMemoryEntry;
++
++struct AppletResourceHolder;
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++
++/// Handles Npad request from HID interfaces
++class NpadAbstractButtonHandler final {
++public:
++    explicit NpadAbstractButtonHandler();
++    ~NpadAbstractButtonHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetAppletResource(AppletResourceHolder* applet_resource);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    Result UpdateAllButtonWithHomeProtection(u64 aruid);
++
++    void UpdateAllButtonLifo();
++    void UpdateCoreBatteryState();
++    void UpdateButtonState(u64 aruid);
++
++    Result SetHomeProtection(bool is_enabled, u64 aruid);
++    bool IsButtonPressedOnConsoleMode();
++    void EnableCenterClamp();
++
++    void UpdateButtonLifo(NpadSharedMemoryEntry& shared_memory, u64 aruid);
++
++    void UpdateNpadFullkeyLifo(Core::HID::NpadStyleTag style_tag, int index, u64 aruid,
++                               NpadSharedMemoryEntry& shared_memory);
++    void UpdateHandheldLifo(Core::HID::NpadStyleTag style_tag, int index, u64 aruid,
++                            NpadSharedMemoryEntry& shared_memory);
++    void UpdateJoyconDualLifo(Core::HID::NpadStyleTag style_tag, int index, u64 aruid,
++                              NpadSharedMemoryEntry& shared_memory);
++    void UpdateJoyconLeftLifo(Core::HID::NpadStyleTag style_tag, int index, u64 aruid,
++                              NpadSharedMemoryEntry& shared_memory);
++    void UpdateJoyconRightLifo(Core::HID::NpadStyleTag style_tag, int index, u64 aruid,
++                               NpadSharedMemoryEntry& shared_memory);
++    void UpdateSystemExtLifo(Core::HID::NpadStyleTag style_tag, int index, u64 aruid,
++                             NpadSharedMemoryEntry& shared_memory);
++    void UpdatePalmaLifo(Core::HID::NpadStyleTag style_tag, int index, u64 aruid,
++                         NpadSharedMemoryEntry& shared_memory);
++
++private:
++    struct GcTrigger {
++        float left;
++        float right;
++    };
++
++    AppletResourceHolder* applet_resource_holder{nullptr};
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++
++    s32 ref_counter{};
++
++    bool is_button_pressed_on_console_mode{};
++
++    u64 gc_sampling_number{};
++    GcTrigger gc_trigger_state{};
++};
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_ir_sensor_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_ir_sensor_handler.cpp
+new file mode 100644
+index 000000000000..d4e4181bfa0a
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_ir_sensor_handler.cpp
+@@ -0,0 +1,126 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/kernel/k_event.h"
++#include "core/hle/kernel/k_readable_event.h"
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/abstracted_pad/abstract_ir_sensor_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++namespace Service::HID {
++
++NpadAbstractIrSensorHandler::NpadAbstractIrSensorHandler() {}
++
++NpadAbstractIrSensorHandler::~NpadAbstractIrSensorHandler() = default;
++
++void NpadAbstractIrSensorHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractIrSensorHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++}
++
++Result NpadAbstractIrSensorHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractIrSensorHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++void NpadAbstractIrSensorHandler::UpdateIrSensorState() {
++    const auto previous_state = sensor_state;
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    if (count == 0) {
++        sensor_state = NpadIrSensorState::Disabled;
++        if (sensor_state == previous_state) {
++            return;
++        }
++        ir_sensor_event->Signal();
++        return;
++    }
++
++    bool is_found{};
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        if (!abstract_pad->disabled_feature_set.has_bluetooth_address) {
++            continue;
++        }
++        is_found = true;
++        xcd_handle = abstract_pad->xcd_handle;
++    }
++
++    if (is_found) {
++        if (sensor_state == NpadIrSensorState::Active) {
++            return;
++        }
++        sensor_state = NpadIrSensorState::Available;
++        if (sensor_state == previous_state) {
++            return;
++        }
++        ir_sensor_event->Signal();
++        return;
++    }
++
++    sensor_state = NpadIrSensorState::Unavailable;
++    if (sensor_state == previous_state) {
++        return;
++    }
++
++    ir_sensor_event->Signal();
++    return;
++}
++
++Result NpadAbstractIrSensorHandler::ActivateIrSensor(bool is_enabled) {
++    if (sensor_state == NpadIrSensorState::Unavailable) {
++        return ResultIrSensorIsNotReady;
++    }
++    if (is_enabled && sensor_state == NpadIrSensorState::Available) {
++        sensor_state = NpadIrSensorState::Active;
++    } else {
++        if (is_enabled) {
++            return ResultSuccess;
++        }
++        if (sensor_state != NpadIrSensorState::Active) {
++            return ResultSuccess;
++        }
++        sensor_state = NpadIrSensorState::Available;
++    }
++    ir_sensor_event->Signal();
++    return ResultSuccess;
++}
++
++Result NpadAbstractIrSensorHandler::GetIrSensorEventHandle(Kernel::KReadableEvent** out_event) {
++    *out_event = &ir_sensor_event->GetReadableEvent();
++    return ResultSuccess;
++}
++
++Result NpadAbstractIrSensorHandler::GetXcdHandleForNpadWithIrSensor(u64& handle) const {
++    if (sensor_state < NpadIrSensorState::Available) {
++        return ResultIrSensorIsNotReady;
++    }
++    handle = xcd_handle;
++    return ResultSuccess;
++}
++
++NpadIrSensorState NpadAbstractIrSensorHandler::GetSensorState() const {
++    return sensor_state;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_ir_sensor_handler.h b/src/hid_core/resources/abstracted_pad/abstract_ir_sensor_handler.h
+new file mode 100644
+index 000000000000..fe8e005af67f
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_ir_sensor_handler.h
+@@ -0,0 +1,56 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Kernel {
++class KEvent;
++class KReadableEvent;
++} // namespace Kernel
++
++enum class NpadIrSensorState : u32 {
++    Disabled,
++    Unavailable,
++    Available,
++    Active,
++};
++
++namespace Service::HID {
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++
++/// Handles Npad request from HID interfaces
++class NpadAbstractIrSensorHandler final {
++public:
++    explicit NpadAbstractIrSensorHandler();
++    ~NpadAbstractIrSensorHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    void UpdateIrSensorState();
++    Result ActivateIrSensor(bool param_2);
++
++    Result GetIrSensorEventHandle(Kernel::KReadableEvent** out_event);
++
++    Result GetXcdHandleForNpadWithIrSensor(u64& handle) const;
++
++    NpadIrSensorState GetSensorState() const;
++
++private:
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++
++    s32 ref_counter{};
++    Kernel::KEvent* ir_sensor_event{nullptr};
++    u64 xcd_handle{};
++    NpadIrSensorState sensor_state{};
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_led_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_led_handler.cpp
+new file mode 100644
+index 000000000000..0b2bfe88dabb
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_led_handler.cpp
+@@ -0,0 +1,123 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/core_timing.h"
++#include "hid_core/hid_result.h"
++#include "hid_core/hid_util.h"
++#include "hid_core/resources/abstracted_pad/abstract_led_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/applet_resource.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++namespace Service::HID {
++
++NpadAbstractLedHandler::NpadAbstractLedHandler() {}
++
++NpadAbstractLedHandler::~NpadAbstractLedHandler() = default;
++
++void NpadAbstractLedHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractLedHandler::SetAppletResource(AppletResourceHolder* applet_resource) {
++    applet_resource_holder = applet_resource;
++}
++
++void NpadAbstractLedHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++}
++
++Result NpadAbstractLedHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractLedHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++void NpadAbstractLedHandler::SetNpadLedHandlerLedPattern() {
++    const auto npad_id = properties_handler->GetNpadId();
++
++    switch (npad_id) {
++    case Core::HID::NpadIdType::Player1:
++        left_pattern = Core::HID::LedPattern{1, 0, 0, 0};
++        break;
++    case Core::HID::NpadIdType::Player2:
++        left_pattern = Core::HID::LedPattern{1, 1, 0, 0};
++        break;
++    case Core::HID::NpadIdType::Player3:
++        left_pattern = Core::HID::LedPattern{1, 1, 1, 0};
++        break;
++    case Core::HID::NpadIdType::Player4:
++        left_pattern = Core::HID::LedPattern{1, 1, 1, 1};
++        break;
++    case Core::HID::NpadIdType::Player5:
++        left_pattern = Core::HID::LedPattern{1, 0, 0, 1};
++        break;
++    case Core::HID::NpadIdType::Player6:
++        left_pattern = Core::HID::LedPattern{1, 0, 1, 0};
++        break;
++    case Core::HID::NpadIdType::Player7:
++        left_pattern = Core::HID::LedPattern{1, 0, 1, 1};
++        break;
++    case Core::HID::NpadIdType::Player8:
++        left_pattern = Core::HID::LedPattern{0, 1, 1, 0};
++        break;
++    case Core::HID::NpadIdType::Other:
++    case Core::HID::NpadIdType::Handheld:
++        left_pattern = Core::HID::LedPattern{0, 0, 0, 0};
++        break;
++    default:
++        ASSERT_MSG(false, "Invalid npad id type");
++        break;
++    }
++
++    switch (npad_id) {
++    case Core::HID::NpadIdType::Player1:
++        right_pattern = Core::HID::LedPattern{0, 0, 0, 1};
++        break;
++    case Core::HID::NpadIdType::Player2:
++        right_pattern = Core::HID::LedPattern{0, 1, 1, 1};
++        break;
++    case Core::HID::NpadIdType::Player3:
++        right_pattern = Core::HID::LedPattern{0, 1, 1, 1};
++        break;
++    case Core::HID::NpadIdType::Player4:
++        right_pattern = Core::HID::LedPattern{1, 1, 1, 1};
++        break;
++    case Core::HID::NpadIdType::Player5:
++        right_pattern = Core::HID::LedPattern{1, 0, 0, 1};
++        break;
++    case Core::HID::NpadIdType::Player6:
++        right_pattern = Core::HID::LedPattern{0, 1, 0, 1};
++        break;
++    case Core::HID::NpadIdType::Player7:
++        right_pattern = Core::HID::LedPattern{1, 1, 0, 1};
++        break;
++    case Core::HID::NpadIdType::Player8:
++        right_pattern = Core::HID::LedPattern{0, 1, 1, 0};
++        break;
++    case Core::HID::NpadIdType::Other:
++    case Core::HID::NpadIdType::Handheld:
++        right_pattern = Core::HID::LedPattern{0, 0, 0, 0};
++        break;
++    default:
++        ASSERT_MSG(false, "Invalid npad id type");
++        break;
++    }
++}
++
++void NpadAbstractLedHandler::SetLedBlinkingDevice(Core::HID::LedPattern pattern) {
++    led_blinking = pattern;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_led_handler.h b/src/hid_core/resources/abstracted_pad/abstract_led_handler.h
+new file mode 100644
+index 000000000000..09528129b66f
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_led_handler.h
+@@ -0,0 +1,43 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Service::HID {
++struct AppletResourceHolder;
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++
++/// Handles Npad request from HID interfaces
++class NpadAbstractLedHandler final {
++public:
++    explicit NpadAbstractLedHandler();
++    ~NpadAbstractLedHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetAppletResource(AppletResourceHolder* applet_resource);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    void SetNpadLedHandlerLedPattern();
++
++    void SetLedBlinkingDevice(Core::HID::LedPattern pattern);
++
++private:
++    AppletResourceHolder* applet_resource_holder{nullptr};
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++
++    s32 ref_counter{};
++    Core::HID::LedPattern led_blinking{0, 0, 0, 0};
++    Core::HID::LedPattern left_pattern{0, 0, 0, 0};
++    Core::HID::LedPattern right_pattern{0, 0, 0, 0};
++    u64 led_interval{};
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_mcu_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_mcu_handler.cpp
+new file mode 100644
+index 000000000000..6f35bd95cc16
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_mcu_handler.cpp
+@@ -0,0 +1,108 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/abstracted_pad/abstract_mcu_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++namespace Service::HID {
++
++NpadAbstractMcuHandler::NpadAbstractMcuHandler() {}
++
++NpadAbstractMcuHandler::~NpadAbstractMcuHandler() = default;
++
++void NpadAbstractMcuHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractMcuHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++}
++
++Result NpadAbstractMcuHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractMcuHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++void NpadAbstractMcuHandler::UpdateMcuState() {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = properties_handler->GetAbstractedPads(abstract_pads);
++
++    if (count == 0) {
++        mcu_holder = {};
++        return;
++    }
++
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        if (!abstract_pad->disabled_feature_set.has_left_joy_rail_bus) {
++            if (!abstract_pad->disabled_feature_set.has_left_joy_six_axis_sensor &&
++                !abstract_pad->disabled_feature_set.has_right_joy_six_axis_sensor) {
++                continue;
++            }
++            if (mcu_holder[1].state != NpadMcuState::Active) {
++                mcu_holder[1].state = NpadMcuState::Available;
++            }
++            mcu_holder[1].abstracted_pad = abstract_pad;
++            continue;
++        }
++        if (mcu_holder[0].state != NpadMcuState::Active) {
++            mcu_holder[0].state = NpadMcuState::Available;
++        }
++        mcu_holder[0].abstracted_pad = abstract_pad;
++    }
++}
++
++Result NpadAbstractMcuHandler::GetAbstractedPad(IAbstractedPad** data, u32 mcu_index) {
++    if (mcu_holder[mcu_index].state == NpadMcuState::None ||
++        mcu_holder[mcu_index].abstracted_pad == nullptr) {
++        return ResultMcuIsNotReady;
++    }
++    *data = mcu_holder[mcu_index].abstracted_pad;
++    return ResultSuccess;
++}
++
++NpadMcuState NpadAbstractMcuHandler::GetMcuState(u32 mcu_index) {
++    return mcu_holder[mcu_index].state;
++}
++
++Result NpadAbstractMcuHandler::SetMcuState(bool is_enabled, u32 mcu_index) {
++    NpadMcuState& state = mcu_holder[mcu_index].state;
++
++    if (state == NpadMcuState::None) {
++        return ResultMcuIsNotReady;
++    }
++
++    if ((is_enabled) && (state == NpadMcuState::Available)) {
++        state = NpadMcuState::Active;
++        return ResultSuccess;
++    }
++
++    if (is_enabled) {
++        return ResultSuccess;
++    }
++    if (state != NpadMcuState::Active) {
++        return ResultSuccess;
++    }
++
++    state = NpadMcuState::Available;
++    return ResultSuccess;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_mcu_handler.h b/src/hid_core/resources/abstracted_pad/abstract_mcu_handler.h
+new file mode 100644
+index 000000000000..9902dd03a784
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_mcu_handler.h
+@@ -0,0 +1,52 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Service::HID {
++struct IAbstractedPad;
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++
++enum class NpadMcuState : u32 {
++    None,
++    Available,
++    Active,
++};
++
++struct NpadMcuHolder {
++    NpadMcuState state;
++    INSERT_PADDING_BYTES(0x4);
++    IAbstractedPad* abstracted_pad;
++};
++static_assert(sizeof(NpadMcuHolder) == 0x10, "NpadMcuHolder is an invalid size");
++
++/// Handles Npad request from HID interfaces
++class NpadAbstractMcuHandler final {
++public:
++    explicit NpadAbstractMcuHandler();
++    ~NpadAbstractMcuHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    void UpdateMcuState();
++    Result GetAbstractedPad(IAbstractedPad** data, u32 mcu_index);
++    NpadMcuState GetMcuState(u32 mcu_index);
++    Result SetMcuState(bool is_enabled, u32 mcu_index);
++
++private:
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++
++    s32 ref_counter{};
++    std::array<NpadMcuHolder, 2> mcu_holder{};
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_nfc_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_nfc_handler.cpp
+new file mode 100644
+index 000000000000..bd9b79333c5d
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_nfc_handler.cpp
+@@ -0,0 +1,140 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/kernel/k_event.h"
++#include "core/hle/kernel/k_readable_event.h"
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/abstracted_pad/abstract_nfc_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++namespace Service::HID {
++
++NpadAbstractNfcHandler::NpadAbstractNfcHandler() {}
++
++NpadAbstractNfcHandler::~NpadAbstractNfcHandler() = default;
++
++void NpadAbstractNfcHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractNfcHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++}
++
++Result NpadAbstractNfcHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractNfcHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++void NpadAbstractNfcHandler::UpdateNfcState() {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = properties_handler->GetAbstractedPads(abstract_pads);
++
++    if (count == 0) {
++        if (sensor_state == NpadNfcState::Active) {
++            nfc_activate_event->Signal();
++        }
++        if (sensor_state == NpadNfcState::Unavailable) {
++            return;
++        }
++        sensor_state = NpadNfcState::Unavailable;
++        input_event->Signal();
++        return;
++    }
++
++    bool is_found{};
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        if (!abstract_pad->disabled_feature_set.has_nfc) {
++            continue;
++        }
++        is_found = true;
++        xcd_handle = 0;
++    }
++
++    if (is_found) {
++        if (sensor_state == NpadNfcState::Active) {
++            return;
++        }
++        if (sensor_state == NpadNfcState::Available) {
++            return;
++        }
++        sensor_state = NpadNfcState::Available;
++        input_event->Signal();
++        return;
++    }
++
++    if (sensor_state == NpadNfcState::Active) {
++        nfc_activate_event->Signal();
++    }
++    if (sensor_state == NpadNfcState::Unavailable) {
++        return;
++    }
++    sensor_state = NpadNfcState::Unavailable;
++    input_event->Signal();
++    return;
++}
++
++bool NpadAbstractNfcHandler::HasNfcSensor() {
++    return sensor_state != NpadNfcState::Unavailable;
++}
++
++bool NpadAbstractNfcHandler::IsNfcActivated() {
++    return sensor_state == NpadNfcState::Active;
++}
++
++Result NpadAbstractNfcHandler::GetAcquireNfcActivateEventHandle(
++    Kernel::KReadableEvent** out_event) {
++    *out_event = &nfc_activate_event->GetReadableEvent();
++    return ResultSuccess;
++}
++
++void NpadAbstractNfcHandler::SetInputEvent(Kernel::KEvent* event) {
++    input_event = event;
++}
++
++Result NpadAbstractNfcHandler::ActivateNfc(bool is_enabled) {
++    if (sensor_state == NpadNfcState::Active) {
++        return ResultNfcIsNotReady;
++    }
++
++    NpadNfcState new_state = NpadNfcState::Available;
++    if (is_enabled) {
++        new_state = NpadNfcState::Active;
++    }
++    if (sensor_state != new_state) {
++        sensor_state = new_state;
++        nfc_activate_event->Signal();
++    }
++    return ResultSuccess;
++}
++
++Result NpadAbstractNfcHandler::GetXcdHandleWithNfc(u64& out_xcd_handle) const {
++    if (sensor_state == NpadNfcState::Unavailable) {
++        return ResultNfcIsNotReady;
++    }
++    if (xcd_handle == 0) {
++        return ResultNfcXcdHandleIsNotInitialized;
++    }
++
++    out_xcd_handle = xcd_handle;
++    return ResultSuccess;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_nfc_handler.h b/src/hid_core/resources/abstracted_pad/abstract_nfc_handler.h
+new file mode 100644
+index 000000000000..0702722a6b53
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_nfc_handler.h
+@@ -0,0 +1,57 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Kernel {
++class KReadableEvent;
++}
++
++enum class NpadNfcState : u32 {
++    Unavailable,
++    Available,
++    Active,
++};
++
++namespace Service::HID {
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++
++/// Handles Npad request from HID interfaces
++class NpadAbstractNfcHandler final {
++public:
++    explicit NpadAbstractNfcHandler();
++    ~NpadAbstractNfcHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    void UpdateNfcState();
++    bool HasNfcSensor();
++    bool IsNfcActivated();
++
++    Result GetAcquireNfcActivateEventHandle(Kernel::KReadableEvent** out_event);
++    void SetInputEvent(Kernel::KEvent* event);
++
++    Result ActivateNfc(bool is_enabled);
++
++    Result GetXcdHandleWithNfc(u64& out_xcd_handle) const;
++
++private:
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++
++    s32 ref_counter{};
++    Kernel::KEvent* nfc_activate_event{nullptr};
++    Kernel::KEvent* input_event{nullptr};
++    u64 xcd_handle{};
++    NpadNfcState sensor_state{NpadNfcState::Unavailable};
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_pad.cpp b/src/hid_core/resources/abstracted_pad/abstract_pad.cpp
+new file mode 100644
+index 000000000000..2c7691d7cc98
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_pad.cpp
+@@ -0,0 +1,294 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad.h"
++#include "hid_core/resources/applet_resource.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++namespace Service::HID {
++
++AbstractPad::AbstractPad() {}
++
++AbstractPad::~AbstractPad() = default;
++
++void AbstractPad::SetExternals(AppletResourceHolder* applet_resource,
++                               CaptureButtonResource* capture_button_resource,
++                               HomeButtonResource* home_button_resource,
++                               SixAxisResource* sixaxis_resource, PalmaResource* palma_resource,
++                               VibrationHandler* vibration) {
++    applet_resource_holder = applet_resource;
++
++    properties_handler.SetAppletResource(applet_resource_holder);
++    properties_handler.SetAbstractPadHolder(&abstract_pad_holder);
++
++    led_handler.SetAppletResource(applet_resource_holder);
++    led_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    led_handler.SetPropertiesHandler(&properties_handler);
++
++    ir_sensor_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    ir_sensor_handler.SetPropertiesHandler(&properties_handler);
++
++    nfc_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    nfc_handler.SetPropertiesHandler(&properties_handler);
++
++    mcu_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    mcu_handler.SetPropertiesHandler(&properties_handler);
++
++    std::array<NpadVibrationDevice*, 2> vibration_devices{&vibration_left, &vibration_right};
++    vibration_handler.SetAppletResource(applet_resource_holder);
++    vibration_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    vibration_handler.SetPropertiesHandler(&properties_handler);
++    vibration_handler.SetN64Vibration(&vibration_n64);
++    vibration_handler.SetVibration(vibration_devices);
++    vibration_handler.SetGcVibration(&vibration_gc);
++
++    sixaxis_handler.SetAppletResource(applet_resource_holder);
++    sixaxis_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    sixaxis_handler.SetPropertiesHandler(&properties_handler);
++    sixaxis_handler.SetSixaxisResource(sixaxis_resource);
++
++    button_handler.SetAppletResource(applet_resource_holder);
++    button_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    button_handler.SetPropertiesHandler(&properties_handler);
++
++    battery_handler.SetAppletResource(applet_resource_holder);
++    battery_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    battery_handler.SetPropertiesHandler(&properties_handler);
++
++    palma_handler.SetAbstractPadHolder(&abstract_pad_holder);
++    palma_handler.SetPropertiesHandler(&properties_handler);
++    palma_handler.SetPalmaResource(palma_resource);
++}
++
++void AbstractPad::SetNpadId(Core::HID::NpadIdType npad_id) {
++    properties_handler.SetNpadId(npad_id);
++}
++
++Result AbstractPad::Activate() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++
++    if (ref_counter != 0) {
++        ref_counter++;
++        return ResultSuccess;
++    }
++
++    std::size_t stage = 0;
++    Result result = ResultSuccess;
++
++    if (result.IsSuccess()) {
++        stage++;
++        result = properties_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = led_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = ir_sensor_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = mcu_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = nfc_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = vibration_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = sixaxis_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = button_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = battery_handler.IncrementRefCounter();
++    }
++    if (result.IsSuccess()) {
++        stage++;
++        result = palma_handler.IncrementRefCounter();
++    }
++
++    if (result.IsSuccess()) {
++        ref_counter++;
++        return result;
++    }
++
++    if (stage > 9) {
++        battery_handler.DecrementRefCounter();
++    }
++    if (stage > 8) {
++        button_handler.DecrementRefCounter();
++    }
++    if (stage > 7) {
++        sixaxis_handler.DecrementRefCounter();
++    }
++    if (stage > 6) {
++        vibration_handler.DecrementRefCounter();
++    }
++    if (stage > 5) {
++        nfc_handler.DecrementRefCounter();
++    }
++    if (stage > 4) {
++        mcu_handler.DecrementRefCounter();
++    }
++    if (stage > 3) {
++        ir_sensor_handler.DecrementRefCounter();
++    }
++    if (stage > 2) {
++        led_handler.DecrementRefCounter();
++    }
++    if (stage > 1) {
++        properties_handler.DecrementRefCounter();
++    }
++    return result;
++}
++
++Result AbstractPad::Deactivate() {
++    if (ref_counter == 0) {
++        return ResultNpadResourceNotInitialized;
++    }
++
++    ref_counter--;
++    battery_handler.DecrementRefCounter();
++    button_handler.DecrementRefCounter();
++    sixaxis_handler.DecrementRefCounter();
++    vibration_handler.DecrementRefCounter();
++    nfc_handler.DecrementRefCounter();
++    ir_sensor_handler.DecrementRefCounter();
++    mcu_handler.DecrementRefCounter();
++    led_handler.DecrementRefCounter();
++    properties_handler.DecrementRefCounter();
++    palma_handler.DecrementRefCounter();
++
++    return ResultSuccess;
++}
++
++Result AbstractPad::ActivateNpad(u64 aruid) {
++    Result result = ResultSuccess;
++    if (result.IsSuccess()) {
++        result = properties_handler.ActivateNpadUnknown0x88(aruid);
++    }
++    if (result.IsSuccess()) {
++        result = sixaxis_handler.UpdateSixAxisState2(aruid);
++    }
++    if (result.IsSuccess()) {
++        result = battery_handler.UpdateBatteryState(aruid);
++    }
++    return result;
++}
++
++NpadAbstractedPadHolder* AbstractPad::GetAbstractedPadHolder() {
++    return &abstract_pad_holder;
++}
++
++NpadAbstractPropertiesHandler* AbstractPad::GetAbstractPropertiesHandler() {
++    return &properties_handler;
++}
++
++NpadAbstractLedHandler* AbstractPad::GetAbstractLedHandler() {
++    return &led_handler;
++}
++
++NpadAbstractIrSensorHandler* AbstractPad::GetAbstractIrSensorHandler() {
++    return &ir_sensor_handler;
++}
++
++NpadAbstractMcuHandler* AbstractPad::GetAbstractMcuHandler() {
++    return &mcu_handler;
++}
++
++NpadAbstractNfcHandler* AbstractPad::GetAbstractNfcHandler() {
++    return &nfc_handler;
++}
++
++NpadAbstractVibrationHandler* AbstractPad::GetAbstractVibrationHandler() {
++    return &vibration_handler;
++}
++
++NpadAbstractSixAxisHandler* AbstractPad::GetAbstractSixAxisHandler() {
++    return &sixaxis_handler;
++}
++
++NpadAbstractButtonHandler* AbstractPad::GetAbstractButtonHandler() {
++    return &button_handler;
++}
++
++NpadAbstractBatteryHandler* AbstractPad::GetAbstractBatteryHandler() {
++    return &battery_handler;
++}
++
++NpadN64VibrationDevice* AbstractPad::GetN64VibrationDevice() {
++    return &vibration_n64;
++}
++
++NpadVibrationDevice* AbstractPad::GetVibrationDevice(Core::HID::DeviceIndex device_index) {
++    if (device_index == Core::HID::DeviceIndex::Right) {
++        return &vibration_right;
++    }
++    return &vibration_left;
++}
++
++void AbstractPad::GetLeftRightVibrationDevice(std::vector<NpadVibrationDevice*> list) {
++    list.emplace_back(&vibration_left);
++    list.emplace_back(&vibration_right);
++}
++
++NpadGcVibrationDevice* AbstractPad::GetGCVibrationDevice() {
++    return &vibration_gc;
++}
++
++Core::HID::NpadIdType AbstractPad::GetLastActiveNpad() {
++    return properties_handler.GetNpadId();
++}
++
++void AbstractPad::UpdateInterfaceType() {
++    if (interface_type != properties_handler.GetInterfaceType()) {
++        Update();
++    }
++    battery_handler.UpdateBatteryState();
++}
++
++void AbstractPad::Update() {
++    properties_handler.UpdateDeviceType();
++    led_handler.SetNpadLedHandlerLedPattern();
++    vibration_handler.UpdateVibrationState();
++    sixaxis_handler.UpdateSixAxisState();
++    nfc_handler.UpdateNfcState();
++    ir_sensor_handler.UpdateIrSensorState();
++    mcu_handler.UpdateMcuState();
++    palma_handler.UpdatePalmaState();
++    battery_handler.UpdateBatteryState();
++    button_handler.EnableCenterClamp();
++
++    interface_type = properties_handler.GetInterfaceType();
++
++    std::scoped_lock lock{*applet_resource_holder->shared_mutex};
++    properties_handler.UpdateAllDeviceProperties();
++    battery_handler.UpdateCoreBatteryState();
++    button_handler.UpdateCoreBatteryState();
++}
++
++void AbstractPad::UpdatePadState() {
++    button_handler.UpdateAllButtonLifo();
++    sixaxis_handler.UpdateSixAxisState();
++    battery_handler.UpdateCoreBatteryState();
++}
++
++void AbstractPad::EnableAppletToGetInput(u64 aruid) {
++    button_handler.UpdateButtonState(aruid);
++    sixaxis_handler.UpdateSixAxisState(aruid);
++    battery_handler.UpdateBatteryState(aruid);
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_pad.h b/src/hid_core/resources/abstracted_pad/abstract_pad.h
+new file mode 100644
+index 000000000000..cbdf84af731e
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_pad.h
+@@ -0,0 +1,123 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <mutex>
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++#include "hid_core/resources/applet_resource.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++#include "hid_core/resources/abstracted_pad/abstract_battery_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_button_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_ir_sensor_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_led_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_mcu_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_nfc_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_palma_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_sixaxis_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_vibration_handler.h"
++#include "hid_core/resources/vibration/gc_vibration_device.h"
++#include "hid_core/resources/vibration/n64_vibration_device.h"
++#include "hid_core/resources/vibration/vibration_device.h"
++
++namespace Service::HID {
++class AppletResource;
++class SixAxisResource;
++class PalmaResource;
++class NPadResource;
++class AbstractPad;
++class NpadLastActiveHandler;
++class NpadIrNfcHandler;
++class UniquePads;
++class NpadPalmaHandler;
++class FirmwareResource;
++class NpadVibration;
++class NpadHighestBattery;
++class NpadGcVibration;
++
++class CaptureButtonResource;
++class HomeButtonResource;
++class VibrationHandler;
++
++struct HandheldConfig;
++
++/// Handles Npad request from HID interfaces
++class AbstractPad final {
++public:
++    explicit AbstractPad();
++    ~AbstractPad();
++
++    void SetExternals(AppletResourceHolder* applet_resource,
++                      CaptureButtonResource* capture_button_resource,
++                      HomeButtonResource* home_button_resource, SixAxisResource* sixaxis_resource,
++                      PalmaResource* palma_resource, VibrationHandler* vibration);
++    void SetNpadId(Core::HID::NpadIdType npad_id);
++
++    Result Activate();
++    Result Deactivate();
++
++    Result ActivateNpad(u64 aruid);
++
++    NpadAbstractedPadHolder* GetAbstractedPadHolder();
++    NpadAbstractPropertiesHandler* GetAbstractPropertiesHandler();
++    NpadAbstractLedHandler* GetAbstractLedHandler();
++    NpadAbstractIrSensorHandler* GetAbstractIrSensorHandler();
++    NpadAbstractMcuHandler* GetAbstractMcuHandler();
++    NpadAbstractNfcHandler* GetAbstractNfcHandler();
++    NpadAbstractVibrationHandler* GetAbstractVibrationHandler();
++    NpadAbstractSixAxisHandler* GetAbstractSixAxisHandler();
++    NpadAbstractButtonHandler* GetAbstractButtonHandler();
++    NpadAbstractBatteryHandler* GetAbstractBatteryHandler();
++
++    NpadN64VibrationDevice* GetN64VibrationDevice();
++    NpadVibrationDevice* GetVibrationDevice(Core::HID::DeviceIndex device_index);
++    void GetLeftRightVibrationDevice(std::vector<NpadVibrationDevice*> list);
++    NpadGcVibrationDevice* GetGCVibrationDevice();
++
++    Core::HID::NpadIdType GetLastActiveNpad();
++    void UpdateInterfaceType();
++    void Update();
++
++    void UpdatePadState();
++    void EnableAppletToGetInput(u64 aruid);
++
++private:
++    AppletResourceHolder* applet_resource_holder{nullptr};
++    NpadAbstractedPadHolder abstract_pad_holder{};
++    NpadAbstractPropertiesHandler properties_handler{};
++    NpadAbstractLedHandler led_handler{};
++    NpadAbstractIrSensorHandler ir_sensor_handler{};
++    NpadAbstractNfcHandler nfc_handler{};
++    NpadAbstractMcuHandler mcu_handler{};
++    NpadAbstractVibrationHandler vibration_handler{};
++    NpadAbstractSixAxisHandler sixaxis_handler{};
++    NpadAbstractButtonHandler button_handler{};
++    NpadAbstractBatteryHandler battery_handler{};
++    NpadAbstractPalmaHandler palma_handler{};
++
++    NpadN64VibrationDevice vibration_n64{};
++    NpadVibrationDevice vibration_left{};
++    NpadVibrationDevice vibration_right{};
++    NpadGcVibrationDevice vibration_gc{};
++
++    // SixAxisConfigHolder fullkey_config;
++    // SixAxisConfigHolder handheld_config;
++    // SixAxisConfigHolder dual_left_config;
++    // SixAxisConfigHolder dual_right_config;
++    // SixAxisConfigHolder left_config;
++    // SixAxisConfigHolder right_config;
++
++    s32 ref_counter{};
++    Core::HID::NpadInterfaceType interface_type{Core::HID::NpadInterfaceType::None};
++};
++
++using FullAbstractPad = std::array<AbstractPad, MaxSupportedNpadIdTypes>;
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_pad_holder.cpp b/src/hid_core/resources/abstracted_pad/abstract_pad_holder.cpp
+new file mode 100644
+index 000000000000..8334dc34f6ca
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_pad_holder.cpp
+@@ -0,0 +1,99 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++namespace Service::HID {
++
++Result NpadAbstractedPadHolder::RegisterAbstractPad(IAbstractedPad* abstracted_pad) {
++    if (list_size >= assignment_list.size()) {
++        return ResultNpadIsNotProController;
++    }
++
++    for (std::size_t i = 0; i < list_size; i++) {
++        if (assignment_list[i].device_type == abstracted_pad->device_type) {
++            return ResultNpadIsNotProController;
++        }
++    }
++
++    assignment_list[list_size] = {
++        .abstracted_pad = abstracted_pad,
++        .device_type = abstracted_pad->device_type,
++        .interface_type = abstracted_pad->interface_type,
++        .controller_id = abstracted_pad->controller_id,
++    };
++
++    list_size++;
++    return ResultSuccess;
++}
++
++void NpadAbstractedPadHolder::RemoveAbstractPadByControllerId(u64 controller_id) {
++    if (list_size == 0) {
++        return;
++    }
++    if (controller_id == 0) {
++        return;
++    }
++    for (std::size_t i = 0; i < list_size; i++) {
++        if (assignment_list[i].controller_id != controller_id) {
++            continue;
++        }
++        for (std::size_t e = i + 1; e < list_size; e++) {
++            assignment_list[e - 1] = assignment_list[e];
++        }
++        list_size--;
++        return;
++    }
++}
++
++void NpadAbstractedPadHolder::DetachAbstractedPad() {
++    while (list_size > 0) {
++        for (std::size_t i = 1; i < list_size; i++) {
++            assignment_list[i - 1] = assignment_list[i];
++        }
++        list_size--;
++    }
++}
++
++u64 NpadAbstractedPadHolder::RemoveAbstractPadByAssignmentStyle(
++    Service::HID::AssignmentStyle assignment_style) {
++    for (std::size_t i = 0; i < list_size; i++) {
++        if ((assignment_style.raw & assignment_list[i].abstracted_pad->assignment_style.raw) == 0) {
++            continue;
++        }
++        for (std::size_t e = i + 1; e < list_size; e++) {
++            assignment_list[e - 1] = assignment_list[e];
++        }
++        list_size--;
++        return list_size;
++    }
++    return list_size;
++}
++
++u32 NpadAbstractedPadHolder::GetAbstractedPads(std::span<IAbstractedPad*> list) const {
++    u32 num_elements = std::min(static_cast<u32>(list.size()), list_size);
++    for (std::size_t i = 0; i < num_elements; i++) {
++        list[i] = assignment_list[i].abstracted_pad;
++    }
++    return num_elements;
++}
++
++void NpadAbstractedPadHolder::SetAssignmentMode(const NpadJoyAssignmentMode& mode) {
++    assignment_mode = mode;
++}
++
++NpadJoyAssignmentMode NpadAbstractedPadHolder::GetAssignmentMode() const {
++    return assignment_mode;
++}
++
++std::size_t NpadAbstractedPadHolder::GetStyleIndexList(
++    std::span<Core::HID::NpadStyleIndex> list) const {
++    for (std::size_t i = 0; i < list_size; i++) {
++        list[i] = assignment_list[i].device_type;
++    }
++    return list_size;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_pad_holder.h b/src/hid_core/resources/abstracted_pad/abstract_pad_holder.h
+new file mode 100644
+index 000000000000..fb7f472e8329
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_pad_holder.h
+@@ -0,0 +1,47 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <mutex>
++#include <span>
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++namespace Service::HID {
++struct IAbstractedPad;
++
++struct AbstractAssignmentHolder {
++    IAbstractedPad* abstracted_pad;
++    Core::HID::NpadStyleIndex device_type;
++    Core::HID::NpadInterfaceType interface_type;
++    INSERT_PADDING_BYTES(0x6);
++    u64 controller_id;
++};
++static_assert(sizeof(AbstractAssignmentHolder) == 0x18,
++              "AbstractAssignmentHolder  is an invalid size");
++
++/// This is nn::hid::server::NpadAbstractedPadHolder
++class NpadAbstractedPadHolder final {
++public:
++    Result RegisterAbstractPad(IAbstractedPad* abstracted_pad);
++    void RemoveAbstractPadByControllerId(u64 controller_id);
++    void DetachAbstractedPad();
++    u64 RemoveAbstractPadByAssignmentStyle(Service::HID::AssignmentStyle assignment_style);
++    u32 GetAbstractedPads(std::span<IAbstractedPad*> list) const;
++
++    void SetAssignmentMode(const NpadJoyAssignmentMode& mode);
++    NpadJoyAssignmentMode GetAssignmentMode() const;
++
++    std::size_t GetStyleIndexList(std::span<Core::HID::NpadStyleIndex> list) const;
++
++private:
++    std::array<AbstractAssignmentHolder, 5> assignment_list{};
++    u32 list_size{};
++    NpadJoyAssignmentMode assignment_mode{NpadJoyAssignmentMode::Dual};
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_palma_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_palma_handler.cpp
+new file mode 100644
+index 000000000000..04d276d61752
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_palma_handler.cpp
+@@ -0,0 +1,47 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/abstracted_pad/abstract_palma_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++
++namespace Service::HID {
++
++NpadAbstractPalmaHandler::NpadAbstractPalmaHandler() {}
++
++NpadAbstractPalmaHandler::~NpadAbstractPalmaHandler() = default;
++
++void NpadAbstractPalmaHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractPalmaHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++    return;
++}
++
++void NpadAbstractPalmaHandler::SetPalmaResource(PalmaResource* resource) {
++    palma_resource = resource;
++}
++
++Result NpadAbstractPalmaHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractPalmaHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++void NpadAbstractPalmaHandler::UpdatePalmaState() {
++    // TODO
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_palma_handler.h b/src/hid_core/resources/abstracted_pad/abstract_palma_handler.h
+new file mode 100644
+index 000000000000..fbd2e67e5319
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_palma_handler.h
+@@ -0,0 +1,37 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Service::HID {
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++class PalmaResource;
++
++class NpadAbstractPalmaHandler final {
++public:
++    explicit NpadAbstractPalmaHandler();
++    ~NpadAbstractPalmaHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++    void SetPalmaResource(PalmaResource* resource);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    void UpdatePalmaState();
++
++private:
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++    PalmaResource* palma_resource{nullptr};
++
++    s32 ref_counter{};
++};
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_properties_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_properties_handler.cpp
+new file mode 100644
+index 000000000000..4897a2784d43
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_properties_handler.cpp
+@@ -0,0 +1,322 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_util.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/applet_resource.h"
++#include "hid_core/resources/npad/npad_resource.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/shared_memory_format.h"
++
++namespace Service::HID {
++
++NpadAbstractPropertiesHandler::NpadAbstractPropertiesHandler() {}
++
++NpadAbstractPropertiesHandler::~NpadAbstractPropertiesHandler() = default;
++
++void NpadAbstractPropertiesHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++    return;
++}
++
++void NpadAbstractPropertiesHandler::SetAppletResource(AppletResourceHolder* applet_resource) {
++    applet_resource_holder = applet_resource;
++    return;
++}
++
++void NpadAbstractPropertiesHandler::SetNpadId(Core::HID::NpadIdType npad_id) {
++    if (!IsNpadIdValid(npad_id)) {
++        ASSERT_MSG(false, "Invalid npad id");
++    }
++
++    npad_id_type = npad_id;
++}
++
++Core::HID::NpadIdType NpadAbstractPropertiesHandler::GetNpadId() const {
++    return npad_id_type;
++}
++
++Result NpadAbstractPropertiesHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++
++    if (ref_counter != 0) {
++        ref_counter++;
++        return ResultSuccess;
++    }
++
++    const auto npad_index = NpadIdTypeToIndex(npad_id_type);
++    for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; aruid_index++) {
++        auto* data = applet_resource_holder->applet_resource->GetAruidData(aruid_index);
++        auto& internal_state =
++            data->shared_memory_format->npad.npad_entry[npad_index].internal_state;
++        if (!data->flag.is_assigned) {
++            continue;
++        }
++        internal_state.fullkey_lifo.buffer_count = 0;
++        internal_state.handheld_lifo.buffer_count = 0;
++        internal_state.joy_dual_lifo.buffer_count = 0;
++        internal_state.joy_left_lifo.buffer_count = 0;
++        internal_state.joy_right_lifo.buffer_count = 0;
++        internal_state.palma_lifo.buffer_count = 0;
++        internal_state.system_ext_lifo.buffer_count = 0;
++        internal_state.gc_trigger_lifo.buffer_count = 0;
++        internal_state.sixaxis_fullkey_lifo.lifo.buffer_count = 0;
++        internal_state.sixaxis_handheld_lifo.lifo.buffer_count = 0;
++        internal_state.sixaxis_dual_left_lifo.lifo.buffer_count = 0;
++        internal_state.sixaxis_dual_right_lifo.lifo.buffer_count = 0;
++        internal_state.sixaxis_left_lifo.lifo.buffer_count = 0;
++        internal_state.sixaxis_right_lifo.lifo.buffer_count = 0;
++
++        internal_state.style_tag = {Core::HID::NpadStyleSet::None};
++        internal_state.assignment_mode = NpadJoyAssignmentMode::Dual;
++        internal_state.joycon_color = {};
++        internal_state.fullkey_color = {};
++
++        internal_state.system_properties.raw = 0;
++        internal_state.button_properties.raw = 0;
++        internal_state.device_type.raw = 0;
++
++        internal_state.battery_level_dual = Core::HID::NpadBatteryLevel::Empty;
++        internal_state.battery_level_left = Core::HID::NpadBatteryLevel::Empty;
++        internal_state.battery_level_right = Core::HID::NpadBatteryLevel::Empty;
++
++        internal_state.applet_footer_type = AppletFooterUiType::None;
++        internal_state.applet_footer_attributes = {};
++        internal_state.lark_type_l_and_main = {};
++        internal_state.lark_type_r = {};
++
++        internal_state.sixaxis_fullkey_properties.is_newly_assigned.Assign(true);
++        internal_state.sixaxis_handheld_properties.is_newly_assigned.Assign(true);
++        internal_state.sixaxis_dual_left_properties.is_newly_assigned.Assign(true);
++        internal_state.sixaxis_dual_right_properties.is_newly_assigned.Assign(true);
++        internal_state.sixaxis_left_properties.is_newly_assigned.Assign(true);
++        internal_state.sixaxis_right_properties.is_newly_assigned.Assign(true);
++    }
++
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractPropertiesHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++Result NpadAbstractPropertiesHandler::ActivateNpadUnknown0x88(u64 aruid) {
++    const auto npad_index = NpadIdTypeToIndex(npad_id_type);
++    for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; aruid_index++) {
++        auto* data = applet_resource_holder->applet_resource->GetAruidData(aruid_index);
++        if (!data->flag.is_assigned || data->aruid != aruid) {
++            continue;
++        }
++        UpdateDeviceProperties(aruid, data->shared_memory_format->npad.npad_entry[npad_index]);
++        return ResultSuccess;
++    }
++    return ResultSuccess;
++}
++
++void NpadAbstractPropertiesHandler::UpdateDeviceType() {
++    // TODO
++}
++
++void NpadAbstractPropertiesHandler::UpdateDeviceColor() {
++    // TODO
++}
++
++void NpadAbstractPropertiesHandler::UpdateFooterAttributes() {
++    // TODO
++}
++
++void NpadAbstractPropertiesHandler::UpdateAllDeviceProperties() {
++    const auto npad_index = NpadIdTypeToIndex(npad_id_type);
++    for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; aruid_index++) {
++        auto* data = applet_resource_holder->applet_resource->GetAruidData(aruid_index);
++        if (!data->flag.is_assigned) {
++            continue;
++        }
++        auto& npad_entry = data->shared_memory_format->npad.npad_entry[npad_index];
++        UpdateDeviceProperties(data->aruid, npad_entry);
++    }
++}
++
++Core::HID::NpadInterfaceType NpadAbstractPropertiesHandler::GetFullkeyInterfaceType() {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        if (abstract_pad->device_type != Core::HID::NpadStyleIndex::Fullkey) {
++            continue;
++        }
++        if (abstract_pad->interface_type >= Core::HID::NpadInterfaceType::Embedded) {
++            // Abort
++            continue;
++        }
++        return abstract_pad->interface_type;
++    }
++
++    return Core::HID::NpadInterfaceType::None;
++}
++
++Core::HID::NpadInterfaceType NpadAbstractPropertiesHandler::GetInterfaceType() {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        if (!abstract_pad->disabled_feature_set.has_identification_code) {
++            continue;
++        }
++        if (abstract_pad->interface_type >= Core::HID::NpadInterfaceType::Embedded) {
++            // Abort
++            continue;
++        }
++        return abstract_pad->interface_type;
++    }
++    return Core::HID::NpadInterfaceType::None;
++}
++
++Core::HID::NpadStyleSet NpadAbstractPropertiesHandler::GetStyleSet(u64 aruid) {
++    // TODO
++    return Core::HID::NpadStyleSet::None;
++}
++
++std::size_t NpadAbstractPropertiesHandler::GetAbstractedPadsWithStyleTag(
++    std::span<IAbstractedPad*> list, Core::HID::NpadStyleTag style) {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    if (count == 0) {
++        return count;
++    }
++
++    bool is_supported_style_set{};
++    const auto result = applet_resource_holder->shared_npad_resource->IsSupportedNpadStyleSet(
++        is_supported_style_set, applet_resource_holder->applet_resource->GetActiveAruid());
++
++    if (!is_supported_style_set || result.IsError()) {
++        for (std::size_t i = 0; i < count; i++) {
++            // TODO
++        }
++        return count;
++    }
++
++    std::size_t filtered_count{};
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        const bool is_enabled = true;
++        if (is_enabled) {
++            list[filtered_count] = abstract_pad;
++            filtered_count++;
++        }
++    }
++
++    return filtered_count;
++}
++
++std::size_t NpadAbstractPropertiesHandler::GetAbstractedPads(std::span<IAbstractedPad*> list) {
++    Core::HID::NpadStyleTag style{
++        GetStyleSet(applet_resource_holder->applet_resource->GetActiveAruid())};
++    return GetAbstractedPadsWithStyleTag(list, style);
++}
++
++AppletFooterUiType NpadAbstractPropertiesHandler::GetAppletFooterUiType() {
++    return applet_ui_type.footer;
++}
++
++AppletDetailedUiType NpadAbstractPropertiesHandler::GetAppletDetailedUiType() {
++    return applet_ui_type;
++}
++
++void NpadAbstractPropertiesHandler::UpdateDeviceProperties(u64 aruid,
++                                                           NpadSharedMemoryEntry& internal_state) {
++    // TODO
++}
++
++Core::HID::NpadInterfaceType NpadAbstractPropertiesHandler::GetNpadInterfaceType() {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        if (abstract_pad->interface_type >= Core::HID::NpadInterfaceType::Embedded) {
++            // Abort
++            continue;
++        }
++        return abstract_pad->interface_type;
++    }
++
++    return Core::HID::NpadInterfaceType::None;
++}
++
++Result NpadAbstractPropertiesHandler::GetNpadFullKeyGripColor(
++    Core::HID::NpadColor& main_color, Core::HID::NpadColor& sub_color) const {
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    if (applet_ui_type.footer != AppletFooterUiType::SwitchProController) {
++        return ResultNpadIsNotProController;
++    }
++
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        return ResultSuccess;
++    }
++
++    return ResultNpadIsNotProController;
++}
++
++void NpadAbstractPropertiesHandler::GetNpadLeftRightInterfaceType(
++    Core::HID::NpadInterfaceType& out_left_interface,
++    Core::HID::NpadInterfaceType& out_right_interface) const {
++    out_left_interface = Core::HID::NpadInterfaceType::None;
++    out_right_interface = Core::HID::NpadInterfaceType::None;
++
++    std::array<IAbstractedPad*, 5> abstract_pads{};
++    const std::size_t count = abstract_pad_holder->GetAbstractedPads(abstract_pads);
++
++    for (std::size_t i = 0; i < count; i++) {
++        auto* abstract_pad = abstract_pads[i];
++        if (!abstract_pad->internal_flags.is_connected) {
++            continue;
++        }
++        if (abstract_pad->assignment_style.is_external_left_assigned &&
++            abstract_pad->assignment_style.is_handheld_left_assigned) {
++            if (abstract_pad->interface_type > Core::HID::NpadInterfaceType::Embedded) {
++                // Abort
++                continue;
++            }
++            out_left_interface = abstract_pad->interface_type;
++            continue;
++        }
++        if (abstract_pad->assignment_style.is_external_right_assigned &&
++            abstract_pad->assignment_style.is_handheld_right_assigned) {
++            if (abstract_pad->interface_type > Core::HID::NpadInterfaceType::Embedded) {
++                // Abort
++                continue;
++            }
++            out_right_interface = abstract_pad->interface_type;
++            continue;
++        }
++    }
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_properties_handler.h b/src/hid_core/resources/abstracted_pad/abstract_properties_handler.h
+new file mode 100644
+index 000000000000..fa6827899829
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_properties_handler.h
+@@ -0,0 +1,86 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <span>
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++#include "hid_core/resources/npad/npad_types.h"
++
++namespace Service::HID {
++struct NpadSharedMemoryEntry;
++
++struct AppletResourceHolder;
++class NpadAbstractedPadHolder;
++
++struct ColorProperties {
++    ColorAttribute attribute;
++    Core::HID::NpadControllerColor color;
++    INSERT_PADDING_BYTES(0x4);
++};
++
++/// Handles Npad request from HID interfaces
++class NpadAbstractPropertiesHandler final {
++public:
++    explicit NpadAbstractPropertiesHandler();
++    ~NpadAbstractPropertiesHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetAppletResource(AppletResourceHolder* applet_resource);
++    void SetNpadId(Core::HID::NpadIdType npad_id);
++
++    Core::HID::NpadIdType GetNpadId() const;
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    Result ActivateNpadUnknown0x88(u64 aruid);
++
++    void UpdateDeviceType();
++    void UpdateDeviceColor();
++    void UpdateFooterAttributes();
++    void UpdateAllDeviceProperties();
++
++    Core::HID::NpadInterfaceType GetFullkeyInterfaceType();
++    Core::HID::NpadInterfaceType GetInterfaceType();
++
++    Core::HID::NpadStyleSet GetStyleSet(u64 aruid);
++    std::size_t GetAbstractedPadsWithStyleTag(std::span<IAbstractedPad*> list,
++                                              Core::HID::NpadStyleTag style);
++    std::size_t GetAbstractedPads(std::span<IAbstractedPad*> list);
++
++    AppletFooterUiType GetAppletFooterUiType();
++
++    AppletDetailedUiType GetAppletDetailedUiType();
++
++    void UpdateDeviceProperties(u64 aruid, NpadSharedMemoryEntry& internal_state);
++
++    Core::HID::NpadInterfaceType GetNpadInterfaceType();
++
++    Result GetNpadFullKeyGripColor(Core::HID::NpadColor& main_color,
++                                   Core::HID::NpadColor& sub_color) const;
++
++    void GetNpadLeftRightInterfaceType(Core::HID::NpadInterfaceType& param_2,
++                                       Core::HID::NpadInterfaceType& param_3) const;
++
++private:
++    AppletResourceHolder* applet_resource_holder{nullptr};
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    Core::HID::NpadIdType npad_id_type{Core::HID::NpadIdType::Invalid};
++    s32 ref_counter{};
++    Core::HID::DeviceIndex device_type{};
++    AppletDetailedUiType applet_ui_type{};
++    AppletFooterUiAttributes applet_ui_attributes{};
++    bool is_vertical{};
++    bool is_horizontal{};
++    bool use_plus{};
++    bool use_minus{};
++    bool has_directional_buttons{};
++    ColorProperties fullkey_color{};
++    ColorProperties left_color{};
++    ColorProperties right_color{};
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_sixaxis_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_sixaxis_handler.cpp
+new file mode 100644
+index 000000000000..6d759298e0f3
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_sixaxis_handler.cpp
+@@ -0,0 +1,154 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/hid_util.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_sixaxis_handler.h"
++#include "hid_core/resources/applet_resource.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/shared_memory_format.h"
++
++namespace Service::HID {
++
++NpadAbstractSixAxisHandler::NpadAbstractSixAxisHandler() {}
++
++NpadAbstractSixAxisHandler::~NpadAbstractSixAxisHandler() = default;
++
++void NpadAbstractSixAxisHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractSixAxisHandler::SetAppletResource(AppletResourceHolder* applet_resource) {
++    applet_resource_holder = applet_resource;
++}
++
++void NpadAbstractSixAxisHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++}
++
++void NpadAbstractSixAxisHandler::SetSixaxisResource(SixAxisResource* resource) {
++    six_axis_resource = resource;
++}
++
++Result NpadAbstractSixAxisHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractSixAxisHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++u64 NpadAbstractSixAxisHandler::IsFirmwareUpdateAvailable() {
++    // TODO
++    return false;
++}
++
++Result NpadAbstractSixAxisHandler::UpdateSixAxisState() {
++    Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
++    for (std::size_t i = 0; i < AruidIndexMax; i++) {
++        auto* data = applet_resource_holder->applet_resource->GetAruidDataByIndex(i);
++        if (data->flag.is_assigned) {
++            continue;
++        }
++        auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
++        UpdateSixaxisInternalState(npad_entry, data->aruid,
++                                   data->flag.enable_six_axis_sensor.As<bool>());
++    }
++    return ResultSuccess;
++}
++
++Result NpadAbstractSixAxisHandler::UpdateSixAxisState(u64 aruid) {
++    Core::HID::NpadIdType npad_id = properties_handler->GetNpadId();
++    auto* data = applet_resource_holder->applet_resource->GetAruidData(aruid);
++    if (data == nullptr) {
++        return ResultSuccess;
++    }
++    auto& npad_entry = data->shared_memory_format->npad.npad_entry[NpadIdTypeToIndex(npad_id)];
++    UpdateSixaxisInternalState(npad_entry, data->aruid,
++                               data->flag.enable_six_axis_sensor.As<bool>());
++    return ResultSuccess;
++}
++
++Result NpadAbstractSixAxisHandler::UpdateSixAxisState2(u64 aruid) {
++    const auto npad_index = NpadIdTypeToIndex(properties_handler->GetNpadId());
++    AruidData* aruid_data = applet_resource_holder->applet_resource->GetAruidData(aruid);
++    if (aruid_data == nullptr) {
++        return ResultSuccess;
++    }
++    auto& npad_internal_state = aruid_data->shared_memory_format->npad.npad_entry[npad_index];
++    UpdateSixaxisInternalState(npad_internal_state, aruid,
++                               aruid_data->flag.enable_six_axis_sensor.As<bool>());
++    return ResultSuccess;
++}
++
++void NpadAbstractSixAxisHandler::UpdateSixaxisInternalState(NpadSharedMemoryEntry& npad_entry,
++                                                            u64 aruid, bool is_sensor_enabled) {
++    const Core::HID::NpadStyleTag style_tag{properties_handler->GetStyleSet(aruid)};
++
++    if (!style_tag.palma) {
++        UpdateSixaxisFullkeyLifo(style_tag, npad_entry.internal_state.sixaxis_fullkey_lifo,
++                                 is_sensor_enabled);
++    } else {
++        UpdateSixAxisPalmaLifo(style_tag, npad_entry.internal_state.sixaxis_fullkey_lifo,
++                               is_sensor_enabled);
++    }
++    UpdateSixaxisHandheldLifo(style_tag, npad_entry.internal_state.sixaxis_handheld_lifo,
++                              is_sensor_enabled);
++    UpdateSixaxisDualLifo(style_tag, npad_entry.internal_state.sixaxis_dual_left_lifo,
++                          is_sensor_enabled);
++    UpdateSixaxisDualLifo(style_tag, npad_entry.internal_state.sixaxis_dual_right_lifo,
++                          is_sensor_enabled);
++    UpdateSixaxisLeftLifo(style_tag, npad_entry.internal_state.sixaxis_left_lifo,
++                          is_sensor_enabled);
++    UpdateSixaxisRightLifo(style_tag, npad_entry.internal_state.sixaxis_right_lifo,
++                           is_sensor_enabled);
++    // TODO: Set sixaxis properties
++}
++
++void NpadAbstractSixAxisHandler::UpdateSixaxisFullkeyLifo(Core::HID::NpadStyleTag style_tag,
++                                                          NpadSixAxisSensorLifo& sensor_lifo,
++                                                          bool is_sensor_enabled) {
++    // TODO
++}
++
++void NpadAbstractSixAxisHandler::UpdateSixAxisPalmaLifo(Core::HID::NpadStyleTag style_tag,
++                                                        NpadSixAxisSensorLifo& sensor_lifo,
++                                                        bool is_sensor_enabled) {
++    // TODO
++}
++
++void NpadAbstractSixAxisHandler::UpdateSixaxisHandheldLifo(Core::HID::NpadStyleTag style_tag,
++                                                           NpadSixAxisSensorLifo& sensor_lifo,
++                                                           bool is_sensor_enabled) {
++    // TODO
++}
++
++void NpadAbstractSixAxisHandler::UpdateSixaxisDualLifo(Core::HID::NpadStyleTag style_tag,
++                                                       NpadSixAxisSensorLifo& sensor_lifo,
++                                                       bool is_sensor_enabled) {
++    // TODO
++}
++
++void NpadAbstractSixAxisHandler::UpdateSixaxisLeftLifo(Core::HID::NpadStyleTag style_tag,
++                                                       NpadSixAxisSensorLifo& sensor_lifo,
++                                                       bool is_sensor_enabled) {
++    // TODO
++}
++
++void NpadAbstractSixAxisHandler::UpdateSixaxisRightLifo(Core::HID::NpadStyleTag style_tag,
++                                                        NpadSixAxisSensorLifo& sensor_lifo,
++                                                        bool is_sensor_enabled) {
++    // TODO
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_sixaxis_handler.h b/src/hid_core/resources/abstracted_pad/abstract_sixaxis_handler.h
+new file mode 100644
+index 000000000000..9c20459e91d6
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_sixaxis_handler.h
+@@ -0,0 +1,61 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Service::HID {
++class SixAxisResource;
++struct AppletResourceHolder;
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++struct NpadSixAxisSensorLifo;
++
++/// Handles Npad request from HID interfaces
++class NpadAbstractSixAxisHandler final {
++public:
++    explicit NpadAbstractSixAxisHandler();
++    ~NpadAbstractSixAxisHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetAppletResource(AppletResourceHolder* applet_resource);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++    void SetSixaxisResource(SixAxisResource* resource);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    u64 IsFirmwareUpdateAvailable();
++
++    Result UpdateSixAxisState();
++    Result UpdateSixAxisState(u64 aruid);
++    Result UpdateSixAxisState2(u64 aruid);
++
++private:
++    void UpdateSixaxisInternalState(NpadSharedMemoryEntry& npad_entry, u64 aruid,
++                                    bool is_sensor_enabled);
++    void UpdateSixaxisFullkeyLifo(Core::HID::NpadStyleTag style_tag,
++                                  NpadSixAxisSensorLifo& sensor_lifo, bool is_sensor_enabled);
++    void UpdateSixAxisPalmaLifo(Core::HID::NpadStyleTag style_tag,
++                                NpadSixAxisSensorLifo& sensor_lifo, bool is_sensor_enabled);
++    void UpdateSixaxisHandheldLifo(Core::HID::NpadStyleTag style_tag,
++                                   NpadSixAxisSensorLifo& sensor_lifo, bool is_sensor_enabled);
++    void UpdateSixaxisDualLifo(Core::HID::NpadStyleTag style_tag,
++                               NpadSixAxisSensorLifo& sensor_lifo, bool is_sensor_enabled);
++    void UpdateSixaxisLeftLifo(Core::HID::NpadStyleTag style_tag,
++                               NpadSixAxisSensorLifo& sensor_lifo, bool is_sensor_enabled);
++    void UpdateSixaxisRightLifo(Core::HID::NpadStyleTag style_tag,
++                                NpadSixAxisSensorLifo& sensor_lifo, bool is_sensor_enabled);
++
++    AppletResourceHolder* applet_resource_holder{nullptr};
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++    SixAxisResource* six_axis_resource{nullptr};
++
++    s32 ref_counter{};
++};
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_vibration_handler.cpp b/src/hid_core/resources/abstracted_pad/abstract_vibration_handler.cpp
+new file mode 100644
+index 000000000000..a00d6c9de1f4
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_vibration_handler.cpp
+@@ -0,0 +1,73 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/hid_util.h"
++#include "hid_core/resources/abstracted_pad/abstract_pad_holder.h"
++#include "hid_core/resources/abstracted_pad/abstract_properties_handler.h"
++#include "hid_core/resources/abstracted_pad/abstract_vibration_handler.h"
++#include "hid_core/resources/applet_resource.h"
++#include "hid_core/resources/npad/npad_vibration.h"
++#include "hid_core/resources/vibration/gc_vibration_device.h"
++#include "hid_core/resources/vibration/n64_vibration_device.h"
++#include "hid_core/resources/vibration/vibration_device.h"
++
++namespace Service::HID {
++
++NpadAbstractVibrationHandler::NpadAbstractVibrationHandler() {}
++
++NpadAbstractVibrationHandler::~NpadAbstractVibrationHandler() = default;
++
++void NpadAbstractVibrationHandler::SetAbstractPadHolder(NpadAbstractedPadHolder* holder) {
++    abstract_pad_holder = holder;
++}
++
++void NpadAbstractVibrationHandler::SetAppletResource(AppletResourceHolder* applet_resource) {
++    applet_resource_holder = applet_resource;
++}
++
++void NpadAbstractVibrationHandler::SetPropertiesHandler(NpadAbstractPropertiesHandler* handler) {
++    properties_handler = handler;
++}
++
++void NpadAbstractVibrationHandler::SetN64Vibration(NpadN64VibrationDevice* n64_device) {
++    n64_vibration_device = n64_device;
++}
++
++void NpadAbstractVibrationHandler::SetVibration(std::span<NpadVibrationDevice*> device) {
++    for (std::size_t i = 0; i < device.size() && i < vibration_device.size(); i++) {
++        vibration_device[i] = device[i];
++    }
++}
++
++void NpadAbstractVibrationHandler::SetGcVibration(NpadGcVibrationDevice* gc_device) {
++    gc_vibration_device = gc_device;
++}
++
++Result NpadAbstractVibrationHandler::IncrementRefCounter() {
++    if (ref_counter == std::numeric_limits<s32>::max() - 1) {
++        return ResultNpadHandlerOverflow;
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadAbstractVibrationHandler::DecrementRefCounter() {
++    if (ref_counter == 0) {
++        return ResultNpadHandlerNotInitialized;
++    }
++    ref_counter--;
++    return ResultSuccess;
++}
++
++void NpadAbstractVibrationHandler::UpdateVibrationState() {
++    const bool is_handheld_hid_enabled =
++        applet_resource_holder->handheld_config->is_handheld_hid_enabled;
++    const bool is_force_handheld_style_vibration =
++        applet_resource_holder->handheld_config->is_force_handheld_style_vibration;
++
++    if (!is_handheld_hid_enabled && is_force_handheld_style_vibration) {
++        // TODO
++    }
++}
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/abstracted_pad/abstract_vibration_handler.h b/src/hid_core/resources/abstracted_pad/abstract_vibration_handler.h
+new file mode 100644
+index 000000000000..aeb07ce86814
+--- /dev/null
++++ b/src/hid_core/resources/abstracted_pad/abstract_vibration_handler.h
+@@ -0,0 +1,51 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <span>
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++
++namespace Service::HID {
++struct AppletResourceHolder;
++class NpadAbstractedPadHolder;
++class NpadAbstractPropertiesHandler;
++class NpadGcVibrationDevice;
++class NpadVibrationDevice;
++class NpadN64VibrationDevice;
++class NpadVibration;
++
++/// Keeps track of battery levels and updates npad battery shared memory values
++class NpadAbstractVibrationHandler final {
++public:
++    explicit NpadAbstractVibrationHandler();
++    ~NpadAbstractVibrationHandler();
++
++    void SetAbstractPadHolder(NpadAbstractedPadHolder* holder);
++    void SetAppletResource(AppletResourceHolder* applet_resource);
++    void SetPropertiesHandler(NpadAbstractPropertiesHandler* handler);
++
++    void SetN64Vibration(NpadN64VibrationDevice* n64_device);
++    void SetVibration(std::span<NpadVibrationDevice*> device);
++    void SetGcVibration(NpadGcVibrationDevice* gc_device);
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    void UpdateVibrationState();
++
++private:
++    AppletResourceHolder* applet_resource_holder{nullptr};
++    NpadAbstractedPadHolder* abstract_pad_holder{nullptr};
++    NpadAbstractPropertiesHandler* properties_handler{nullptr};
++
++    NpadN64VibrationDevice* n64_vibration_device{nullptr};
++    std::array<NpadVibrationDevice*, 2> vibration_device{};
++    NpadGcVibrationDevice* gc_vibration_device{nullptr};
++    NpadVibration* vibration_handler{nullptr};
++    s32 ref_counter{};
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/npad/npad.cpp b/src/hid_core/resources/npad/npad.cpp
+index 1f8a0f8ab7eb..97537a2e26ee 100644
+--- a/src/hid_core/resources/npad/npad.cpp
++++ b/src/hid_core/resources/npad/npad.cpp
+@@ -193,7 +193,7 @@ void NPad::InitNewlyAddedController(u64 aruid, Core::HID::NpadIdType npad_id) {
+     case Core::HID::NpadStyleIndex::None:
+         ASSERT(false);
+         break;
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+         shared_memory->fullkey_color.attribute = ColorAttribute::Ok;
+         shared_memory->fullkey_color.fullkey = body_colors.fullkey;
+         shared_memory->battery_level_dual = battery_level.dual.battery_level;
+@@ -491,7 +491,7 @@ void NPad::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+             case Core::HID::NpadStyleIndex::None:
+                 ASSERT(false);
+                 break;
+-            case Core::HID::NpadStyleIndex::ProController:
++            case Core::HID::NpadStyleIndex::Fullkey:
+             case Core::HID::NpadStyleIndex::NES:
+             case Core::HID::NpadStyleIndex::SNES:
+             case Core::HID::NpadStyleIndex::N64:
+@@ -1292,7 +1292,7 @@ Core::HID::SixAxisSensorProperties& NPad::GetSixaxisProperties(
+     u64 aruid, const Core::HID::SixAxisSensorHandle& sixaxis_handle) {
+     auto& controller = GetControllerFromHandle(aruid, sixaxis_handle);
+     switch (sixaxis_handle.npad_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::Pokeball:
+         return controller.shared_memory->sixaxis_fullkey_properties;
+     case Core::HID::NpadStyleIndex::Handheld:
+@@ -1315,7 +1315,7 @@ const Core::HID::SixAxisSensorProperties& NPad::GetSixaxisProperties(
+     u64 aruid, const Core::HID::SixAxisSensorHandle& sixaxis_handle) const {
+     const auto& controller = GetControllerFromHandle(aruid, sixaxis_handle);
+     switch (sixaxis_handle.npad_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::Pokeball:
+         return controller.shared_memory->sixaxis_fullkey_properties;
+     case Core::HID::NpadStyleIndex::Handheld:
+diff --git a/src/hid_core/resources/npad/npad_data.cpp b/src/hid_core/resources/npad/npad_data.cpp
+index c7e9760cb6c7..29ad5cb08cc4 100644
+--- a/src/hid_core/resources/npad/npad_data.cpp
++++ b/src/hid_core/resources/npad/npad_data.cpp
+@@ -151,7 +151,7 @@ Core::HID::NpadStyleSet NPadData::GetSupportedNpadStyleSet() const {
+ bool NPadData::IsNpadStyleIndexSupported(Core::HID::NpadStyleIndex style_index) const {
+     Core::HID::NpadStyleTag style = {supported_npad_style_set};
+     switch (style_index) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+         return style.fullkey.As<bool>();
+     case Core::HID::NpadStyleIndex::Handheld:
+         return style.handheld.As<bool>();
+diff --git a/src/hid_core/resources/npad/npad_types.h b/src/hid_core/resources/npad/npad_types.h
+index a02f9cf16149..074dd40cf554 100644
+--- a/src/hid_core/resources/npad/npad_types.h
++++ b/src/hid_core/resources/npad/npad_types.h
+@@ -252,4 +252,103 @@ enum class NpadLagerType : u32 {
+     U,
+ };
+ 
++// nn::hidtypes::FeatureType
++struct FeatureType {
++    union {
++        u64 raw{};
++        BitField<0, 1, u64> has_left_analog_stick;
++        BitField<1, 1, u64> has_right_analog_stick;
++        BitField<2, 1, u64> has_left_joy_six_axis_sensor;
++        BitField<3, 1, u64> has_right_joy_six_axis_sensor;
++        BitField<4, 1, u64> has_fullkey_joy_six_axis_sensor;
++        BitField<5, 1, u64> has_left_lra_vibration_device;
++        BitField<6, 1, u64> has_right_lra_vibration_device;
++        BitField<7, 1, u64> has_gc_vibration_device;
++        BitField<8, 1, u64> has_erm_vibration_device;
++        BitField<9, 1, u64> has_left_joy_rail_bus;
++        BitField<10, 1, u64> has_right_joy_rail_bus;
++        BitField<11, 1, u64> has_internal_bus;
++        BitField<12, 1, u64> is_palma;
++        BitField<13, 1, u64> has_nfc;
++        BitField<14, 1, u64> has_ir_sensor;
++        BitField<15, 1, u64> is_analog_stick_calibration_supported;
++        BitField<16, 1, u64> is_six_axis_Sensor_user_calibration_supported;
++        BitField<17, 1, u64> has_left_right_joy_battery;
++        BitField<18, 1, u64> has_fullkey_battery;
++        BitField<19, 1, u64> is_disconnect_controller_if_battery_none;
++        BitField<20, 1, u64> has_controller_color;
++        BitField<21, 1, u64> has_grip_color;
++        BitField<22, 1, u64> has_identification_code;
++        BitField<23, 1, u64> has_bluetooth_address;
++        BitField<24, 1, u64> has_mcu;
++        BitField<25, 1, u64> has_notification_led;
++        BitField<26, 1, u64> has_directional_buttons;
++        BitField<27, 1, u64> has_indicator_led;
++        BitField<28, 1, u64> is_button_config_embedded_supported;
++        BitField<29, 1, u64> is_button_config_full_supported;
++        BitField<30, 1, u64> is_button_config_left_supported;
++        BitField<31, 1, u64> is_button_config_right_supported;
++        BitField<32, 1, u64> is_usb_hid_device;
++        BitField<33, 1, u64> is_kuina_device;
++        BitField<34, 1, u64> is_direct_usb_to_bt_switching_device;
++        BitField<35, 1, u64> is_normalize_analog_stick_with_inner_cross;
++    };
++};
++static_assert(sizeof(FeatureType) == 8, "FeatureType is an invalid size");
++
++// This is nn::hid::AssignmentStyle
++struct AssignmentStyle {
++    union {
++        u32 raw{};
++        BitField<0, 1, u32> is_external_assigned;
++        BitField<1, 1, u32> is_external_left_assigned;
++        BitField<2, 1, u32> is_external_right_assigned;
++        BitField<3, 1, u32> is_handheld_assigned;
++        BitField<4, 1, u32> is_handheld_left_assigned;
++        BitField<5, 1, u32> is_handheld_right_assigned;
++    };
++};
++static_assert(sizeof(AssignmentStyle) == 4, "AssignmentStyle is an invalid size");
++
++// This is nn::hid::server::IAbstractedPad::InternalFlags
++struct InternalFlags {
++    union {
++        u32 raw{};
++        BitField<0, 1, u32> is_bound;
++        BitField<1, 1, u32> is_connected;
++        BitField<2, 1, u32> is_battery_low_ovln_required;
++        BitField<3, 1, u32> is_battery_low_ovln_delay_required;
++        BitField<4, 1, u32> is_sample_recieved;
++        BitField<5, 1, u32> is_virtual_input;
++        BitField<6, 1, u32> is_wired;
++        BitField<8, 1, u32> use_center_clamp;
++        BitField<9, 1, u32> has_virtual_six_axis_sensor_acceleration;
++        BitField<10, 1, u32> has_virtual_six_axis_sensor_angle;
++        BitField<11, 1, u32> is_debug_pad;
++    };
++};
++static_assert(sizeof(InternalFlags) == 4, "InternalFlags is an invalid size");
++
++/// This is nn::hid::server::IAbstractedPad
++struct IAbstractedPad {
++    InternalFlags internal_flags;
++    u64 controller_id;
++    u32 controller_number;
++    u64 low_battery_display_delay_time;
++    u64 low_battery_display_delay_interval;
++    FeatureType feature_set;
++    FeatureType disabled_feature_set;
++    AssignmentStyle assignment_style;
++    Core::HID::NpadStyleIndex device_type;
++    Core::HID::NpadInterfaceType interface_type;
++    Core::HID::NpadPowerInfo power_info;
++    u32 pad_state;
++    u32 button_mask;
++    u32 system_button_mask;
++    u8 indicator;
++    std::vector<f32> virtual_six_axis_sensor_acceleration;
++    std::vector<f32> virtual_six_axis_sensor_angle;
++    u64 xcd_handle;
++    u64 color;
++};
+ } // namespace Service::HID
+diff --git a/src/hid_core/resources/npad/npad_vibration.cpp b/src/hid_core/resources/npad/npad_vibration.cpp
+new file mode 100644
+index 000000000000..3bdd55dec78f
+--- /dev/null
++++ b/src/hid_core/resources/npad/npad_vibration.cpp
+@@ -0,0 +1,80 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/npad/npad_vibration.h"
++
++namespace Service::HID {
++
++NpadVibration::NpadVibration() {}
++
++NpadVibration::~NpadVibration() = default;
++
++Result NpadVibration::Activate() {
++    std::scoped_lock lock{mutex};
++
++    const f32 master_volume = 1.0f; // nn::settings::system::GetVibrationMasterVolume();
++    // if (master_volume < 0.0f || master_volume > 1.0f) {
++    //     return ResultVibrationStrenghtOutOfRange;
++    // }
++
++    volume = master_volume;
++    return ResultSuccess;
++}
++
++Result NpadVibration::Deactivate() {
++    return ResultSuccess;
++}
++
++Result NpadVibration::SetVibrationMasterVolume(f32 master_volume) {
++    std::scoped_lock lock{mutex};
++
++    if (master_volume < 0.0f && master_volume > 1.0f) {
++        return ResultVibrationStrenghtOutOfRange;
++    }
++
++    volume = master_volume;
++    // nn::settings::system::SetVibrationMasterVolume(master_volume);
++
++    return ResultSuccess;
++}
++
++Result NpadVibration::GetVibrationVolume(f32& out_volume) const {
++    std::scoped_lock lock{mutex};
++    out_volume = volume;
++    return ResultSuccess;
++}
++
++Result NpadVibration::GetVibrationMasterVolume(f32& out_volume) const {
++    std::scoped_lock lock{mutex};
++
++    const f32 master_volume = 1.0f; // nn::settings::system::GetVibrationMasterVolume();
++    // if (master_volume < 0.0f || master_volume > 1.0f) {
++    //     return ResultVibrationStrenghtOutOfRange;
++    // }
++
++    out_volume = master_volume;
++    return ResultSuccess;
++}
++
++Result NpadVibration::BeginPermitVibrationSession(u64 aruid) {
++    std::scoped_lock lock{mutex};
++    session_aruid = aruid;
++    volume = 1.0;
++    return ResultSuccess;
++}
++
++Result NpadVibration::EndPermitVibrationSession() {
++    std::scoped_lock lock{mutex};
++
++    const f32 master_volume = 1.0f; // nn::settings::system::GetVibrationMasterVolume();
++    // if (master_volume < 0.0f || master_volume > 1.0f) {
++    //     return ResultVibrationStrenghtOutOfRange;
++    // }
++
++    volume = master_volume;
++    session_aruid = 0;
++    return ResultSuccess;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/npad/npad_vibration.h b/src/hid_core/resources/npad/npad_vibration.h
+new file mode 100644
+index 000000000000..0748aeffc1a0
+--- /dev/null
++++ b/src/hid_core/resources/npad/npad_vibration.h
+@@ -0,0 +1,34 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <mutex>
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++
++namespace Service::HID {
++
++class NpadVibration final {
++public:
++    explicit NpadVibration();
++    ~NpadVibration();
++
++    Result Activate();
++    Result Deactivate();
++
++    Result SetVibrationMasterVolume(f32 master_volume);
++    Result GetVibrationVolume(f32& out_volume) const;
++    Result GetVibrationMasterVolume(f32& out_volume) const;
++
++    Result BeginPermitVibrationSession(u64 aruid);
++    Result EndPermitVibrationSession();
++
++private:
++    f32 volume{};
++    u64 session_aruid{};
++    mutable std::mutex mutex;
++};
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/six_axis/six_axis.cpp b/src/hid_core/resources/six_axis/six_axis.cpp
+index 8a9677c50210..da12d2d5ab62 100644
+--- a/src/hid_core/resources/six_axis/six_axis.cpp
++++ b/src/hid_core/resources/six_axis/six_axis.cpp
+@@ -114,7 +114,7 @@ void SixAxis::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+         case Core::HID::NpadStyleIndex::None:
+             ASSERT(false);
+             break;
+-        case Core::HID::NpadStyleIndex::ProController:
++        case Core::HID::NpadStyleIndex::Fullkey:
+             set_motion_state(sixaxis_fullkey_state, motion_state[0]);
+             break;
+         case Core::HID::NpadStyleIndex::Handheld:
+@@ -345,7 +345,7 @@ SixAxis::SixaxisParameters& SixAxis::GetSixaxisState(
+     const Core::HID::SixAxisSensorHandle& sixaxis_handle) {
+     auto& controller = GetControllerFromHandle(sixaxis_handle);
+     switch (sixaxis_handle.npad_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::Pokeball:
+         return controller.sixaxis_fullkey;
+     case Core::HID::NpadStyleIndex::Handheld:
+@@ -368,7 +368,7 @@ const SixAxis::SixaxisParameters& SixAxis::GetSixaxisState(
+     const Core::HID::SixAxisSensorHandle& sixaxis_handle) const {
+     const auto& controller = GetControllerFromHandle(sixaxis_handle);
+     switch (sixaxis_handle.npad_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::Pokeball:
+         return controller.sixaxis_fullkey;
+     case Core::HID::NpadStyleIndex::Handheld:
+diff --git a/src/hid_core/resources/vibration/gc_vibration_device.cpp b/src/hid_core/resources/vibration/gc_vibration_device.cpp
+new file mode 100644
+index 000000000000..f01f81b9a3d6
+--- /dev/null
++++ b/src/hid_core/resources/vibration/gc_vibration_device.cpp
+@@ -0,0 +1,106 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/npad/npad_vibration.h"
++#include "hid_core/resources/vibration/gc_vibration_device.h"
++
++namespace Service::HID {
++
++NpadGcVibrationDevice::NpadGcVibrationDevice() {}
++
++Result NpadGcVibrationDevice::IncrementRefCounter() {
++    if (ref_counter == 0 && is_mounted) {
++        f32 volume = 1.0f;
++        const auto result = vibration_handler->GetVibrationVolume(volume);
++        if (result.IsSuccess()) {
++            // TODO: SendVibrationGcErmCommand
++        }
++    }
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadGcVibrationDevice::DecrementRefCounter() {
++    if (ref_counter == 1 && !is_mounted) {
++        f32 volume = 1.0f;
++        const auto result = vibration_handler->GetVibrationVolume(volume);
++        if (result.IsSuccess()) {
++            // TODO: SendVibrationGcErmCommand
++        }
++    }
++
++    if (ref_counter > 0) {
++        ref_counter--;
++    }
++
++    return ResultSuccess;
++}
++
++Result NpadGcVibrationDevice::SendVibrationGcErmCommand(Core::HID::VibrationGcErmCommand command) {
++    if (!is_mounted) {
++        return ResultSuccess;
++    }
++    f32 volume = 1.0f;
++    const auto result = vibration_handler->GetVibrationVolume(volume);
++    if (result.IsError()) {
++        return result;
++    }
++    if (volume == 0.0) {
++        command = Core::HID::VibrationGcErmCommand::Stop;
++    } else {
++        if (command > Core::HID::VibrationGcErmCommand::StopHard) {
++            // Abort
++            return ResultSuccess;
++        }
++    }
++    // TODO: SendVibrationGcErmCommand
++    return ResultSuccess;
++}
++
++Result NpadGcVibrationDevice::GetActualVibrationGcErmCommand(
++    Core::HID::VibrationGcErmCommand& out_command) {
++    if (!is_mounted) {
++        out_command = Core::HID::VibrationGcErmCommand::Stop;
++        return ResultSuccess;
++    }
++
++    f32 volume = 1.0f;
++    const auto result = vibration_handler->GetVibrationVolume(volume);
++    if (result.IsError()) {
++        return result;
++    }
++    if (volume == 0.0f) {
++        out_command = Core::HID::VibrationGcErmCommand::Stop;
++        return ResultSuccess;
++    }
++
++    // TODO: GetActualVibrationGcErmCommand
++    return ResultSuccess;
++}
++
++Result NpadGcVibrationDevice::SendVibrationNotificationPattern(
++    Core::HID::VibrationGcErmCommand command) {
++    if (!is_mounted) {
++        return ResultSuccess;
++    }
++
++    f32 volume = 1.0f;
++    const auto result = vibration_handler->GetVibrationVolume(volume);
++    if (result.IsError()) {
++        return result;
++    }
++    if (volume <= 0.0f) {
++        command = Core::HID::VibrationGcErmCommand::Stop;
++    }
++    if (command > Core::HID::VibrationGcErmCommand::StopHard) {
++        // Abort
++        return ResultSuccess;
++    }
++
++    // TODO: SendVibrationNotificationPattern
++    return ResultSuccess;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/vibration/gc_vibration_device.h b/src/hid_core/resources/vibration/gc_vibration_device.h
+new file mode 100644
+index 000000000000..87abca57dcce
+--- /dev/null
++++ b/src/hid_core/resources/vibration/gc_vibration_device.h
+@@ -0,0 +1,31 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <mutex>
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/vibration/vibration_base.h"
++
++namespace Service::HID {
++class NpadVibration;
++
++/// Handles Npad request from HID interfaces
++class NpadGcVibrationDevice final : public NpadVibrationBase {
++public:
++    explicit NpadGcVibrationDevice();
++
++    Result IncrementRefCounter() override;
++    Result DecrementRefCounter() override;
++
++    Result SendVibrationGcErmCommand(Core::HID::VibrationGcErmCommand command);
++
++    Result GetActualVibrationGcErmCommand(Core::HID::VibrationGcErmCommand& out_command);
++    Result SendVibrationNotificationPattern(Core::HID::VibrationGcErmCommand command);
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/vibration/n64_vibration_device.cpp b/src/hid_core/resources/vibration/n64_vibration_device.cpp
+new file mode 100644
+index 000000000000..639f87abf3b0
+--- /dev/null
++++ b/src/hid_core/resources/vibration/n64_vibration_device.cpp
+@@ -0,0 +1,80 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/npad/npad_vibration.h"
++#include "hid_core/resources/vibration/n64_vibration_device.h"
++
++namespace Service::HID {
++
++NpadN64VibrationDevice::NpadN64VibrationDevice() {}
++
++Result NpadN64VibrationDevice::IncrementRefCounter() {
++    if (ref_counter == 0 && is_mounted) {
++        f32 volume = 1.0f;
++        const auto result = vibration_handler->GetVibrationVolume(volume);
++        if (result.IsSuccess()) {
++            // TODO: SendVibrationInBool
++        }
++    }
++
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadN64VibrationDevice::DecrementRefCounter() {
++    if (ref_counter == 1) {
++        if (!is_mounted) {
++            ref_counter = 0;
++            if (is_mounted != false) {
++                // TODO: SendVibrationInBool
++            }
++            return ResultSuccess;
++        }
++        f32 volume = 1.0f;
++        const auto result = vibration_handler->GetVibrationVolume(volume);
++        if (result.IsSuccess()) {
++            // TODO
++        }
++    }
++
++    if (ref_counter > 0) {
++        ref_counter--;
++    }
++
++    return ResultSuccess;
++}
++
++Result NpadN64VibrationDevice::SendValueInBool(bool is_vibrating) {
++    if (ref_counter < 1) {
++        return ResultVibrationNotInitialized;
++    }
++    if (is_mounted) {
++        f32 volume = 1.0f;
++        const auto result = vibration_handler->GetVibrationVolume(volume);
++        if (result.IsError()) {
++            return result;
++        }
++        // TODO: SendVibrationInBool
++    }
++    return ResultSuccess;
++}
++
++Result NpadN64VibrationDevice::SendVibrationNotificationPattern([[maybe_unused]] u32 pattern) {
++    if (!is_mounted) {
++        return ResultSuccess;
++    }
++    f32 volume = 1.0f;
++    const auto result = vibration_handler->GetVibrationVolume(volume);
++    if (result.IsError()) {
++        return result;
++    }
++    if (volume <= 0.0) {
++        pattern = 0;
++    }
++    // TODO: SendVibrationNotificationPattern
++    return ResultSuccess;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/vibration/n64_vibration_device.h b/src/hid_core/resources/vibration/n64_vibration_device.h
+new file mode 100644
+index 000000000000..54e6efc1ae9b
+--- /dev/null
++++ b/src/hid_core/resources/vibration/n64_vibration_device.h
+@@ -0,0 +1,29 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <mutex>
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/vibration/vibration_base.h"
++
++namespace Service::HID {
++class NpadVibration;
++
++/// Handles Npad request from HID interfaces
++class NpadN64VibrationDevice final : public NpadVibrationBase {
++public:
++    explicit NpadN64VibrationDevice();
++
++    Result IncrementRefCounter() override;
++    Result DecrementRefCounter() override;
++
++    Result SendValueInBool(bool is_vibrating);
++    Result SendVibrationNotificationPattern(u32 pattern);
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/vibration/vibration_base.cpp b/src/hid_core/resources/vibration/vibration_base.cpp
+new file mode 100644
+index 000000000000..350f349c227c
+--- /dev/null
++++ b/src/hid_core/resources/vibration/vibration_base.cpp
+@@ -0,0 +1,30 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/npad/npad_vibration.h"
++#include "hid_core/resources/vibration/vibration_base.h"
++
++namespace Service::HID {
++
++NpadVibrationBase::NpadVibrationBase() {}
++
++Result NpadVibrationBase::IncrementRefCounter() {
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadVibrationBase::DecrementRefCounter() {
++    if (ref_counter > 0) {
++        ref_counter--;
++    }
++
++    return ResultSuccess;
++}
++
++bool NpadVibrationBase::IsVibrationMounted() const {
++    return is_mounted;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/vibration/vibration_base.h b/src/hid_core/resources/vibration/vibration_base.h
+new file mode 100644
+index 000000000000..c6c5fc4d94c7
+--- /dev/null
++++ b/src/hid_core/resources/vibration/vibration_base.h
+@@ -0,0 +1,28 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++
++namespace Service::HID {
++class NpadVibration;
++
++/// Handles Npad request from HID interfaces
++class NpadVibrationBase {
++public:
++    explicit NpadVibrationBase();
++
++    virtual Result IncrementRefCounter();
++    virtual Result DecrementRefCounter();
++
++    bool IsVibrationMounted() const;
++
++protected:
++    u64 xcd_handle{};
++    s32 ref_counter{};
++    bool is_mounted{};
++    NpadVibration* vibration_handler{nullptr};
++};
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/vibration/vibration_device.cpp b/src/hid_core/resources/vibration/vibration_device.cpp
+new file mode 100644
+index 000000000000..888c3a7ed65f
+--- /dev/null
++++ b/src/hid_core/resources/vibration/vibration_device.cpp
+@@ -0,0 +1,84 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "hid_core/hid_result.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/npad/npad_vibration.h"
++#include "hid_core/resources/vibration/vibration_device.h"
++
++namespace Service::HID {
++
++NpadVibrationDevice::NpadVibrationDevice() {}
++
++Result NpadVibrationDevice::IncrementRefCounter() {
++    ref_counter++;
++    return ResultSuccess;
++}
++
++Result NpadVibrationDevice::DecrementRefCounter() {
++    if (ref_counter > 0) {
++        ref_counter--;
++    }
++
++    return ResultSuccess;
++}
++
++Result NpadVibrationDevice::SendVibrationValue(const Core::HID::VibrationValue& value) {
++    if (ref_counter == 0) {
++        return ResultVibrationNotInitialized;
++    }
++    if (!is_mounted) {
++        return ResultSuccess;
++    }
++
++    f32 volume = 1.0f;
++    const auto result = vibration_handler->GetVibrationVolume(volume);
++    if (result.IsError()) {
++        return result;
++    }
++    if (volume <= 0.0f) {
++        // TODO: SendVibrationValue
++        return ResultSuccess;
++    }
++
++    Core::HID::VibrationValue vibration_value = value;
++    vibration_value.high_amplitude *= volume;
++    vibration_value.low_amplitude *= volume;
++
++    // TODO: SendVibrationValue
++    return ResultSuccess;
++}
++
++Result NpadVibrationDevice::SendVibrationNotificationPattern([[maybe_unused]] u32 pattern) {
++    if (!is_mounted) {
++        return ResultSuccess;
++    }
++
++    f32 volume = 1.0f;
++    const auto result = vibration_handler->GetVibrationVolume(volume);
++    if (result.IsError()) {
++        return result;
++    }
++    if (volume <= 0.0) {
++        pattern = 0;
++    }
++
++    // return xcd_handle->SendVibrationNotificationPattern(pattern);
++    return ResultSuccess;
++}
++
++Result NpadVibrationDevice::GetActualVibrationValue(Core::HID::VibrationValue& out_value) {
++    if (ref_counter < 1) {
++        return ResultVibrationNotInitialized;
++    }
++
++    out_value = Core::HID::DEFAULT_VIBRATION_VALUE;
++    if (!is_mounted) {
++        return ResultSuccess;
++    }
++
++    // TODO: SendVibrationValue
++    return ResultSuccess;
++}
++
++} // namespace Service::HID
+diff --git a/src/hid_core/resources/vibration/vibration_device.h b/src/hid_core/resources/vibration/vibration_device.h
+new file mode 100644
+index 000000000000..3574ad60b795
+--- /dev/null
++++ b/src/hid_core/resources/vibration/vibration_device.h
+@@ -0,0 +1,35 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <mutex>
++
++#include "common/common_types.h"
++#include "core/hle/result.h"
++#include "hid_core/hid_types.h"
++#include "hid_core/resources/npad/npad_types.h"
++#include "hid_core/resources/vibration/vibration_base.h"
++
++namespace Service::HID {
++class NpadVibration;
++
++/// Handles Npad request from HID interfaces
++class NpadVibrationDevice final : public NpadVibrationBase {
++public:
++    explicit NpadVibrationDevice();
++
++    Result IncrementRefCounter();
++    Result DecrementRefCounter();
++
++    Result SendVibrationValue(const Core::HID::VibrationValue& value);
++    Result SendVibrationNotificationPattern(u32 pattern);
++
++    Result GetActualVibrationValue(Core::HID::VibrationValue& out_value);
++
++private:
++    u32 device_index{};
++};
++
++} // namespace Service::HID
+diff --git a/src/yuzu/applets/qt_controller.cpp b/src/yuzu/applets/qt_controller.cpp
+index 8b340ee6c106..48ce860ad7fd 100644
+--- a/src/yuzu/applets/qt_controller.cpp
++++ b/src/yuzu/applets/qt_controller.cpp
+@@ -41,7 +41,7 @@ void UpdateController(Core::HID::EmulatedController* controller,
+ bool IsControllerCompatible(Core::HID::NpadStyleIndex controller_type,
+                             Core::Frontend::ControllerParameters parameters) {
+     switch (controller_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+         return parameters.allow_pro_controller;
+     case Core::HID::NpadStyleIndex::JoyconDual:
+         return parameters.allow_dual_joycons;
+@@ -462,7 +462,7 @@ void QtControllerSelectorDialog::SetEmulatedControllers(std::size_t player_index
+     };
+ 
+     if (npad_style_set.fullkey == 1) {
+-        add_item(Core::HID::NpadStyleIndex::ProController, tr("Pro Controller"));
++        add_item(Core::HID::NpadStyleIndex::Fullkey, tr("Pro Controller"));
+     }
+ 
+     if (npad_style_set.joycon_dual == 1) {
+@@ -519,7 +519,7 @@ Core::HID::NpadStyleIndex QtControllerSelectorDialog::GetControllerTypeFromIndex
+                                  [index](const auto& pair) { return pair.first == index; });
+ 
+     if (it == pairs.end()) {
+-        return Core::HID::NpadStyleIndex::ProController;
++        return Core::HID::NpadStyleIndex::Fullkey;
+     }
+ 
+     return it->second;
+@@ -549,7 +549,7 @@ void QtControllerSelectorDialog::UpdateControllerIcon(std::size_t player_index)
+     const QString stylesheet = [this, player_index] {
+         switch (GetControllerTypeFromIndex(emulated_controllers[player_index]->currentIndex(),
+                                            player_index)) {
+-        case Core::HID::NpadStyleIndex::ProController:
++        case Core::HID::NpadStyleIndex::Fullkey:
+         case Core::HID::NpadStyleIndex::GameCube:
+             return QStringLiteral("image: url(:/controller/applet_pro_controller%0); ");
+         case Core::HID::NpadStyleIndex::JoyconDual:
+diff --git a/src/yuzu/applets/qt_software_keyboard.cpp b/src/yuzu/applets/qt_software_keyboard.cpp
+index bbe17c35e809..ac81ace9e134 100644
+--- a/src/yuzu/applets/qt_software_keyboard.cpp
++++ b/src/yuzu/applets/qt_software_keyboard.cpp
+@@ -832,7 +832,7 @@ void QtSoftwareKeyboardDialog::SetControllerImage() {
+     }();
+ 
+     switch (controller_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::GameCube:
+         ui->icon_controller->setStyleSheet(
+             QStringLiteral("image: url(:/overlay/controller_pro%1.png);").arg(theme));
+diff --git a/src/yuzu/configuration/configure_input_player.cpp b/src/yuzu/configuration/configure_input_player.cpp
+index f3552191a9be..5dac9f1e7aaf 100644
+--- a/src/yuzu/configuration/configure_input_player.cpp
++++ b/src/yuzu/configuration/configure_input_player.cpp
+@@ -1094,7 +1094,7 @@ void ConfigureInputPlayer::SetConnectableControllers() {
+     };
+ 
+     if (npad_style_set.fullkey == 1) {
+-        add_item(Core::HID::NpadStyleIndex::ProController, tr("Pro Controller"));
++        add_item(Core::HID::NpadStyleIndex::Fullkey, tr("Pro Controller"));
+     }
+ 
+     if (npad_style_set.joycon_dual == 1) {
+@@ -1149,7 +1149,7 @@ Core::HID::NpadStyleIndex ConfigureInputPlayer::GetControllerTypeFromIndex(int i
+                      [index](const auto& pair) { return pair.first == index; });
+ 
+     if (it == index_controller_type_pairs.end()) {
+-        return Core::HID::NpadStyleIndex::ProController;
++        return Core::HID::NpadStyleIndex::Fullkey;
+     }
+ 
+     return it->second;
+@@ -1178,7 +1178,7 @@ void ConfigureInputPlayer::UpdateInputDevices() {
+ void ConfigureInputPlayer::UpdateControllerAvailableButtons() {
+     auto layout = GetControllerTypeFromIndex(ui->comboControllerType->currentIndex());
+     if (debug) {
+-        layout = Core::HID::NpadStyleIndex::ProController;
++        layout = Core::HID::NpadStyleIndex::Fullkey;
+     }
+ 
+     // List of all the widgets that will be hidden by any of the following layouts that need
+@@ -1206,7 +1206,7 @@ void ConfigureInputPlayer::UpdateControllerAvailableButtons() {
+ 
+     std::vector<QWidget*> layout_hidden;
+     switch (layout) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::Handheld:
+         layout_hidden = {
+             ui->buttonShoulderButtonsSLSRLeft,
+@@ -1254,7 +1254,7 @@ void ConfigureInputPlayer::UpdateControllerAvailableButtons() {
+ void ConfigureInputPlayer::UpdateControllerEnabledButtons() {
+     auto layout = GetControllerTypeFromIndex(ui->comboControllerType->currentIndex());
+     if (debug) {
+-        layout = Core::HID::NpadStyleIndex::ProController;
++        layout = Core::HID::NpadStyleIndex::Fullkey;
+     }
+ 
+     // List of all the widgets that will be disabled by any of the following layouts that need
+@@ -1271,7 +1271,7 @@ void ConfigureInputPlayer::UpdateControllerEnabledButtons() {
+ 
+     std::vector<QWidget*> layout_disable;
+     switch (layout) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::JoyconDual:
+     case Core::HID::NpadStyleIndex::Handheld:
+     case Core::HID::NpadStyleIndex::JoyconLeft:
+@@ -1304,7 +1304,7 @@ void ConfigureInputPlayer::UpdateMotionButtons() {
+ 
+     // Show/hide the "Motion 1/2" groupboxes depending on the currently selected controller.
+     switch (GetControllerTypeFromIndex(ui->comboControllerType->currentIndex())) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::JoyconLeft:
+     case Core::HID::NpadStyleIndex::Handheld:
+         // Show "Motion 1" and hide "Motion 2".
+@@ -1333,11 +1333,11 @@ void ConfigureInputPlayer::UpdateMotionButtons() {
+ void ConfigureInputPlayer::UpdateControllerButtonNames() {
+     auto layout = GetControllerTypeFromIndex(ui->comboControllerType->currentIndex());
+     if (debug) {
+-        layout = Core::HID::NpadStyleIndex::ProController;
++        layout = Core::HID::NpadStyleIndex::Fullkey;
+     }
+ 
+     switch (layout) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::JoyconDual:
+     case Core::HID::NpadStyleIndex::Handheld:
+     case Core::HID::NpadStyleIndex::JoyconLeft:
+diff --git a/src/yuzu/configuration/configure_input_player_widget.cpp b/src/yuzu/configuration/configure_input_player_widget.cpp
+index 19fdca7d30dd..8f91f5e92e3d 100644
+--- a/src/yuzu/configuration/configure_input_player_widget.cpp
++++ b/src/yuzu/configuration/configure_input_player_widget.cpp
+@@ -244,7 +244,7 @@ void PlayerControlPreview::paintEvent(QPaintEvent* event) {
+     case Core::HID::NpadStyleIndex::GameCube:
+         DrawGCController(p, center);
+         break;
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     default:
+         DrawProController(p, center);
+         break;
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index 4f4c75f5cea6..fd53425372a2 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -3988,7 +3988,7 @@ void GMainWindow::OnToggleDockedMode() {
+                              tr("Handheld controller can't be used on docked mode. Pro "
+                                 "controller will be selected."));
+         handheld->Disconnect();
+-        player_1->SetNpadStyleIndex(Core::HID::NpadStyleIndex::ProController);
++        player_1->SetNpadStyleIndex(Core::HID::NpadStyleIndex::Fullkey);
+         player_1->Connect();
+         controller_dialog->refreshConfiguration();
+     }
+diff --git a/src/yuzu/util/controller_navigation.cpp b/src/yuzu/util/controller_navigation.cpp
+index 2690b075db47..0dbfca243e00 100644
+--- a/src/yuzu/util/controller_navigation.cpp
++++ b/src/yuzu/util/controller_navigation.cpp
+@@ -66,7 +66,7 @@ void ControllerNavigation::ControllerUpdateButton() {
+     }
+ 
+     switch (controller_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::JoyconDual:
+     case Core::HID::NpadStyleIndex::Handheld:
+     case Core::HID::NpadStyleIndex::GameCube:
+@@ -116,7 +116,7 @@ void ControllerNavigation::ControllerUpdateStick() {
+     }
+ 
+     switch (controller_type) {
+-    case Core::HID::NpadStyleIndex::ProController:
++    case Core::HID::NpadStyleIndex::Fullkey:
+     case Core::HID::NpadStyleIndex::JoyconDual:
+     case Core::HID::NpadStyleIndex::Handheld:
+     case Core::HID::NpadStyleIndex::GameCube:

@@ -1,0 +1,25 @@
+diff --git a/xbmc/interfaces/python/swig.cpp b/xbmc/interfaces/python/swig.cpp
+index 1ef41db17fde2..20b97ac0463e8 100644
+--- a/xbmc/interfaces/python/swig.cpp
++++ b/xbmc/interfaces/python/swig.cpp
+@@ -18,8 +18,8 @@ namespace PythonBindings
+ {
+   TypeInfo::TypeInfo(const std::type_info& ti) : swigType(NULL), parentType(NULL), typeIndex(ti)
+   {
+-    static PyTypeObject py_type_object_header =
+-    { PyVarObject_HEAD_INIT(nullptr, 0) 0,
++    static PyTypeObject py_type_object_header = {
++      PyVarObject_HEAD_INIT(nullptr, 0) 0,
+       0,
+       0,
+       0,
+@@ -71,6 +71,9 @@ namespace PythonBindings
+ #endif
+ #if PY_VERSION_HEX < 0x03090000
+       0,
++#endif
++#if PY_VERSION_HEX >= 0x030C00A1
++      0,
+ #endif
+     };
+ 

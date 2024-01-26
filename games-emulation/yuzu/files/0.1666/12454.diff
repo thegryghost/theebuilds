@@ -1,0 +1,627 @@
+diff --git a/src/audio_core/device/device_session.cpp b/src/audio_core/device/device_session.cpp
+index c41d9d1eae8e..ee42ae529d1f 100644
+--- a/src/audio_core/device/device_session.cpp
++++ b/src/audio_core/device/device_session.cpp
+@@ -18,9 +18,7 @@ constexpr auto INCREMENT_TIME{5ms};
+ DeviceSession::DeviceSession(Core::System& system_)
+     : system{system_}, thread_event{Core::Timing::CreateEvent(
+                            "AudioOutSampleTick",
+-                           [this](std::uintptr_t, s64 time, std::chrono::nanoseconds) {
+-                               return ThreadFunc();
+-                           })} {}
++                           [this](s64 time, std::chrono::nanoseconds) { return ThreadFunc(); })} {}
+ 
+ DeviceSession::~DeviceSession() {
+     Finalize();
+diff --git a/src/core/core_timing.cpp b/src/core/core_timing.cpp
+index d6b5abc68e47..fc536413b7a0 100644
+--- a/src/core/core_timing.cpp
++++ b/src/core/core_timing.cpp
+@@ -29,7 +29,6 @@ std::shared_ptr<EventType> CreateEvent(std::string name, TimedCallback&& callbac
+ struct CoreTiming::Event {
+     s64 time;
+     u64 fifo_order;
+-    std::uintptr_t user_data;
+     std::weak_ptr<EventType> type;
+     s64 reschedule_time;
+     heap_t::handle_type handle{};
+@@ -67,17 +66,15 @@ void CoreTiming::Initialize(std::function<void()>&& on_thread_init_) {
+     event_fifo_id = 0;
+     shutting_down = false;
+     cpu_ticks = 0;
+-    const auto empty_timed_callback = [](std::uintptr_t, u64, std::chrono::nanoseconds)
+-        -> std::optional<std::chrono::nanoseconds> { return std::nullopt; };
+-    ev_lost = CreateEvent("_lost_event", empty_timed_callback);
+     if (is_multicore) {
+         timer_thread = std::make_unique<std::jthread>(ThreadEntry, std::ref(*this));
+     }
+ }
+ 
+ void CoreTiming::ClearPendingEvents() {
+-    std::scoped_lock lock{basic_lock};
++    std::scoped_lock lock{advance_lock, basic_lock};
+     event_queue.clear();
++    event.Set();
+ }
+ 
+ void CoreTiming::Pause(bool is_paused) {
+@@ -119,14 +116,12 @@ bool CoreTiming::HasPendingEvents() const {
+ }
+ 
+ void CoreTiming::ScheduleEvent(std::chrono::nanoseconds ns_into_future,
+-                               const std::shared_ptr<EventType>& event_type,
+-                               std::uintptr_t user_data, bool absolute_time) {
++                               const std::shared_ptr<EventType>& event_type, bool absolute_time) {
+     {
+         std::scoped_lock scope{basic_lock};
+         const auto next_time{absolute_time ? ns_into_future : GetGlobalTimeNs() + ns_into_future};
+ 
+-        auto h{event_queue.emplace(
+-            Event{next_time.count(), event_fifo_id++, user_data, event_type, 0})};
++        auto h{event_queue.emplace(Event{next_time.count(), event_fifo_id++, event_type, 0})};
+         (*h).handle = h;
+     }
+ 
+@@ -136,13 +131,13 @@ void CoreTiming::ScheduleEvent(std::chrono::nanoseconds ns_into_future,
+ void CoreTiming::ScheduleLoopingEvent(std::chrono::nanoseconds start_time,
+                                       std::chrono::nanoseconds resched_time,
+                                       const std::shared_ptr<EventType>& event_type,
+-                                      std::uintptr_t user_data, bool absolute_time) {
++                                      bool absolute_time) {
+     {
+         std::scoped_lock scope{basic_lock};
+         const auto next_time{absolute_time ? start_time : GetGlobalTimeNs() + start_time};
+ 
+-        auto h{event_queue.emplace(Event{next_time.count(), event_fifo_id++, user_data, event_type,
+-                                         resched_time.count()})};
++        auto h{event_queue.emplace(
++            Event{next_time.count(), event_fifo_id++, event_type, resched_time.count()})};
+         (*h).handle = h;
+     }
+ 
+@@ -150,14 +145,14 @@ void CoreTiming::ScheduleLoopingEvent(std::chrono::nanoseconds start_time,
+ }
+ 
+ void CoreTiming::UnscheduleEvent(const std::shared_ptr<EventType>& event_type,
+-                                 std::uintptr_t user_data, bool wait) {
++                                 UnscheduleEventType type) {
+     {
+         std::scoped_lock lk{basic_lock};
+ 
+         std::vector<heap_t::handle_type> to_remove;
+         for (auto itr = event_queue.begin(); itr != event_queue.end(); itr++) {
+             const Event& e = *itr;
+-            if (e.type.lock().get() == event_type.get() && e.user_data == user_data) {
++            if (e.type.lock().get() == event_type.get()) {
+                 to_remove.push_back(itr->handle);
+             }
+         }
+@@ -165,10 +160,12 @@ void CoreTiming::UnscheduleEvent(const std::shared_ptr<EventType>& event_type,
+         for (auto h : to_remove) {
+             event_queue.erase(h);
+         }
++
++        event_type->sequence_number++;
+     }
+ 
+     // Force any in-progress events to finish
+-    if (wait) {
++    if (type == UnscheduleEventType::Wait) {
+         std::scoped_lock lk{advance_lock};
+     }
+ }
+@@ -208,28 +205,31 @@ std::optional<s64> CoreTiming::Advance() {
+         const Event& evt = event_queue.top();
+ 
+         if (const auto event_type{evt.type.lock()}) {
+-            if (evt.reschedule_time == 0) {
+-                const auto evt_user_data = evt.user_data;
+-                const auto evt_time = evt.time;
++            const auto evt_time = evt.time;
++            const auto evt_sequence_num = event_type->sequence_number;
+ 
++            if (evt.reschedule_time == 0) {
+                 event_queue.pop();
+ 
+                 basic_lock.unlock();
+ 
+                 event_type->callback(
+-                    evt_user_data, evt_time,
+-                    std::chrono::nanoseconds{GetGlobalTimeNs().count() - evt_time});
++                    evt_time, std::chrono::nanoseconds{GetGlobalTimeNs().count() - evt_time});
+ 
+                 basic_lock.lock();
+             } else {
+                 basic_lock.unlock();
+ 
+                 const auto new_schedule_time{event_type->callback(
+-                    evt.user_data, evt.time,
+-                    std::chrono::nanoseconds{GetGlobalTimeNs().count() - evt.time})};
++                    evt_time, std::chrono::nanoseconds{GetGlobalTimeNs().count() - evt_time})};
+ 
+                 basic_lock.lock();
+ 
++                if (evt_sequence_num != event_type->sequence_number) {
++                    // Heap handle is invalidated after external modification.
++                    continue;
++                }
++
+                 const auto next_schedule_time{new_schedule_time.has_value()
+                                                   ? new_schedule_time.value().count()
+                                                   : evt.reschedule_time};
+@@ -241,8 +241,8 @@ std::optional<s64> CoreTiming::Advance() {
+                     next_time = pause_end_time + next_schedule_time;
+                 }
+ 
+-                event_queue.update(evt.handle, Event{next_time, event_fifo_id++, evt.user_data,
+-                                                     evt.type, next_schedule_time, evt.handle});
++                event_queue.update(evt.handle, Event{next_time, event_fifo_id++, evt.type,
++                                                     next_schedule_time, evt.handle});
+             }
+         }
+ 
+diff --git a/src/core/core_timing.h b/src/core/core_timing.h
+index 21548f0a9b5d..7e4dff7f3dd5 100644
+--- a/src/core/core_timing.h
++++ b/src/core/core_timing.h
+@@ -22,17 +22,25 @@ namespace Core::Timing {
+ 
+ /// A callback that may be scheduled for a particular core timing event.
+ using TimedCallback = std::function<std::optional<std::chrono::nanoseconds>(
+-    std::uintptr_t user_data, s64 time, std::chrono::nanoseconds ns_late)>;
++    s64 time, std::chrono::nanoseconds ns_late)>;
+ 
+ /// Contains the characteristics of a particular event.
+ struct EventType {
+     explicit EventType(TimedCallback&& callback_, std::string&& name_)
+-        : callback{std::move(callback_)}, name{std::move(name_)} {}
++        : callback{std::move(callback_)}, name{std::move(name_)}, sequence_number{0} {}
+ 
+     /// The event's callback function.
+     TimedCallback callback;
+     /// A pointer to the name of the event.
+     const std::string name;
++    /// A monotonic sequence number, incremented when this event is
++    /// changed externally.
++    size_t sequence_number;
++};
++
++enum class UnscheduleEventType {
++    Wait,
++    NoWait,
+ };
+ 
+ /**
+@@ -89,23 +97,17 @@ class CoreTiming {
+ 
+     /// Schedules an event in core timing
+     void ScheduleEvent(std::chrono::nanoseconds ns_into_future,
+-                       const std::shared_ptr<EventType>& event_type, std::uintptr_t user_data = 0,
+-                       bool absolute_time = false);
++                       const std::shared_ptr<EventType>& event_type, bool absolute_time = false);
+ 
+     /// Schedules an event which will automatically re-schedule itself with the given time, until
+     /// unscheduled
+     void ScheduleLoopingEvent(std::chrono::nanoseconds start_time,
+                               std::chrono::nanoseconds resched_time,
+                               const std::shared_ptr<EventType>& event_type,
+-                              std::uintptr_t user_data = 0, bool absolute_time = false);
++                              bool absolute_time = false);
+ 
+-    void UnscheduleEvent(const std::shared_ptr<EventType>& event_type, std::uintptr_t user_data,
+-                         bool wait = true);
+-
+-    void UnscheduleEventWithoutWait(const std::shared_ptr<EventType>& event_type,
+-                                    std::uintptr_t user_data) {
+-        UnscheduleEvent(event_type, user_data, false);
+-    }
++    void UnscheduleEvent(const std::shared_ptr<EventType>& event_type,
++                         UnscheduleEventType type = UnscheduleEventType::Wait);
+ 
+     void AddTicks(u64 ticks_to_add);
+ 
+@@ -158,7 +160,6 @@ class CoreTiming {
+     heap_t event_queue;
+     u64 event_fifo_id = 0;
+ 
+-    std::shared_ptr<EventType> ev_lost;
+     Common::Event event{};
+     Common::Event pause_event{};
+     mutable std::mutex basic_lock;
+diff --git a/src/core/hle/kernel/k_hardware_timer.cpp b/src/core/hle/kernel/k_hardware_timer.cpp
+index 8e2e40307d71..4e947dd6bc87 100644
+--- a/src/core/hle/kernel/k_hardware_timer.cpp
++++ b/src/core/hle/kernel/k_hardware_timer.cpp
+@@ -10,15 +10,15 @@ namespace Kernel {
+ 
+ void KHardwareTimer::Initialize() {
+     // Create the timing callback to register with CoreTiming.
+-    m_event_type = Core::Timing::CreateEvent(
+-        "KHardwareTimer::Callback", [](std::uintptr_t timer_handle, s64, std::chrono::nanoseconds) {
+-            reinterpret_cast<KHardwareTimer*>(timer_handle)->DoTask();
+-            return std::nullopt;
+-        });
++    m_event_type = Core::Timing::CreateEvent("KHardwareTimer::Callback",
++                                             [this](s64, std::chrono::nanoseconds) {
++                                                 this->DoTask();
++                                                 return std::nullopt;
++                                             });
+ }
+ 
+ void KHardwareTimer::Finalize() {
+-    m_kernel.System().CoreTiming().UnscheduleEvent(m_event_type, reinterpret_cast<uintptr_t>(this));
++    m_kernel.System().CoreTiming().UnscheduleEvent(m_event_type);
+     m_wakeup_time = std::numeric_limits<s64>::max();
+     m_event_type.reset();
+ }
+@@ -57,13 +57,12 @@ void KHardwareTimer::EnableInterrupt(s64 wakeup_time) {
+ 
+     m_wakeup_time = wakeup_time;
+     m_kernel.System().CoreTiming().ScheduleEvent(std::chrono::nanoseconds{m_wakeup_time},
+-                                                 m_event_type, reinterpret_cast<uintptr_t>(this),
+-                                                 true);
++                                                 m_event_type, true);
+ }
+ 
+ void KHardwareTimer::DisableInterrupt() {
+-    m_kernel.System().CoreTiming().UnscheduleEventWithoutWait(m_event_type,
+-                                                              reinterpret_cast<uintptr_t>(this));
++    m_kernel.System().CoreTiming().UnscheduleEvent(m_event_type,
++                                                   Core::Timing::UnscheduleEventType::NoWait);
+     m_wakeup_time = std::numeric_limits<s64>::max();
+ }
+ 
+diff --git a/src/core/hle/kernel/kernel.cpp b/src/core/hle/kernel/kernel.cpp
+index e479dacde1c7..b515f6a18c45 100644
+--- a/src/core/hle/kernel/kernel.cpp
++++ b/src/core/hle/kernel/kernel.cpp
+@@ -247,7 +247,7 @@ struct KernelCore::Impl {
+     void InitializePreemption(KernelCore& kernel) {
+         preemption_event = Core::Timing::CreateEvent(
+             "PreemptionCallback",
+-            [this, &kernel](std::uintptr_t, s64 time,
++            [this, &kernel](s64 time,
+                             std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+                 {
+                     KScopedSchedulerLock lock(kernel);
+diff --git a/src/core/hle/service/hid/hidbus.cpp b/src/core/hle/service/hid/hidbus.cpp
+index 80aac221b8c4..854de2fe2fa3 100644
+--- a/src/core/hle/service/hid/hidbus.cpp
++++ b/src/core/hle/service/hid/hidbus.cpp
+@@ -49,10 +49,10 @@ HidBus::HidBus(Core::System& system_)
+     // Register update callbacks
+     hidbus_update_event = Core::Timing::CreateEvent(
+         "Hidbus::UpdateCallback",
+-        [this](std::uintptr_t user_data, s64 time,
++        [this](s64 time,
+                std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+             const auto guard = LockService();
+-            UpdateHidbus(user_data, ns_late);
++            UpdateHidbus(ns_late);
+             return std::nullopt;
+         });
+ 
+@@ -61,10 +61,10 @@ HidBus::HidBus(Core::System& system_)
+ }
+ 
+ HidBus::~HidBus() {
+-    system.CoreTiming().UnscheduleEvent(hidbus_update_event, 0);
++    system.CoreTiming().UnscheduleEvent(hidbus_update_event);
+ }
+ 
+-void HidBus::UpdateHidbus(std::uintptr_t user_data, std::chrono::nanoseconds ns_late) {
++void HidBus::UpdateHidbus(std::chrono::nanoseconds ns_late) {
+     if (is_hidbus_enabled) {
+         for (std::size_t i = 0; i < devices.size(); ++i) {
+             if (!devices[i].is_device_initializated) {
+diff --git a/src/core/hle/service/hid/hidbus.h b/src/core/hle/service/hid/hidbus.h
+index c29b5e8823c3..85a1df13344e 100644
+--- a/src/core/hle/service/hid/hidbus.h
++++ b/src/core/hle/service/hid/hidbus.h
+@@ -108,7 +108,7 @@ class HidBus final : public ServiceFramework<HidBus> {
+     void DisableJoyPollingReceiveMode(HLERequestContext& ctx);
+     void SetStatusManagerType(HLERequestContext& ctx);
+ 
+-    void UpdateHidbus(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
++    void UpdateHidbus(std::chrono::nanoseconds ns_late);
+     std::optional<std::size_t> GetDeviceIndexFromHandle(BusHandle handle) const;
+ 
+     template <typename T>
+diff --git a/src/core/hle/service/hid/resource_manager.cpp b/src/core/hle/service/hid/resource_manager.cpp
+index 6c6cbd8027a8..afc61f70dd31 100644
+--- a/src/core/hle/service/hid/resource_manager.cpp
++++ b/src/core/hle/service/hid/resource_manager.cpp
+@@ -227,8 +227,7 @@ void ResourceManager::EnableTouchScreen(u64 aruid, bool is_enabled) {
+     applet_resource->EnableTouchScreen(aruid, is_enabled);
+ }
+ 
+-void ResourceManager::UpdateControllers(std::uintptr_t user_data,
+-                                        std::chrono::nanoseconds ns_late) {
++void ResourceManager::UpdateControllers(std::chrono::nanoseconds ns_late) {
+     auto& core_timing = system.CoreTiming();
+     debug_pad->OnUpdate(core_timing);
+     digitizer->OnUpdate(core_timing);
+@@ -241,20 +240,19 @@ void ResourceManager::UpdateControllers(std::uintptr_t user_data,
+     capture_button->OnUpdate(core_timing);
+ }
+ 
+-void ResourceManager::UpdateNpad(std::uintptr_t user_data, std::chrono::nanoseconds ns_late) {
++void ResourceManager::UpdateNpad(std::chrono::nanoseconds ns_late) {
+     auto& core_timing = system.CoreTiming();
+     npad->OnUpdate(core_timing);
+ }
+ 
+-void ResourceManager::UpdateMouseKeyboard(std::uintptr_t user_data,
+-                                          std::chrono::nanoseconds ns_late) {
++void ResourceManager::UpdateMouseKeyboard(std::chrono::nanoseconds ns_late) {
+     auto& core_timing = system.CoreTiming();
+     mouse->OnUpdate(core_timing);
+     debug_mouse->OnUpdate(core_timing);
+     keyboard->OnUpdate(core_timing);
+ }
+ 
+-void ResourceManager::UpdateMotion(std::uintptr_t user_data, std::chrono::nanoseconds ns_late) {
++void ResourceManager::UpdateMotion(std::chrono::nanoseconds ns_late) {
+     auto& core_timing = system.CoreTiming();
+     six_axis->OnUpdate(core_timing);
+     seven_six_axis->OnUpdate(core_timing);
+@@ -273,34 +271,34 @@ IAppletResource::IAppletResource(Core::System& system_, std::shared_ptr<Resource
+     // Register update callbacks
+     npad_update_event = Core::Timing::CreateEvent(
+         "HID::UpdatePadCallback",
+-        [this, resource](std::uintptr_t user_data, s64 time, std::chrono::nanoseconds ns_late)
+-            -> std::optional<std::chrono::nanoseconds> {
++        [this, resource](
++            s64 time, std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+             const auto guard = LockService();
+-            resource->UpdateNpad(user_data, ns_late);
++            resource->UpdateNpad(ns_late);
+             return std::nullopt;
+         });
+     default_update_event = Core::Timing::CreateEvent(
+         "HID::UpdateDefaultCallback",
+-        [this, resource](std::uintptr_t user_data, s64 time, std::chrono::nanoseconds ns_late)
+-            -> std::optional<std::chrono::nanoseconds> {
++        [this, resource](
++            s64 time, std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+             const auto guard = LockService();
+-            resource->UpdateControllers(user_data, ns_late);
++            resource->UpdateControllers(ns_late);
+             return std::nullopt;
+         });
+     mouse_keyboard_update_event = Core::Timing::CreateEvent(
+         "HID::UpdateMouseKeyboardCallback",
+-        [this, resource](std::uintptr_t user_data, s64 time, std::chrono::nanoseconds ns_late)
+-            -> std::optional<std::chrono::nanoseconds> {
++        [this, resource](
++            s64 time, std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+             const auto guard = LockService();
+-            resource->UpdateMouseKeyboard(user_data, ns_late);
++            resource->UpdateMouseKeyboard(ns_late);
+             return std::nullopt;
+         });
+     motion_update_event = Core::Timing::CreateEvent(
+         "HID::UpdateMotionCallback",
+-        [this, resource](std::uintptr_t user_data, s64 time, std::chrono::nanoseconds ns_late)
+-            -> std::optional<std::chrono::nanoseconds> {
++        [this, resource](
++            s64 time, std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+             const auto guard = LockService();
+-            resource->UpdateMotion(user_data, ns_late);
++            resource->UpdateMotion(ns_late);
+             return std::nullopt;
+         });
+ 
+@@ -314,10 +312,10 @@ IAppletResource::IAppletResource(Core::System& system_, std::shared_ptr<Resource
+ }
+ 
+ IAppletResource::~IAppletResource() {
+-    system.CoreTiming().UnscheduleEvent(npad_update_event, 0);
+-    system.CoreTiming().UnscheduleEvent(default_update_event, 0);
+-    system.CoreTiming().UnscheduleEvent(mouse_keyboard_update_event, 0);
+-    system.CoreTiming().UnscheduleEvent(motion_update_event, 0);
++    system.CoreTiming().UnscheduleEvent(npad_update_event);
++    system.CoreTiming().UnscheduleEvent(default_update_event);
++    system.CoreTiming().UnscheduleEvent(mouse_keyboard_update_event);
++    system.CoreTiming().UnscheduleEvent(motion_update_event);
+     resource_manager->FreeAppletResourceId(aruid);
+ }
+ 
+diff --git a/src/core/hle/service/hid/resource_manager.h b/src/core/hle/service/hid/resource_manager.h
+index 5ad7cb5649e6..5a6596099f99 100644
+--- a/src/core/hle/service/hid/resource_manager.h
++++ b/src/core/hle/service/hid/resource_manager.h
+@@ -81,10 +81,10 @@ class ResourceManager {
+     void EnablePadInput(u64 aruid, bool is_enabled);
+     void EnableTouchScreen(u64 aruid, bool is_enabled);
+ 
+-    void UpdateControllers(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
+-    void UpdateNpad(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
+-    void UpdateMouseKeyboard(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
+-    void UpdateMotion(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
++    void UpdateControllers(std::chrono::nanoseconds ns_late);
++    void UpdateNpad(std::chrono::nanoseconds ns_late);
++    void UpdateMouseKeyboard(std::chrono::nanoseconds ns_late);
++    void UpdateMotion(std::chrono::nanoseconds ns_late);
+ 
+ private:
+     Result CreateAppletResourceImpl(u64 aruid);
+diff --git a/src/core/hle/service/nvnflinger/nvnflinger.cpp b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+index 6352b09a907d..aa8aaa2d975a 100644
+--- a/src/core/hle/service/nvnflinger/nvnflinger.cpp
++++ b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+@@ -67,7 +67,7 @@ Nvnflinger::Nvnflinger(Core::System& system_, HosBinderDriverServer& hos_binder_
+     // Schedule the screen composition events
+     multi_composition_event = Core::Timing::CreateEvent(
+         "ScreenComposition",
+-        [this](std::uintptr_t, s64 time,
++        [this](s64 time,
+                std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+             vsync_signal.Set();
+             return std::chrono::nanoseconds(GetNextTicks());
+@@ -75,7 +75,7 @@ Nvnflinger::Nvnflinger(Core::System& system_, HosBinderDriverServer& hos_binder_
+ 
+     single_composition_event = Core::Timing::CreateEvent(
+         "ScreenComposition",
+-        [this](std::uintptr_t, s64 time,
++        [this](s64 time,
+                std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+             const auto lock_guard = Lock();
+             Compose();
+@@ -93,11 +93,11 @@ Nvnflinger::Nvnflinger(Core::System& system_, HosBinderDriverServer& hos_binder_
+ 
+ Nvnflinger::~Nvnflinger() {
+     if (system.IsMulticore()) {
+-        system.CoreTiming().UnscheduleEvent(multi_composition_event, {});
++        system.CoreTiming().UnscheduleEvent(multi_composition_event);
+         vsync_thread.request_stop();
+         vsync_signal.Set();
+     } else {
+-        system.CoreTiming().UnscheduleEvent(single_composition_event, {});
++        system.CoreTiming().UnscheduleEvent(single_composition_event);
+     }
+ 
+     ShutdownLayers();
+diff --git a/src/core/memory/cheat_engine.cpp b/src/core/memory/cheat_engine.cpp
+index 3fc4024dc774..7bc5b5ae5076 100644
+--- a/src/core/memory/cheat_engine.cpp
++++ b/src/core/memory/cheat_engine.cpp
+@@ -190,15 +190,15 @@ CheatEngine::CheatEngine(System& system_, std::vector<CheatEntry> cheats_,
+ }
+ 
+ CheatEngine::~CheatEngine() {
+-    core_timing.UnscheduleEvent(event, 0);
++    core_timing.UnscheduleEvent(event);
+ }
+ 
+ void CheatEngine::Initialize() {
+     event = Core::Timing::CreateEvent(
+         "CheatEngine::FrameCallback::" + Common::HexToString(metadata.main_nso_build_id),
+-        [this](std::uintptr_t user_data, s64 time,
++        [this](s64 time,
+                std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+-            FrameCallback(user_data, ns_late);
++            FrameCallback(ns_late);
+             return std::nullopt;
+         });
+     core_timing.ScheduleLoopingEvent(CHEAT_ENGINE_NS, CHEAT_ENGINE_NS, event);
+@@ -239,7 +239,7 @@ void CheatEngine::Reload(std::vector<CheatEntry> reload_cheats) {
+ 
+ MICROPROFILE_DEFINE(Cheat_Engine, "Add-Ons", "Cheat Engine", MP_RGB(70, 200, 70));
+ 
+-void CheatEngine::FrameCallback(std::uintptr_t, std::chrono::nanoseconds ns_late) {
++void CheatEngine::FrameCallback(std::chrono::nanoseconds ns_late) {
+     if (is_pending_reload.exchange(false)) {
+         vm.LoadProgram(cheats);
+     }
+diff --git a/src/core/memory/cheat_engine.h b/src/core/memory/cheat_engine.h
+index 284abdd2871a..ced2168d133b 100644
+--- a/src/core/memory/cheat_engine.h
++++ b/src/core/memory/cheat_engine.h
+@@ -70,7 +70,7 @@ class CheatEngine final {
+     void Reload(std::vector<CheatEntry> reload_cheats);
+ 
+ private:
+-    void FrameCallback(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
++    void FrameCallback(std::chrono::nanoseconds ns_late);
+ 
+     DmntCheatVm vm;
+     CheatProcessMetadata metadata;
+diff --git a/src/core/tools/freezer.cpp b/src/core/tools/freezer.cpp
+index 98ebbbf3297f..9d42c726e485 100644
+--- a/src/core/tools/freezer.cpp
++++ b/src/core/tools/freezer.cpp
+@@ -51,18 +51,17 @@ void MemoryWriteWidth(Core::Memory::Memory& memory, u32 width, VAddr addr, u64 v
+ 
+ Freezer::Freezer(Core::Timing::CoreTiming& core_timing_, Core::Memory::Memory& memory_)
+     : core_timing{core_timing_}, memory{memory_} {
+-    event = Core::Timing::CreateEvent(
+-        "MemoryFreezer::FrameCallback",
+-        [this](std::uintptr_t user_data, s64 time,
+-               std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+-            FrameCallback(user_data, ns_late);
+-            return std::nullopt;
+-        });
++    event = Core::Timing::CreateEvent("MemoryFreezer::FrameCallback",
++                                      [this](s64 time, std::chrono::nanoseconds ns_late)
++                                          -> std::optional<std::chrono::nanoseconds> {
++                                          FrameCallback(ns_late);
++                                          return std::nullopt;
++                                      });
+     core_timing.ScheduleEvent(memory_freezer_ns, event);
+ }
+ 
+ Freezer::~Freezer() {
+-    core_timing.UnscheduleEvent(event, 0);
++    core_timing.UnscheduleEvent(event);
+ }
+ 
+ void Freezer::SetActive(bool is_active) {
+@@ -159,7 +158,7 @@ Freezer::Entries::const_iterator Freezer::FindEntry(VAddr address) const {
+                         [address](const Entry& entry) { return entry.address == address; });
+ }
+ 
+-void Freezer::FrameCallback(std::uintptr_t, std::chrono::nanoseconds ns_late) {
++void Freezer::FrameCallback(std::chrono::nanoseconds ns_late) {
+     if (!IsActive()) {
+         LOG_DEBUG(Common_Memory, "Memory freezer has been deactivated, ending callback events.");
+         return;
+diff --git a/src/core/tools/freezer.h b/src/core/tools/freezer.h
+index 0d6df5217e39..2efbc11f388a 100644
+--- a/src/core/tools/freezer.h
++++ b/src/core/tools/freezer.h
+@@ -77,7 +77,7 @@ class Freezer {
+     Entries::iterator FindEntry(VAddr address);
+     Entries::const_iterator FindEntry(VAddr address) const;
+ 
+-    void FrameCallback(std::uintptr_t user_data, std::chrono::nanoseconds ns_late);
++    void FrameCallback(std::chrono::nanoseconds ns_late);
+     void FillEntryReads();
+ 
+     std::atomic_bool active{false};
+diff --git a/src/tests/core/core_timing.cpp b/src/tests/core/core_timing.cpp
+index f08afbf9ab77..81898a1d38f8 100644
+--- a/src/tests/core/core_timing.cpp
++++ b/src/tests/core/core_timing.cpp
+@@ -16,20 +16,16 @@
+ 
+ namespace {
+ // Numbers are chosen randomly to make sure the correct one is given.
+-constexpr std::array<u64, 5> CB_IDS{{42, 144, 93, 1026, UINT64_C(0xFFFF7FFFF7FFFF)}};
+ constexpr std::array<u64, 5> calls_order{{2, 0, 1, 4, 3}};
+ std::array<s64, 5> delays{};
+-
+-std::bitset<CB_IDS.size()> callbacks_ran_flags;
++std::bitset<5> callbacks_ran_flags;
+ u64 expected_callback = 0;
+ 
+ template <unsigned int IDX>
+-std::optional<std::chrono::nanoseconds> HostCallbackTemplate(std::uintptr_t user_data, s64 time,
++std::optional<std::chrono::nanoseconds> HostCallbackTemplate(s64 time,
+                                                              std::chrono::nanoseconds ns_late) {
+-    static_assert(IDX < CB_IDS.size(), "IDX out of range");
++    static_assert(IDX < callbacks_ran_flags.size(), "IDX out of range");
+     callbacks_ran_flags.set(IDX);
+-    REQUIRE(CB_IDS[IDX] == user_data);
+-    REQUIRE(CB_IDS[IDX] == CB_IDS[calls_order[expected_callback]]);
+     delays[IDX] = ns_late.count();
+     ++expected_callback;
+     return std::nullopt;
+@@ -76,7 +72,7 @@ TEST_CASE("CoreTiming[BasicOrder]", "[core]") {
+         const u64 order = calls_order[i];
+         const auto future_ns = std::chrono::nanoseconds{static_cast<s64>(i * one_micro + 100)};
+ 
+-        core_timing.ScheduleEvent(future_ns, events[order], CB_IDS[order]);
++        core_timing.ScheduleEvent(future_ns, events[order]);
+     }
+     /// test pause
+     REQUIRE(callbacks_ran_flags.none());
+@@ -118,7 +114,7 @@ TEST_CASE("CoreTiming[BasicOrderNoPausing]", "[core]") {
+     for (std::size_t i = 0; i < events.size(); i++) {
+         const u64 order = calls_order[i];
+         const auto future_ns = std::chrono::nanoseconds{static_cast<s64>(i * one_micro + 100)};
+-        core_timing.ScheduleEvent(future_ns, events[order], CB_IDS[order]);
++        core_timing.ScheduleEvent(future_ns, events[order]);
+     }
+ 
+     const u64 end = core_timing.GetGlobalTimeNs().count();

@@ -1,0 +1,10 @@
+--- a/tools/depends/target/ffmpeg/CMakeLists.txt	2024-01-12 04:00:25.258564766 -0500
++++ b/tools/depends/target/ffmpeg/CMakeLists.txt	2024-01-12 04:02:26.288563676 -0500
+@@ -147,6 +147,7 @@
+ include(ExternalProject)
+ externalproject_add(ffmpeg
+                     SOURCE_DIR ${CMAKE_SOURCE_DIR}
++                    PATCH_COMMAND patch -p1 < ../ffmpeg-5.1.3-binutils-2.41.patch
+                     CONFIGURE_COMMAND ${pkgconf} ${pkgconf_path} <SOURCE_DIR>/configure
+                       --prefix=${CMAKE_INSTALL_PREFIX}
+                       --extra-version="kodi-${FFMPEG_VER}"

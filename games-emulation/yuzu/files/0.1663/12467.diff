@@ -1,0 +1,112 @@
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
+index feca5105f91e..e5a78a9140fb 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp
+@@ -74,11 +74,6 @@ std::optional<OutAttr> OutputAttrPointer(EmitContext& ctx, IR::Attribute attr) {
+     case IR::Attribute::ClipDistance7: {
+         const u32 base{static_cast<u32>(IR::Attribute::ClipDistance0)};
+         const u32 index{static_cast<u32>(attr) - base};
+-        if (index >= ctx.profile.max_user_clip_distances) {
+-            LOG_WARNING(Shader, "Ignoring clip distance store {} >= {} supported", index,
+-                        ctx.profile.max_user_clip_distances);
+-            return std::nullopt;
+-        }
+         const Id clip_num{ctx.Const(index)};
+         return OutputAccessChain(ctx, ctx.output_f32, ctx.clip_distances, clip_num);
+     }
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index ed023fcfe0cc..74240732c14b 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -1532,8 +1532,7 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
+         if (stage == Stage::Fragment) {
+             throw NotImplementedException("Storing ClipDistance in fragment stage");
+         }
+-        const Id type{TypeArray(
+-            F32[1], Const(std::min(info.used_clip_distances, profile.max_user_clip_distances)))};
++        const Id type{TypeArray(F32[1], Const(8U))};
+         clip_distances = DefineOutput(*this, type, invocations, spv::BuiltIn::ClipDistance);
+     }
+     if (info.stores[IR::Attribute::Layer] &&
+diff --git a/src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp b/src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp
+index cb82a326c10f..70292686fc40 100644
+--- a/src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp
++++ b/src/shader_recompiler/ir_opt/collect_shader_info_pass.cpp
+@@ -913,11 +913,7 @@ void GatherInfoFromHeader(Environment& env, Info& info) {
+         }
+         for (size_t index = 0; index < 8; ++index) {
+             const u16 mask{header.vtg.omap_systemc.clip_distances};
+-            const bool used{((mask >> index) & 1) != 0};
+-            info.stores.Set(IR::Attribute::ClipDistance0 + index, used);
+-            if (used) {
+-                info.used_clip_distances = static_cast<u32>(index) + 1;
+-            }
++            info.stores.Set(IR::Attribute::ClipDistance0 + index, ((mask >> index) & 1) != 0);
+         }
+         info.stores.Set(IR::Attribute::PrimitiveId,
+                         header.vtg.omap_systemb.primitive_array_id != 0);
+diff --git a/src/shader_recompiler/profile.h b/src/shader_recompiler/profile.h
+index 7578d41cc094..66901a96540c 100644
+--- a/src/shader_recompiler/profile.h
++++ b/src/shader_recompiler/profile.h
+@@ -87,8 +87,6 @@ struct Profile {
+     bool has_broken_robust{};
+ 
+     u64 min_ssbo_alignment{};
+-
+-    u32 max_user_clip_distances{};
+ };
+ 
+ } // namespace Shader
+diff --git a/src/shader_recompiler/shader_info.h b/src/shader_recompiler/shader_info.h
+index ed13e6820970..f11911c4fd46 100644
+--- a/src/shader_recompiler/shader_info.h
++++ b/src/shader_recompiler/shader_info.h
+@@ -324,8 +324,6 @@ struct Info {
+     bool requires_layer_emulation{};
+     IR::Attribute emulated_layer{};
+ 
+-    u32 used_clip_distances{};
+-
+     boost::container::static_vector<ConstantBufferDescriptor, MAX_CBUFS>
+         constant_buffer_descriptors;
+     boost::container::static_vector<StorageBufferDescriptor, MAX_SSBOS> storage_buffers_descriptors;
+diff --git a/src/video_core/renderer_opengl/gl_shader_cache.cpp b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+index 30df41b7de48..6e62af3ed455 100644
+--- a/src/video_core/renderer_opengl/gl_shader_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+@@ -233,7 +233,6 @@ ShaderCache::ShaderCache(RasterizerOpenGL& rasterizer_, Core::Frontend::EmuWindo
+           .ignore_nan_fp_comparisons = true,
+           .gl_max_compute_smem_size = device.GetMaxComputeSharedMemorySize(),
+           .min_ssbo_alignment = device.GetShaderStorageBufferAlignment(),
+-          .max_user_clip_distances = 8,
+       },
+       host_info{
+           .support_float64 = true,
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index d1841198daf0..0e1287556c20 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -374,7 +374,6 @@ PipelineCache::PipelineCache(RasterizerVulkan& rasterizer_, const Device& device
+         .has_broken_robust =
+             device.IsNvidia() && device.GetNvidiaArch() <= NvidiaArchitecture::Arch_Pascal,
+         .min_ssbo_alignment = device.GetStorageBufferAlignment(),
+-        .max_user_clip_distances = device.GetMaxUserClipDistances(),
+     };
+ 
+     host_info = Shader::HostTranslateInfo{
+diff --git a/src/video_core/vulkan_common/vulkan_device.h b/src/video_core/vulkan_common/vulkan_device.h
+index 701817086f40..4f3846345c91 100644
+--- a/src/video_core/vulkan_common/vulkan_device.h
++++ b/src/video_core/vulkan_common/vulkan_device.h
+@@ -665,10 +665,6 @@ class Device {
+         return properties.properties.limits.maxViewports;
+     }
+ 
+-    u32 GetMaxUserClipDistances() const {
+-        return properties.properties.limits.maxClipDistances;
+-    }
+-
+     bool SupportsConditionalBarriers() const {
+         return supports_conditional_barriers;
+     }

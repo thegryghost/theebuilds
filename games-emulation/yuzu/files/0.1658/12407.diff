@@ -1,0 +1,187 @@
+diff --git a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+index 3350f1f85d9f..def6bbe40605 100644
+--- a/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
++++ b/src/shader_recompiler/backend/spirv/spirv_emit_context.cpp
+@@ -74,9 +74,17 @@ spv::ImageFormat GetImageFormat(ImageFormat format) {
+     throw InvalidArgument("Invalid image format {}", format);
+ }
+ 
++Id GetImageSampledType(EmitContext& ctx, const ImageDescriptor& desc) {
++    if (desc.is_float) {
++        return ctx.F32[1];
++    } else {
++        return ctx.U32[1];
++    }
++}
++
+ Id ImageType(EmitContext& ctx, const ImageDescriptor& desc) {
+     const spv::ImageFormat format{GetImageFormat(desc.format)};
+-    const Id type{ctx.U32[1]};
++    const Id type{GetImageSampledType(ctx, desc)};
+     switch (desc.type) {
+     case TextureType::Color1D:
+         return ctx.TypeImage(type, spv::Dim::Dim1D, false, false, false, 2, format);
+diff --git a/src/shader_recompiler/frontend/ir/opcodes.inc b/src/shader_recompiler/frontend/ir/opcodes.inc
+index 4447d67b0489..a3b21317d1ec 100644
+--- a/src/shader_recompiler/frontend/ir/opcodes.inc
++++ b/src/shader_recompiler/frontend/ir/opcodes.inc
+@@ -512,7 +512,7 @@ OPCODE(ImageQueryDimensions,                                U32x4,          Opaq
+ OPCODE(ImageQueryLod,                                       F32x4,          Opaque,         Opaque,                                                         )
+ OPCODE(ImageGradient,                                       F32x4,          Opaque,         Opaque,         Opaque,         Opaque,         Opaque,         )
+ OPCODE(ImageRead,                                           U32x4,          Opaque,         Opaque,                                                         )
+-OPCODE(ImageWrite,                                          Void,           Opaque,         Opaque,         U32x4,                                          )
++OPCODE(ImageWrite,                                          Void,           Opaque,         Opaque,         Opaque,                                         )
+ 
+ OPCODE(IsTextureScaled,                                     U1,             U32,                                                                            )
+ OPCODE(IsImageScaled,                                       U1,             U32,                                                                            )
+diff --git a/src/shader_recompiler/host_translate_info.h b/src/shader_recompiler/host_translate_info.h
+index 1b53404fcc30..2b3555b43fb5 100644
+--- a/src/shader_recompiler/host_translate_info.h
++++ b/src/shader_recompiler/host_translate_info.h
+@@ -19,8 +19,10 @@ struct HostTranslateInfo {
+     u32 min_ssbo_alignment{};            ///< Minimum alignment supported by the device for SSBOs
+     bool support_geometry_shader_passthrough{}; ///< True when the device supports geometry
+                                                 ///< passthrough shaders
+-    bool support_conditional_barrier{}; ///< True when the device supports barriers in conditional
+-                                        ///< control flow
++    bool support_conditional_barrier{};  ///< True when the device supports barriers in conditional
++                                         ///< control flow
++    bool support_ufloat_write_as_uint{}; ///< True when the device supports writing float images
++                                         ///< as bitcasts to uint
+ };
+ 
+ } // namespace Shader
+diff --git a/src/shader_recompiler/ir_opt/texture_pass.cpp b/src/shader_recompiler/ir_opt/texture_pass.cpp
+index d374c976a9af..a2a7d2d35049 100644
+--- a/src/shader_recompiler/ir_opt/texture_pass.cpp
++++ b/src/shader_recompiler/ir_opt/texture_pass.cpp
+@@ -372,6 +372,10 @@ TexturePixelFormat ReadTexturePixelFormat(Environment& env, const ConstBufferAdd
+     return env.ReadTexturePixelFormat(GetTextureHandle(env, cbuf));
+ }
+ 
++bool TexturePixelFormatIsFloat(Environment& env, const ConstBufferAddr& cbuf) {
++    return ReadTexturePixelFormat(env, cbuf) == TexturePixelFormat::B10G11R11_FLOAT;
++}
++
+ class Descriptors {
+ public:
+     explicit Descriptors(TextureBufferDescriptors& texture_buffer_descriptors_,
+@@ -428,8 +432,9 @@ class Descriptors {
+             return desc.type == existing.type && desc.format == existing.format &&
+                    desc.cbuf_index == existing.cbuf_index &&
+                    desc.cbuf_offset == existing.cbuf_offset && desc.count == existing.count &&
+-                   desc.size_shift == existing.size_shift;
++                   desc.size_shift == existing.size_shift && desc.is_float == existing.is_float;
+         })};
++        // TODO: handle is_float?
+         image_descriptors[index].is_written |= desc.is_written;
+         image_descriptors[index].is_read |= desc.is_read;
+         return index;
+@@ -500,6 +505,19 @@ void PatchTexelFetch(IR::Block& block, IR::Inst& inst, TexturePixelFormat pixel_
+                               ir.FPMul(ir.ConvertSToF(32, 32, ir.BitCast<IR::U32>(w)), max_value));
+     inst.ReplaceUsesWith(converted);
+ }
++
++void PatchSmallFloatImageWrite(IR::Block& block, IR::Inst& inst) {
++    IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
++
++    const IR::Value old_value{inst.Arg(2)};
++    const IR::F32 x(ir.BitCast<IR::F32>(IR::U32(ir.CompositeExtract(old_value, 0))));
++    const IR::F32 y(ir.BitCast<IR::F32>(IR::U32(ir.CompositeExtract(old_value, 1))));
++    const IR::F32 z(ir.BitCast<IR::F32>(IR::U32(ir.CompositeExtract(old_value, 2))));
++    const IR::F32 w(ir.BitCast<IR::F32>(IR::U32(ir.CompositeExtract(old_value, 3))));
++    const IR::Value converted = ir.CompositeConstruct(x, y, z, w);
++    inst.SetArg(2, converted);
++}
++
+ } // Anonymous namespace
+ 
+ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo& host_info) {
+@@ -531,6 +549,9 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
+         inst->ReplaceOpcode(IndexedInstruction(*inst));
+ 
+         const auto& cbuf{texture_inst.cbuf};
++        const bool is_float_write{!host_info.support_ufloat_write_as_uint &&
++                                  inst->GetOpcode() == IR::Opcode::ImageWrite &&
++                                  TexturePixelFormatIsFloat(env, cbuf)};
+         auto flags{inst->Flags<IR::TextureInstInfo>()};
+         bool is_multisample{false};
+         switch (inst->GetOpcode()) {
+@@ -603,6 +624,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
+                     .format = flags.image_format,
+                     .is_written = is_written,
+                     .is_read = is_read,
++                    .is_float = is_float_write,
+                     .cbuf_index = cbuf.index,
+                     .cbuf_offset = cbuf.offset,
+                     .count = cbuf.count,
+@@ -662,6 +684,10 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
+                 PatchTexelFetch(*texture_inst.block, *texture_inst.inst, pixel_format);
+             }
+         }
++
++        if (is_float_write) {
++            PatchSmallFloatImageWrite(*texture_inst.block, *inst);
++        }
+     }
+ }
+ 
+diff --git a/src/shader_recompiler/shader_info.h b/src/shader_recompiler/shader_info.h
+index b4b4afd37d97..27ad14d2a73e 100644
+--- a/src/shader_recompiler/shader_info.h
++++ b/src/shader_recompiler/shader_info.h
+@@ -42,6 +42,7 @@ enum class TexturePixelFormat : u32 {
+     R16G16B16A16_SNORM,
+     R16G16_SNORM,
+     R16_SNORM,
++    B10G11R11_FLOAT,
+     OTHER
+ };
+ 
+@@ -129,6 +130,7 @@ struct ImageDescriptor {
+     ImageFormat format;
+     bool is_written;
+     bool is_read;
++    bool is_float;
+     u32 cbuf_index;
+     u32 cbuf_offset;
+     u32 count;
+diff --git a/src/video_core/renderer_opengl/gl_shader_cache.cpp b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+index 26f2d0ea72c5..b5ad6d22ad33 100644
+--- a/src/video_core/renderer_opengl/gl_shader_cache.cpp
++++ b/src/video_core/renderer_opengl/gl_shader_cache.cpp
+@@ -244,6 +244,7 @@ ShaderCache::ShaderCache(RasterizerOpenGL& rasterizer_, Core::Frontend::EmuWindo
+           .min_ssbo_alignment = static_cast<u32>(device.GetShaderStorageBufferAlignment()),
+           .support_geometry_shader_passthrough = device.HasGeometryShaderPassthrough(),
+           .support_conditional_barrier = device.SupportsConditionalBarriers(),
++          .support_ufloat_write_as_uint = true,
+       } {
+     if (use_asynchronous_shaders) {
+         workers = CreateWorkers();
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 2a13b2a72ed7..7ba93f8647e9 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -387,6 +387,9 @@ PipelineCache::PipelineCache(RasterizerVulkan& rasterizer_, const Device& device
+         .min_ssbo_alignment = static_cast<u32>(device.GetStorageBufferAlignment()),
+         .support_geometry_shader_passthrough = device.IsNvGeometryShaderPassthroughSupported(),
+         .support_conditional_barrier = device.SupportsConditionalBarriers(),
++        .support_ufloat_write_as_uint = driver_id != VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
++                                        driver_id != VK_DRIVER_ID_MESA_TURNIP &&
++                                        driver_id != VK_DRIVER_ID_ARM_PROPRIETARY,
+     };
+ 
+     if (device.GetMaxVertexInputAttributes() < Maxwell::NumVertexAttributes) {
+diff --git a/src/video_core/shader_environment.cpp b/src/video_core/shader_environment.cpp
+index 4edbe5700357..60b534bdcf13 100644
+--- a/src/video_core/shader_environment.cpp
++++ b/src/video_core/shader_environment.cpp
+@@ -76,6 +76,8 @@ static Shader::TexturePixelFormat ConvertTexturePixelFormat(const Tegra::Texture
+         return Shader::TexturePixelFormat::R16G16_SNORM;
+     case VideoCore::Surface::PixelFormat::R16_SNORM:
+         return Shader::TexturePixelFormat::R16_SNORM;
++    case VideoCore::Surface::PixelFormat::B10G11R11_FLOAT:
++        return Shader::TexturePixelFormat::B10G11R11_FLOAT;
+     default:
+         return Shader::TexturePixelFormat::OTHER;
+     }

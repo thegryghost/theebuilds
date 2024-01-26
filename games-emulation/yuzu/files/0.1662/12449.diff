@@ -1,0 +1,15 @@
+diff --git a/src/video_core/vulkan_common/vulkan_wrapper.cpp b/src/video_core/vulkan_common/vulkan_wrapper.cpp
+index 2f78b8af08ed..074aed964553 100644
+--- a/src/video_core/vulkan_common/vulkan_wrapper.cpp
++++ b/src/video_core/vulkan_common/vulkan_wrapper.cpp
+@@ -246,7 +246,9 @@ void SetObjectName(const DeviceDispatch* dld, VkDevice device, T handle, VkObjec
+         .objectHandle = reinterpret_cast<u64>(handle),
+         .pObjectName = name,
+     };
+-    Check(dld->vkSetDebugUtilsObjectNameEXT(device, &name_info));
++    if (dld->vkSetDebugUtilsObjectNameEXT) {
++        Check(dld->vkSetDebugUtilsObjectNameEXT(device, &name_info));
++    }
+ }
+ 
+ } // Anonymous namespace

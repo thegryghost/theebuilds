@@ -27,6 +27,7 @@ DEPEND="
 	media-libs/freeimage
 	dev-libs/pugixml
 	app-text/xmlstarlet
+	app-text/poppler
 	dev-libs/libgit2
 	!games-emulation/emulationstation
 "

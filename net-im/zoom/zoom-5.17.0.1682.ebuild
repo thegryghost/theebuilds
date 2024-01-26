@@ -1,9 +1,9 @@
-# Copyright 1999-2022 Gentoo Authors
+# Copyright 1999-2023 Gentoo Authors
 # Distributed under the terms of the GNU General Public License v2
 
 EAPI=8
 
-inherit desktop linux-info readme.gentoo-r1 wrapper xdg-utils
+inherit desktop linux-info readme.gentoo-r1 xdg-utils
 
 DESCRIPTION="Video conferencing and web conferencing service"
 HOMEPAGE="https://zoom.us/"
@@ -13,12 +13,12 @@ S="${WORKDIR}/${PN}"
 LICENSE="all-rights-reserved"
 SLOT="0"
 KEYWORDS="-* ~amd64"
-IUSE="bundled-libjpeg-turbo +bundled-qt opencl pulseaudio wayland"
+IUSE="+bundled-qt opencl pulseaudio wayland"
 RESTRICT="mirror bindist strip"
 
 RDEPEND="!games-engines/zoom
-	app-crypt/mit-krb5
 	>=app-accessibility/at-spi2-core-2.46.0:2
+	app-crypt/mit-krb5
 	dev-libs/expat
 	dev-libs/glib:2
 	dev-libs/nspr
@@ -34,6 +34,7 @@ RDEPEND="!games-engines/zoom
 	sys-apps/dbus
 	sys-apps/util-linux
 	sys-libs/glibc
+	sys-libs/zlib
 	virtual/opengl
 	x11-libs/cairo
 	x11-libs/libdrm
@@ -51,10 +52,11 @@ RDEPEND="!games-engines/zoom
 	x11-libs/pango
 	x11-libs/xcb-util-image
 	x11-libs/xcb-util-keysyms
+	x11-libs/xcb-util-renderutil
+	x11-libs/xcb-util-wm
 	opencl? ( virtual/opencl )
 	pulseaudio? ( media-libs/libpulse )
 	wayland? ( dev-libs/wayland )
-	!bundled-libjpeg-turbo? ( >=media-libs/libjpeg-turbo-2.0.5 )
 	!bundled-qt? (
 		dev-libs/icu
 		dev-qt/qtcore:5
@@ -70,11 +72,11 @@ RDEPEND="!games-engines/zoom
 		dev-qt/qtsvg:5
 		dev-qt/qtwidgets:5
 		dev-qt/qtx11extras:5
+		dev-qt/qtxml:5
 		wayland? ( dev-qt/qtwayland )
 	)"
 
-BDEPEND="dev-util/bbe
-	bundled-libjpeg-turbo? ( dev-util/patchelf )"
+BDEPEND="dev-util/bbe"
 
 CONFIG_CHECK="~USER_NS ~PID_NS ~NET_NS ~SECCOMP_FILTER"
 QA_PREBUILT="opt/zoom/*"
@@ -94,51 +96,50 @@ src_prepare() {
 		bbe -e 's/libpulse.so/IgNoRePuLsE/' zoom >zoom.tmp || die
 		mv zoom.tmp zoom || die
 	fi
-
-	if use bundled-libjpeg-turbo; then
-		# Remove insecure RPATH from bundled lib
-		patchelf --remove-rpath libturbojpeg.so || die
-	fi
 }
 
 src_install() {
 	insinto /opt/zoom
 	exeinto /opt/zoom
-	doins -r cef json ringtone scheduler sip timezones translations
+	doins -r calendar cef email json ringtone scheduler sip timezones \
+		translations
 	doins *.pcm Embedded.properties version.txt
-	doexe zoom zopen ZoomLauncher *.sh
+	doexe zoom zopen ZoomLauncher *.sh \
+		aomhost libaomagent.so libdvf.so libmkldnn.so \
+		libavcodec.so* libavformat.so* libavutil.so* libswresample.so*
+	fperms a+x /opt/zoom/cef/chrome-sandbox
 	dosym -r {"/usr/$(get_libdir)",/opt/zoom}/libmpg123.so
 	dosym -r "/usr/$(get_libdir)/libfdk-aac.so.2" /opt/zoom/libfdkaac2.so
 	dosym -r "/usr/$(get_libdir)/libquazip1-qt5.so" /opt/zoom/libquazip.so
 
 	if use opencl; then
-		doexe aomhost libaomagent.so libclDNN64.so libdvf.so libmkldnn.so
+		doexe libclDNN64.so
 		dosym -r {"/usr/$(get_libdir)",/opt/zoom}/libOpenCL.so.1
 	fi
 
-	if use bundled-libjpeg-turbo; then
-		doexe libturbojpeg.so
-	else
-		dosym -r {"/usr/$(get_libdir)",/opt/zoom}/libturbojpeg.so
+	if ! use wayland; then
+		# Soname dependency on libwayland-client.so.0
+		rm "${ED}"/opt/zoom/cef/libGLESv2.so || die
 	fi
 
 	if use bundled-qt; then
-		doins qt.conf
-
-		local dirs="Qt"
-		doins -r ${dirs}
-		find ${dirs} -type f '(' -name '*.so' -o -name '*.so.*' ')' \
+		doins -r Qt
+		find Qt -type f '(' -name '*.so' -o -name '*.so.*' ')' \
 			-printf '/opt/zoom/%p\0' | xargs -0 -r fperms 0755 || die
-
-		(	# Remove libs and plugins with unresolved soname dependencies
-			cd "${ED}"/opt/zoom || die
-			rm -r Qt/qml/QtQuick/LocalStorage Qt/qml/QtQuick/Particles.2 \
-				Qt/qml/QtQuick/Scene2D Qt/qml/QtQuick/Scene3D Qt/qml/QtQuick/XmlListModel \
-				Qt/plugins/platforms/libqeglfs.so Qt/plugins/platforms/libqlinuxfb.so || die
-			use wayland || rm -r Qt/lib/libQt5Wayland*.so* Qt/qml/QtWayland Qt/plugins/wayland* \
-				Qt/plugins/platforms/libqwayland*.so || die
+		(	# Remove libs and plugins with unresolved soname dependencies.
+			# Why does the upstream package contain such garbage? :-(
+			cd "${ED}"/opt/zoom/Qt || die
+			rm -r plugins/audio plugins/egldeviceintegrations \
+				plugins/platforms/libqeglfs.so \
+				plugins/platforms/libqlinuxfb.so \
+				plugins/platformthemes/libqgtk3.so \
+				qml/QtQml/RemoteObjects \
+				qml/QtQuick/LocalStorage qml/QtQuick/Particles.2 \
+				qml/QtQuick/Scene2D qml/QtQuick/Scene3D \
+				qml/QtQuick/XmlListModel || die
+			use wayland || rm -r lib/libQt5Wayland*.so* plugins/wayland* \
+				plugins/platforms/libqwayland*.so qml/QtWayland || die
 		)
-
 	else
 		local qtzoom="5.12" qtver=$(best_version dev-qt/qtcore:5)
 		if [[ ${qtver} != dev-qt/qtcore-${qtzoom}.* ]]; then
@@ -149,7 +150,7 @@ src_install() {
 		fi
 	fi
 
-	make_wrapper zoom /opt/zoom{/zoom,} /opt/zoom:/opt/zoom/cef:/opt/zoom/Qt/lib
+	dosym -r /opt/zoom/ZoomLauncher /usr/bin/zoom
 	make_desktop_entry "zoom %U" Zoom videoconference-zoom \
 		"Network;VideoConference;" \
 		"MimeType=$(printf '%s;' \

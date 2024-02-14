@@ -1,0 +1,76 @@
+diff --git a/src/core/memory/cheat_engine.cpp b/src/core/memory/cheat_engine.cpp
+index 14d1a3840f95..f3b8243d55fb 100644
+--- a/src/core/memory/cheat_engine.cpp
++++ b/src/core/memory/cheat_engine.cpp
+@@ -10,6 +10,7 @@
+ #include "core/hle/kernel/k_page_table.h"
+ #include "core/hle/kernel/k_process.h"
+ #include "core/hle/kernel/k_process_page_table.h"
++#include "core/hle/kernel/svc_types.h"
+ #include "core/hle/service/hid/hid_server.h"
+ #include "core/hle/service/sm/sm.h"
+ #include "core/memory.h"
+@@ -84,6 +85,20 @@ u64 StandardVmCallbacks::HidKeysDown() {
+     return static_cast<u64>(press_state & HID::NpadButton::All);
+ }
+ 
++void StandardVmCallbacks::PauseProcess() {
++    if (system.ApplicationProcess()->IsSuspended()) {
++        return;
++    }
++    system.ApplicationProcess()->SetActivity(Kernel::Svc::ProcessActivity::Paused);
++}
++
++void StandardVmCallbacks::ResumeProcess() {
++    if (!system.ApplicationProcess()->IsSuspended()) {
++        return;
++    }
++    system.ApplicationProcess()->SetActivity(Kernel::Svc::ProcessActivity::Runnable);
++}
++
+ void StandardVmCallbacks::DebugLog(u8 id, u64 value) {
+     LOG_INFO(CheatEngine, "Cheat triggered DebugLog: ID '{:01X}' Value '{:016X}'", id, value);
+ }
+diff --git a/src/core/memory/cheat_engine.h b/src/core/memory/cheat_engine.h
+index 619cabaa2b2b..f52f2be7c3a7 100644
+--- a/src/core/memory/cheat_engine.h
++++ b/src/core/memory/cheat_engine.h
+@@ -30,6 +30,8 @@ class StandardVmCallbacks : public DmntCheatVm::Callbacks {
+     void MemoryReadUnsafe(VAddr address, void* data, u64 size) override;
+     void MemoryWriteUnsafe(VAddr address, const void* data, u64 size) override;
+     u64 HidKeysDown() override;
++    void PauseProcess() override;
++    void ResumeProcess() override;
+     void DebugLog(u8 id, u64 value) override;
+     void CommandLog(std::string_view data) override;
+ 
+diff --git a/src/core/memory/dmnt_cheat_vm.cpp b/src/core/memory/dmnt_cheat_vm.cpp
+index 8bc81e72ddb5..f7097d01db57 100644
+--- a/src/core/memory/dmnt_cheat_vm.cpp
++++ b/src/core/memory/dmnt_cheat_vm.cpp
+@@ -1205,9 +1205,9 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
+                 static_registers[rw_static_reg->static_idx] = registers[rw_static_reg->idx];
+             }
+         } else if (std::holds_alternative<PauseProcessOpcode>(cur_opcode.opcode)) {
+-            // TODO: Pause cheat process
++            callbacks->PauseProcess();
+         } else if (std::holds_alternative<ResumeProcessOpcode>(cur_opcode.opcode)) {
+-            // TODO: Resume cheat process
++            callbacks->ResumeProcess();
+         } else if (auto debug_log = std::get_if<DebugLogOpcode>(&cur_opcode.opcode)) {
+             // Read value from memory.
+             u64 log_value = 0;
+diff --git a/src/core/memory/dmnt_cheat_vm.h b/src/core/memory/dmnt_cheat_vm.h
+index fed6a24ad27c..1c1ed1259b59 100644
+--- a/src/core/memory/dmnt_cheat_vm.h
++++ b/src/core/memory/dmnt_cheat_vm.h
+@@ -271,6 +271,9 @@ class DmntCheatVm {
+ 
+         virtual u64 HidKeysDown() = 0;
+ 
++        virtual void PauseProcess() = 0;
++        virtual void ResumeProcess() = 0;
++
+         virtual void DebugLog(u8 id, u64 value) = 0;
+         virtual void CommandLog(std::string_view data) = 0;
+     };

@@ -1,0 +1,2370 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index eb8f643a2d5e..c7157ff4c701 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -512,10 +512,35 @@ add_library(core STATIC
+     hle/service/audio/hwopus.h
+     hle/service/bcat/backend/backend.cpp
+     hle/service/bcat/backend/backend.h
++    hle/service/bcat/news/newly_arrived_event_holder.cpp
++    hle/service/bcat/news/newly_arrived_event_holder.h
++    hle/service/bcat/news/news_data_service.cpp
++    hle/service/bcat/news/news_data_service.h
++    hle/service/bcat/news/news_database_service.cpp
++    hle/service/bcat/news/news_database_service.h
++    hle/service/bcat/news/news_service.cpp
++    hle/service/bcat/news/news_service.h
++    hle/service/bcat/news/overwrite_event_holder.cpp
++    hle/service/bcat/news/overwrite_event_holder.h
++    hle/service/bcat/news/service_creator.cpp
++    hle/service/bcat/news/service_creator.h
+     hle/service/bcat/bcat.cpp
+     hle/service/bcat/bcat.h
+-    hle/service/bcat/bcat_module.cpp
+-    hle/service/bcat/bcat_module.h
++    hle/service/bcat/bcat_result.h
++    hle/service/bcat/bcat_service.cpp
++    hle/service/bcat/bcat_service.h
++    hle/service/bcat/bcat_types.h
++    hle/service/bcat/bcat_util.h
++    hle/service/bcat/delivery_cache_directory_service.cpp
++    hle/service/bcat/delivery_cache_directory_service.h
++    hle/service/bcat/delivery_cache_file_service.cpp
++    hle/service/bcat/delivery_cache_file_service.h
++    hle/service/bcat/delivery_cache_progress_service.cpp
++    hle/service/bcat/delivery_cache_progress_service.h
++    hle/service/bcat/delivery_cache_storage_service.cpp
++    hle/service/bcat/delivery_cache_storage_service.h
++    hle/service/bcat/service_creator.cpp
++    hle/service/bcat/service_creator.h
+     hle/service/bpc/bpc.cpp
+     hle/service/bpc/bpc.h
+     hle/service/btdrv/btdrv.cpp
+diff --git a/src/core/file_sys/errors.h b/src/core/file_sys/errors.h
+index d4e0eb6f41b6..b22767bf5b44 100644
+--- a/src/core/file_sys/errors.h
++++ b/src/core/file_sys/errors.h
+@@ -91,6 +91,7 @@ constexpr Result ResultWriteNotPermitted{ErrorModule::FS, 6203};
+ constexpr Result ResultUnsupportedSetSizeForIndirectStorage{ErrorModule::FS, 6325};
+ constexpr Result ResultUnsupportedWriteForCompressedStorage{ErrorModule::FS, 6387};
+ constexpr Result ResultUnsupportedOperateRangeForCompressedStorage{ErrorModule::FS, 6388};
++constexpr Result ResultPermissionDenied{ErrorModule::FS, 6400};
+ constexpr Result ResultBufferAllocationFailed{ErrorModule::FS, 6705};
+ 
+ } // namespace FileSys
+diff --git a/src/core/hle/service/bcat/backend/backend.cpp b/src/core/hle/service/bcat/backend/backend.cpp
+index 847f76987403..1993493a9ee9 100644
+--- a/src/core/hle/service/bcat/backend/backend.cpp
++++ b/src/core/hle/service/bcat/backend/backend.cpp
+@@ -33,18 +33,18 @@ void ProgressServiceBackend::SetTotalSize(u64 size) {
+ }
+ 
+ void ProgressServiceBackend::StartConnecting() {
+-    impl.status = DeliveryCacheProgressImpl::Status::Connecting;
++    impl.status = DeliveryCacheProgressStatus::Connecting;
+     SignalUpdate();
+ }
+ 
+ void ProgressServiceBackend::StartProcessingDataList() {
+-    impl.status = DeliveryCacheProgressImpl::Status::ProcessingDataList;
++    impl.status = DeliveryCacheProgressStatus::ProcessingDataList;
+     SignalUpdate();
+ }
+ 
+ void ProgressServiceBackend::StartDownloadingFile(std::string_view dir_name,
+                                                   std::string_view file_name, u64 file_size) {
+-    impl.status = DeliveryCacheProgressImpl::Status::Downloading;
++    impl.status = DeliveryCacheProgressStatus::Downloading;
+     impl.current_downloaded_bytes = 0;
+     impl.current_total_bytes = file_size;
+     std::memcpy(impl.current_directory.data(), dir_name.data(),
+@@ -65,7 +65,7 @@ void ProgressServiceBackend::FinishDownloadingFile() {
+ }
+ 
+ void ProgressServiceBackend::CommitDirectory(std::string_view dir_name) {
+-    impl.status = DeliveryCacheProgressImpl::Status::Committing;
++    impl.status = DeliveryCacheProgressStatus::Committing;
+     impl.current_file.fill(0);
+     impl.current_downloaded_bytes = 0;
+     impl.current_total_bytes = 0;
+@@ -76,7 +76,7 @@ void ProgressServiceBackend::CommitDirectory(std::string_view dir_name) {
+ 
+ void ProgressServiceBackend::FinishDownload(Result result) {
+     impl.total_downloaded_bytes = impl.total_bytes;
+-    impl.status = DeliveryCacheProgressImpl::Status::Done;
++    impl.status = DeliveryCacheProgressStatus::Done;
+     impl.result = result;
+     SignalUpdate();
+ }
+@@ -85,15 +85,15 @@ void ProgressServiceBackend::SignalUpdate() {
+     update_event->Signal();
+ }
+ 
+-Backend::Backend(DirectoryGetter getter) : dir_getter(std::move(getter)) {}
++BcatBackend::BcatBackend(DirectoryGetter getter) : dir_getter(std::move(getter)) {}
+ 
+-Backend::~Backend() = default;
++BcatBackend::~BcatBackend() = default;
+ 
+-NullBackend::NullBackend(DirectoryGetter getter) : Backend(std::move(getter)) {}
++NullBcatBackend::NullBcatBackend(DirectoryGetter getter) : BcatBackend(std::move(getter)) {}
+ 
+-NullBackend::~NullBackend() = default;
++NullBcatBackend::~NullBcatBackend() = default;
+ 
+-bool NullBackend::Synchronize(TitleIDVersion title, ProgressServiceBackend& progress) {
++bool NullBcatBackend::Synchronize(TitleIDVersion title, ProgressServiceBackend& progress) {
+     LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, build_id={:016X}", title.title_id,
+               title.build_id);
+ 
+@@ -101,8 +101,8 @@ bool NullBackend::Synchronize(TitleIDVersion title, ProgressServiceBackend& prog
+     return true;
+ }
+ 
+-bool NullBackend::SynchronizeDirectory(TitleIDVersion title, std::string name,
+-                                       ProgressServiceBackend& progress) {
++bool NullBcatBackend::SynchronizeDirectory(TitleIDVersion title, std::string name,
++                                           ProgressServiceBackend& progress) {
+     LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, build_id={:016X}, name={}", title.title_id,
+               title.build_id, name);
+ 
+@@ -110,18 +110,18 @@ bool NullBackend::SynchronizeDirectory(TitleIDVersion title, std::string name,
+     return true;
+ }
+ 
+-bool NullBackend::Clear(u64 title_id) {
++bool NullBcatBackend::Clear(u64 title_id) {
+     LOG_DEBUG(Service_BCAT, "called, title_id={:016X}", title_id);
+ 
+     return true;
+ }
+ 
+-void NullBackend::SetPassphrase(u64 title_id, const Passphrase& passphrase) {
++void NullBcatBackend::SetPassphrase(u64 title_id, const Passphrase& passphrase) {
+     LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, passphrase={}", title_id,
+               Common::HexToString(passphrase));
+ }
+ 
+-std::optional<std::vector<u8>> NullBackend::GetLaunchParameter(TitleIDVersion title) {
++std::optional<std::vector<u8>> NullBcatBackend::GetLaunchParameter(TitleIDVersion title) {
+     LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, build_id={:016X}", title.title_id,
+               title.build_id);
+     return std::nullopt;
+diff --git a/src/core/hle/service/bcat/backend/backend.h b/src/core/hle/service/bcat/backend/backend.h
+index aa36d29d5bbc..3680f6c9c804 100644
+--- a/src/core/hle/service/bcat/backend/backend.h
++++ b/src/core/hle/service/bcat/backend/backend.h
+@@ -10,6 +10,7 @@
+ #include "common/common_types.h"
+ #include "core/file_sys/vfs/vfs_types.h"
+ #include "core/hle/result.h"
++#include "core/hle/service/bcat/bcat_types.h"
+ #include "core/hle/service/kernel_helpers.h"
+ 
+ namespace Core {
+@@ -24,44 +25,6 @@ class KReadableEvent;
+ 
+ namespace Service::BCAT {
+ 
+-struct DeliveryCacheProgressImpl;
+-
+-using DirectoryGetter = std::function<FileSys::VirtualDir(u64)>;
+-using Passphrase = std::array<u8, 0x20>;
+-
+-struct TitleIDVersion {
+-    u64 title_id;
+-    u64 build_id;
+-};
+-
+-using DirectoryName = std::array<char, 0x20>;
+-using FileName = std::array<char, 0x20>;
+-
+-struct DeliveryCacheProgressImpl {
+-    enum class Status : s32 {
+-        None = 0x0,
+-        Queued = 0x1,
+-        Connecting = 0x2,
+-        ProcessingDataList = 0x3,
+-        Downloading = 0x4,
+-        Committing = 0x5,
+-        Done = 0x9,
+-    };
+-
+-    Status status;
+-    Result result = ResultSuccess;
+-    DirectoryName current_directory;
+-    FileName current_file;
+-    s64 current_downloaded_bytes; ///< Bytes downloaded on current file.
+-    s64 current_total_bytes;      ///< Bytes total on current file.
+-    s64 total_downloaded_bytes;   ///< Bytes downloaded on overall download.
+-    s64 total_bytes;              ///< Bytes total on overall download.
+-    INSERT_PADDING_BYTES(
+-        0x198); ///< Appears to be unused in official code, possibly reserved for future use.
+-};
+-static_assert(sizeof(DeliveryCacheProgressImpl) == 0x200,
+-              "DeliveryCacheProgressImpl has incorrect size.");
+-
+ // A class to manage the signalling to the game about BCAT download progress.
+ // Some of this class is implemented in module.cpp to avoid exposing the implementation structure.
+ class ProgressServiceBackend {
+@@ -107,10 +70,10 @@ class ProgressServiceBackend {
+ };
+ 
+ // A class representing an abstract backend for BCAT functionality.
+-class Backend {
++class BcatBackend {
+ public:
+-    explicit Backend(DirectoryGetter getter);
+-    virtual ~Backend();
++    explicit BcatBackend(DirectoryGetter getter);
++    virtual ~BcatBackend();
+ 
+     // Called when the backend is needed to synchronize the data for the game with title ID and
+     // version in title. A ProgressServiceBackend object is provided to alert the application of
+@@ -135,10 +98,10 @@ class Backend {
+ };
+ 
+ // A backend of BCAT that provides no operation.
+-class NullBackend : public Backend {
++class NullBcatBackend : public BcatBackend {
+ public:
+-    explicit NullBackend(DirectoryGetter getter);
+-    ~NullBackend() override;
++    explicit NullBcatBackend(DirectoryGetter getter);
++    ~NullBcatBackend() override;
+ 
+     bool Synchronize(TitleIDVersion title, ProgressServiceBackend& progress) override;
+     bool SynchronizeDirectory(TitleIDVersion title, std::string name,
+@@ -151,6 +114,7 @@ class NullBackend : public Backend {
+     std::optional<std::vector<u8>> GetLaunchParameter(TitleIDVersion title) override;
+ };
+ 
+-std::unique_ptr<Backend> CreateBackendFromSettings(Core::System& system, DirectoryGetter getter);
++std::unique_ptr<BcatBackend> CreateBackendFromSettings(Core::System& system,
++                                                       DirectoryGetter getter);
+ 
+ } // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/bcat.cpp b/src/core/hle/service/bcat/bcat.cpp
+index d0ac17324100..ea8b15998da0 100644
+--- a/src/core/hle/service/bcat/bcat.cpp
++++ b/src/core/hle/service/bcat/bcat.cpp
+@@ -1,24 +1,38 @@
+ // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "core/hle/service/bcat/backend/backend.h"
+ #include "core/hle/service/bcat/bcat.h"
++#include "core/hle/service/bcat/news/service_creator.h"
++#include "core/hle/service/bcat/service_creator.h"
++#include "core/hle/service/server_manager.h"
+ 
+ namespace Service::BCAT {
+ 
+-BCAT::BCAT(Core::System& system_, std::shared_ptr<Module> module_,
+-           FileSystem::FileSystemController& fsc_, const char* name_)
+-    : Interface(system_, std::move(module_), fsc_, name_) {
+-    // clang-format off
+-    static const FunctionInfo functions[] = {
+-        {0, &BCAT::CreateBcatService, "CreateBcatService"},
+-        {1, &BCAT::CreateDeliveryCacheStorageService, "CreateDeliveryCacheStorageService"},
+-        {2, &BCAT::CreateDeliveryCacheStorageServiceWithApplicationId, "CreateDeliveryCacheStorageServiceWithApplicationId"},
+-        {3, nullptr, "CreateDeliveryCacheProgressService"},
+-        {4, nullptr, "CreateDeliveryCacheProgressServiceWithApplicationId"},
+-    };
+-    // clang-format on
+-    RegisterHandlers(functions);
++void LoopProcess(Core::System& system) {
++    auto server_manager = std::make_unique<ServerManager>(system);
++
++    server_manager->RegisterNamedService("bcat:a",
++                                         std::make_shared<IServiceCreator>(system, "bcat:a"));
++    server_manager->RegisterNamedService("bcat:m",
++                                         std::make_shared<IServiceCreator>(system, "bcat:m"));
++    server_manager->RegisterNamedService("bcat:u",
++                                         std::make_shared<IServiceCreator>(system, "bcat:u"));
++    server_manager->RegisterNamedService("bcat:s",
++                                         std::make_shared<IServiceCreator>(system, "bcat:s"));
++
++    server_manager->RegisterNamedService(
++        "news:a", std::make_shared<News::IServiceCreator>(system, 0xffffffff, "news:a"));
++    server_manager->RegisterNamedService(
++        "news:p", std::make_shared<News::IServiceCreator>(system, 0x1, "news:p"));
++    server_manager->RegisterNamedService(
++        "news:c", std::make_shared<News::IServiceCreator>(system, 0x2, "news:c"));
++    server_manager->RegisterNamedService(
++        "news:v", std::make_shared<News::IServiceCreator>(system, 0x4, "news:v"));
++    server_manager->RegisterNamedService(
++        "news:m", std::make_shared<News::IServiceCreator>(system, 0xd, "news:m"));
++
++    ServerManager::RunServer(std::move(server_manager));
+ }
+ 
+-BCAT::~BCAT() = default;
+ } // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/bcat.h b/src/core/hle/service/bcat/bcat.h
+index db9d3c8c524a..2aaffc693bb7 100644
+--- a/src/core/hle/service/bcat/bcat.h
++++ b/src/core/hle/service/bcat/bcat.h
+@@ -3,7 +3,7 @@
+ 
+ #pragma once
+ 
+-#include "core/hle/service/bcat/bcat_module.h"
++#include "core/hle/service/service.h"
+ 
+ namespace Core {
+ class System;
+@@ -11,11 +11,6 @@ class System;
+ 
+ namespace Service::BCAT {
+ 
+-class BCAT final : public Module::Interface {
+-public:
+-    explicit BCAT(Core::System& system_, std::shared_ptr<Module> module_,
+-                  FileSystem::FileSystemController& fsc_, const char* name_);
+-    ~BCAT() override;
+-};
++void LoopProcess(Core::System& system);
+ 
+ } // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/bcat_module.cpp b/src/core/hle/service/bcat/bcat_module.cpp
+deleted file mode 100644
+index 76d7bb139625..000000000000
+--- a/src/core/hle/service/bcat/bcat_module.cpp
++++ /dev/null
+@@ -1,606 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#include <cctype>
+-#include <mbedtls/md5.h>
+-#include "common/hex_util.h"
+-#include "common/logging/log.h"
+-#include "common/settings.h"
+-#include "common/string_util.h"
+-#include "core/core.h"
+-#include "core/file_sys/vfs/vfs.h"
+-#include "core/hle/kernel/k_readable_event.h"
+-#include "core/hle/service/bcat/backend/backend.h"
+-#include "core/hle/service/bcat/bcat.h"
+-#include "core/hle/service/bcat/bcat_module.h"
+-#include "core/hle/service/filesystem/filesystem.h"
+-#include "core/hle/service/ipc_helpers.h"
+-#include "core/hle/service/server_manager.h"
+-
+-namespace Service::BCAT {
+-
+-constexpr Result ERROR_INVALID_ARGUMENT{ErrorModule::BCAT, 1};
+-constexpr Result ERROR_FAILED_OPEN_ENTITY{ErrorModule::BCAT, 2};
+-constexpr Result ERROR_ENTITY_ALREADY_OPEN{ErrorModule::BCAT, 6};
+-constexpr Result ERROR_NO_OPEN_ENTITY{ErrorModule::BCAT, 7};
+-
+-// The command to clear the delivery cache just calls fs IFileSystem DeleteFile on all of the files
+-// and if any of them have a non-zero result it just forwards that result. This is the FS error code
+-// for permission denied, which is the closest approximation of this scenario.
+-constexpr Result ERROR_FAILED_CLEAR_CACHE{ErrorModule::FS, 6400};
+-
+-using BCATDigest = std::array<u8, 0x10>;
+-
+-namespace {
+-
+-u64 GetCurrentBuildID(const Core::System::CurrentBuildProcessID& id) {
+-    u64 out{};
+-    std::memcpy(&out, id.data(), sizeof(u64));
+-    return out;
+-}
+-
+-// The digest is only used to determine if a file is unique compared to others of the same name.
+-// Since the algorithm isn't ever checked in game, MD5 is safe.
+-BCATDigest DigestFile(const FileSys::VirtualFile& file) {
+-    BCATDigest out{};
+-    const auto bytes = file->ReadAllBytes();
+-    mbedtls_md5_ret(bytes.data(), bytes.size(), out.data());
+-    return out;
+-}
+-
+-// For a name to be valid it must be non-empty, must have a null terminating character as the final
+-// char, can only contain numbers, letters, underscores and a hyphen if directory and a period if
+-// file.
+-bool VerifyNameValidInternal(HLERequestContext& ctx, std::array<char, 0x20> name, char match_char) {
+-    const auto null_chars = std::count(name.begin(), name.end(), 0);
+-    const auto bad_chars = std::count_if(name.begin(), name.end(), [match_char](char c) {
+-        return !std::isalnum(static_cast<u8>(c)) && c != '_' && c != match_char && c != '\0';
+-    });
+-    if (null_chars == 0x20 || null_chars == 0 || bad_chars != 0 || name[0x1F] != '\0') {
+-        LOG_ERROR(Service_BCAT, "Name passed was invalid!");
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ERROR_INVALID_ARGUMENT);
+-        return false;
+-    }
+-
+-    return true;
+-}
+-
+-bool VerifyNameValidDir(HLERequestContext& ctx, DirectoryName name) {
+-    return VerifyNameValidInternal(ctx, name, '-');
+-}
+-
+-bool VerifyNameValidFile(HLERequestContext& ctx, FileName name) {
+-    return VerifyNameValidInternal(ctx, name, '.');
+-}
+-
+-} // Anonymous namespace
+-
+-struct DeliveryCacheDirectoryEntry {
+-    FileName name;
+-    u64 size;
+-    BCATDigest digest;
+-};
+-
+-class IDeliveryCacheProgressService final : public ServiceFramework<IDeliveryCacheProgressService> {
+-public:
+-    explicit IDeliveryCacheProgressService(Core::System& system_, Kernel::KReadableEvent& event_,
+-                                           const DeliveryCacheProgressImpl& impl_)
+-        : ServiceFramework{system_, "IDeliveryCacheProgressService"}, event{event_}, impl{impl_} {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {0, &IDeliveryCacheProgressService::GetEvent, "GetEvent"},
+-            {1, &IDeliveryCacheProgressService::GetImpl, "GetImpl"},
+-        };
+-        // clang-format on
+-
+-        RegisterHandlers(functions);
+-    }
+-
+-private:
+-    void GetEvent(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_BCAT, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushCopyObjects(event);
+-    }
+-
+-    void GetImpl(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_BCAT, "called");
+-
+-        ctx.WriteBuffer(impl);
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    Kernel::KReadableEvent& event;
+-    const DeliveryCacheProgressImpl& impl;
+-};
+-
+-class IBcatService final : public ServiceFramework<IBcatService> {
+-public:
+-    explicit IBcatService(Core::System& system_, Backend& backend_)
+-        : ServiceFramework{system_, "IBcatService"}, backend{backend_},
+-          progress{{
+-              ProgressServiceBackend{system_, "Normal"},
+-              ProgressServiceBackend{system_, "Directory"},
+-          }} {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {10100, &IBcatService::RequestSyncDeliveryCache, "RequestSyncDeliveryCache"},
+-            {10101, &IBcatService::RequestSyncDeliveryCacheWithDirectoryName, "RequestSyncDeliveryCacheWithDirectoryName"},
+-            {10200, nullptr, "CancelSyncDeliveryCacheRequest"},
+-            {20100, nullptr, "RequestSyncDeliveryCacheWithApplicationId"},
+-            {20101, nullptr, "RequestSyncDeliveryCacheWithApplicationIdAndDirectoryName"},
+-            {20300, nullptr, "GetDeliveryCacheStorageUpdateNotifier"},
+-            {20301, nullptr, "RequestSuspendDeliveryTask"},
+-            {20400, nullptr, "RegisterSystemApplicationDeliveryTask"},
+-            {20401, nullptr, "UnregisterSystemApplicationDeliveryTask"},
+-            {20410, nullptr, "SetSystemApplicationDeliveryTaskTimer"},
+-            {30100, &IBcatService::SetPassphrase, "SetPassphrase"},
+-            {30101, nullptr, "Unknown30101"},
+-            {30102, nullptr, "Unknown30102"},
+-            {30200, nullptr, "RegisterBackgroundDeliveryTask"},
+-            {30201, nullptr, "UnregisterBackgroundDeliveryTask"},
+-            {30202, nullptr, "BlockDeliveryTask"},
+-            {30203, nullptr, "UnblockDeliveryTask"},
+-            {30210, nullptr, "SetDeliveryTaskTimer"},
+-            {30300, nullptr, "RegisterSystemApplicationDeliveryTasks"},
+-            {90100, nullptr, "EnumerateBackgroundDeliveryTask"},
+-            {90101, nullptr, "Unknown90101"},
+-            {90200, nullptr, "GetDeliveryList"},
+-            {90201, &IBcatService::ClearDeliveryCacheStorage, "ClearDeliveryCacheStorage"},
+-            {90202, nullptr, "ClearDeliveryTaskSubscriptionStatus"},
+-            {90300, nullptr, "GetPushNotificationLog"},
+-            {90301, nullptr, "Unknown90301"},
+-        };
+-        // clang-format on
+-        RegisterHandlers(functions);
+-    }
+-
+-private:
+-    enum class SyncType {
+-        Normal,
+-        Directory,
+-        Count,
+-    };
+-
+-    std::shared_ptr<IDeliveryCacheProgressService> CreateProgressService(SyncType type) {
+-        auto& progress_backend{GetProgressBackend(type)};
+-        return std::make_shared<IDeliveryCacheProgressService>(system, progress_backend.GetEvent(),
+-                                                               progress_backend.GetImpl());
+-    }
+-
+-    void RequestSyncDeliveryCache(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_BCAT, "called");
+-
+-        backend.Synchronize({system.GetApplicationProcessProgramID(),
+-                             GetCurrentBuildID(system.GetApplicationProcessBuildID())},
+-                            GetProgressBackend(SyncType::Normal));
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushIpcInterface(CreateProgressService(SyncType::Normal));
+-    }
+-
+-    void RequestSyncDeliveryCacheWithDirectoryName(HLERequestContext& ctx) {
+-        IPC::RequestParser rp{ctx};
+-        const auto name_raw = rp.PopRaw<DirectoryName>();
+-        const auto name =
+-            Common::StringFromFixedZeroTerminatedBuffer(name_raw.data(), name_raw.size());
+-
+-        LOG_DEBUG(Service_BCAT, "called, name={}", name);
+-
+-        backend.SynchronizeDirectory({system.GetApplicationProcessProgramID(),
+-                                      GetCurrentBuildID(system.GetApplicationProcessBuildID())},
+-                                     name, GetProgressBackend(SyncType::Directory));
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushIpcInterface(CreateProgressService(SyncType::Directory));
+-    }
+-
+-    void SetPassphrase(HLERequestContext& ctx) {
+-        IPC::RequestParser rp{ctx};
+-        const auto title_id = rp.PopRaw<u64>();
+-
+-        const auto passphrase_raw = ctx.ReadBuffer();
+-
+-        LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, passphrase={}", title_id,
+-                  Common::HexToString(passphrase_raw));
+-
+-        if (title_id == 0) {
+-            LOG_ERROR(Service_BCAT, "Invalid title ID!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_INVALID_ARGUMENT);
+-        }
+-
+-        if (passphrase_raw.size() > 0x40) {
+-            LOG_ERROR(Service_BCAT, "Passphrase too large!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_INVALID_ARGUMENT);
+-            return;
+-        }
+-
+-        Passphrase passphrase{};
+-        std::memcpy(passphrase.data(), passphrase_raw.data(),
+-                    std::min(passphrase.size(), passphrase_raw.size()));
+-
+-        backend.SetPassphrase(title_id, passphrase);
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void ClearDeliveryCacheStorage(HLERequestContext& ctx) {
+-        IPC::RequestParser rp{ctx};
+-        const auto title_id = rp.PopRaw<u64>();
+-
+-        LOG_DEBUG(Service_BCAT, "called, title_id={:016X}", title_id);
+-
+-        if (title_id == 0) {
+-            LOG_ERROR(Service_BCAT, "Invalid title ID!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_INVALID_ARGUMENT);
+-            return;
+-        }
+-
+-        if (!backend.Clear(title_id)) {
+-            LOG_ERROR(Service_BCAT, "Could not clear the directory successfully!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_FAILED_CLEAR_CACHE);
+-            return;
+-        }
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    ProgressServiceBackend& GetProgressBackend(SyncType type) {
+-        return progress.at(static_cast<size_t>(type));
+-    }
+-
+-    const ProgressServiceBackend& GetProgressBackend(SyncType type) const {
+-        return progress.at(static_cast<size_t>(type));
+-    }
+-
+-    Backend& backend;
+-    std::array<ProgressServiceBackend, static_cast<size_t>(SyncType::Count)> progress;
+-};
+-
+-void Module::Interface::CreateBcatService(HLERequestContext& ctx) {
+-    LOG_DEBUG(Service_BCAT, "called");
+-
+-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-    rb.Push(ResultSuccess);
+-    rb.PushIpcInterface<IBcatService>(system, *backend);
+-}
+-
+-class IDeliveryCacheFileService final : public ServiceFramework<IDeliveryCacheFileService> {
+-public:
+-    explicit IDeliveryCacheFileService(Core::System& system_, FileSys::VirtualDir root_)
+-        : ServiceFramework{system_, "IDeliveryCacheFileService"}, root(std::move(root_)) {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {0, &IDeliveryCacheFileService::Open, "Open"},
+-            {1, &IDeliveryCacheFileService::Read, "Read"},
+-            {2, &IDeliveryCacheFileService::GetSize, "GetSize"},
+-            {3, &IDeliveryCacheFileService::GetDigest, "GetDigest"},
+-        };
+-        // clang-format on
+-
+-        RegisterHandlers(functions);
+-    }
+-
+-private:
+-    void Open(HLERequestContext& ctx) {
+-        IPC::RequestParser rp{ctx};
+-        const auto dir_name_raw = rp.PopRaw<DirectoryName>();
+-        const auto file_name_raw = rp.PopRaw<FileName>();
+-
+-        const auto dir_name =
+-            Common::StringFromFixedZeroTerminatedBuffer(dir_name_raw.data(), dir_name_raw.size());
+-        const auto file_name =
+-            Common::StringFromFixedZeroTerminatedBuffer(file_name_raw.data(), file_name_raw.size());
+-
+-        LOG_DEBUG(Service_BCAT, "called, dir_name={}, file_name={}", dir_name, file_name);
+-
+-        if (!VerifyNameValidDir(ctx, dir_name_raw) || !VerifyNameValidFile(ctx, file_name_raw))
+-            return;
+-
+-        if (current_file != nullptr) {
+-            LOG_ERROR(Service_BCAT, "A file has already been opened on this interface!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_ENTITY_ALREADY_OPEN);
+-            return;
+-        }
+-
+-        const auto dir = root->GetSubdirectory(dir_name);
+-
+-        if (dir == nullptr) {
+-            LOG_ERROR(Service_BCAT, "The directory of name={} couldn't be opened!", dir_name);
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_FAILED_OPEN_ENTITY);
+-            return;
+-        }
+-
+-        current_file = dir->GetFile(file_name);
+-
+-        if (current_file == nullptr) {
+-            LOG_ERROR(Service_BCAT, "The file of name={} couldn't be opened!", file_name);
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_FAILED_OPEN_ENTITY);
+-            return;
+-        }
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void Read(HLERequestContext& ctx) {
+-        IPC::RequestParser rp{ctx};
+-        const auto offset{rp.PopRaw<u64>()};
+-
+-        auto size = ctx.GetWriteBufferSize();
+-
+-        LOG_DEBUG(Service_BCAT, "called, offset={:016X}, size={:016X}", offset, size);
+-
+-        if (current_file == nullptr) {
+-            LOG_ERROR(Service_BCAT, "There is no file currently open!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_NO_OPEN_ENTITY);
+-        }
+-
+-        size = std::min<u64>(current_file->GetSize() - offset, size);
+-        const auto buffer = current_file->ReadBytes(size, offset);
+-        ctx.WriteBuffer(buffer);
+-
+-        IPC::ResponseBuilder rb{ctx, 4};
+-        rb.Push(ResultSuccess);
+-        rb.Push<u64>(buffer.size());
+-    }
+-
+-    void GetSize(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_BCAT, "called");
+-
+-        if (current_file == nullptr) {
+-            LOG_ERROR(Service_BCAT, "There is no file currently open!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_NO_OPEN_ENTITY);
+-        }
+-
+-        IPC::ResponseBuilder rb{ctx, 4};
+-        rb.Push(ResultSuccess);
+-        rb.Push<u64>(current_file->GetSize());
+-    }
+-
+-    void GetDigest(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_BCAT, "called");
+-
+-        if (current_file == nullptr) {
+-            LOG_ERROR(Service_BCAT, "There is no file currently open!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_NO_OPEN_ENTITY);
+-        }
+-
+-        IPC::ResponseBuilder rb{ctx, 6};
+-        rb.Push(ResultSuccess);
+-        rb.PushRaw(DigestFile(current_file));
+-    }
+-
+-    FileSys::VirtualDir root;
+-    FileSys::VirtualFile current_file;
+-};
+-
+-class IDeliveryCacheDirectoryService final
+-    : public ServiceFramework<IDeliveryCacheDirectoryService> {
+-public:
+-    explicit IDeliveryCacheDirectoryService(Core::System& system_, FileSys::VirtualDir root_)
+-        : ServiceFramework{system_, "IDeliveryCacheDirectoryService"}, root(std::move(root_)) {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {0, &IDeliveryCacheDirectoryService::Open, "Open"},
+-            {1, &IDeliveryCacheDirectoryService::Read, "Read"},
+-            {2, &IDeliveryCacheDirectoryService::GetCount, "GetCount"},
+-        };
+-        // clang-format on
+-
+-        RegisterHandlers(functions);
+-    }
+-
+-private:
+-    void Open(HLERequestContext& ctx) {
+-        IPC::RequestParser rp{ctx};
+-        const auto name_raw = rp.PopRaw<DirectoryName>();
+-        const auto name =
+-            Common::StringFromFixedZeroTerminatedBuffer(name_raw.data(), name_raw.size());
+-
+-        LOG_DEBUG(Service_BCAT, "called, name={}", name);
+-
+-        if (!VerifyNameValidDir(ctx, name_raw))
+-            return;
+-
+-        if (current_dir != nullptr) {
+-            LOG_ERROR(Service_BCAT, "A file has already been opened on this interface!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_ENTITY_ALREADY_OPEN);
+-            return;
+-        }
+-
+-        current_dir = root->GetSubdirectory(name);
+-
+-        if (current_dir == nullptr) {
+-            LOG_ERROR(Service_BCAT, "Failed to open the directory name={}!", name);
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_FAILED_OPEN_ENTITY);
+-            return;
+-        }
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void Read(HLERequestContext& ctx) {
+-        auto write_size = ctx.GetWriteBufferNumElements<DeliveryCacheDirectoryEntry>();
+-
+-        LOG_DEBUG(Service_BCAT, "called, write_size={:016X}", write_size);
+-
+-        if (current_dir == nullptr) {
+-            LOG_ERROR(Service_BCAT, "There is no open directory!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_NO_OPEN_ENTITY);
+-            return;
+-        }
+-
+-        const auto files = current_dir->GetFiles();
+-        write_size = std::min<u64>(write_size, files.size());
+-        std::vector<DeliveryCacheDirectoryEntry> entries(write_size);
+-        std::transform(
+-            files.begin(), files.begin() + write_size, entries.begin(), [](const auto& file) {
+-                FileName name{};
+-                std::memcpy(name.data(), file->GetName().data(),
+-                            std::min(file->GetName().size(), name.size()));
+-                return DeliveryCacheDirectoryEntry{name, file->GetSize(), DigestFile(file)};
+-            });
+-
+-        ctx.WriteBuffer(entries);
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.Push(static_cast<u32>(write_size * sizeof(DeliveryCacheDirectoryEntry)));
+-    }
+-
+-    void GetCount(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_BCAT, "called");
+-
+-        if (current_dir == nullptr) {
+-            LOG_ERROR(Service_BCAT, "There is no open directory!");
+-            IPC::ResponseBuilder rb{ctx, 2};
+-            rb.Push(ERROR_NO_OPEN_ENTITY);
+-            return;
+-        }
+-
+-        const auto files = current_dir->GetFiles();
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.Push(static_cast<u32>(files.size()));
+-    }
+-
+-    FileSys::VirtualDir root;
+-    FileSys::VirtualDir current_dir;
+-};
+-
+-class IDeliveryCacheStorageService final : public ServiceFramework<IDeliveryCacheStorageService> {
+-public:
+-    explicit IDeliveryCacheStorageService(Core::System& system_, FileSys::VirtualDir root_)
+-        : ServiceFramework{system_, "IDeliveryCacheStorageService"}, root(std::move(root_)) {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {0, &IDeliveryCacheStorageService::CreateFileService, "CreateFileService"},
+-            {1, &IDeliveryCacheStorageService::CreateDirectoryService, "CreateDirectoryService"},
+-            {10, &IDeliveryCacheStorageService::EnumerateDeliveryCacheDirectory, "EnumerateDeliveryCacheDirectory"},
+-        };
+-        // clang-format on
+-
+-        RegisterHandlers(functions);
+-
+-        for (const auto& subdir : root->GetSubdirectories()) {
+-            DirectoryName name{};
+-            std::memcpy(name.data(), subdir->GetName().data(),
+-                        std::min(sizeof(DirectoryName) - 1, subdir->GetName().size()));
+-            entries.push_back(name);
+-        }
+-    }
+-
+-private:
+-    void CreateFileService(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_BCAT, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushIpcInterface<IDeliveryCacheFileService>(system, root);
+-    }
+-
+-    void CreateDirectoryService(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_BCAT, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushIpcInterface<IDeliveryCacheDirectoryService>(system, root);
+-    }
+-
+-    void EnumerateDeliveryCacheDirectory(HLERequestContext& ctx) {
+-        auto size = ctx.GetWriteBufferNumElements<DirectoryName>();
+-
+-        LOG_DEBUG(Service_BCAT, "called, size={:016X}", size);
+-
+-        size = std::min<u64>(size, entries.size() - next_read_index);
+-        ctx.WriteBuffer(entries.data() + next_read_index, size * sizeof(DirectoryName));
+-        next_read_index += size;
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.Push(static_cast<u32>(size));
+-    }
+-
+-    FileSys::VirtualDir root;
+-    std::vector<DirectoryName> entries;
+-    u64 next_read_index = 0;
+-};
+-
+-void Module::Interface::CreateDeliveryCacheStorageService(HLERequestContext& ctx) {
+-    LOG_DEBUG(Service_BCAT, "called");
+-
+-    const auto title_id = system.GetApplicationProcessProgramID();
+-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-    rb.Push(ResultSuccess);
+-    rb.PushIpcInterface<IDeliveryCacheStorageService>(system, fsc.GetBCATDirectory(title_id));
+-}
+-
+-void Module::Interface::CreateDeliveryCacheStorageServiceWithApplicationId(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const auto title_id = rp.PopRaw<u64>();
+-
+-    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}", title_id);
+-
+-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-    rb.Push(ResultSuccess);
+-    rb.PushIpcInterface<IDeliveryCacheStorageService>(system, fsc.GetBCATDirectory(title_id));
+-}
+-
+-std::unique_ptr<Backend> CreateBackendFromSettings([[maybe_unused]] Core::System& system,
+-                                                   DirectoryGetter getter) {
+-    return std::make_unique<NullBackend>(std::move(getter));
+-}
+-
+-Module::Interface::Interface(Core::System& system_, std::shared_ptr<Module> module_,
+-                             FileSystem::FileSystemController& fsc_, const char* name)
+-    : ServiceFramework{system_, name}, fsc{fsc_}, module{std::move(module_)},
+-      backend{CreateBackendFromSettings(system_,
+-                                        [&fsc_](u64 tid) { return fsc_.GetBCATDirectory(tid); })} {}
+-
+-Module::Interface::~Interface() = default;
+-
+-void LoopProcess(Core::System& system) {
+-    auto server_manager = std::make_unique<ServerManager>(system);
+-    auto module = std::make_shared<Module>();
+-
+-    server_manager->RegisterNamedService(
+-        "bcat:a",
+-        std::make_shared<BCAT>(system, module, system.GetFileSystemController(), "bcat:a"));
+-    server_manager->RegisterNamedService(
+-        "bcat:m",
+-        std::make_shared<BCAT>(system, module, system.GetFileSystemController(), "bcat:m"));
+-    server_manager->RegisterNamedService(
+-        "bcat:u",
+-        std::make_shared<BCAT>(system, module, system.GetFileSystemController(), "bcat:u"));
+-    server_manager->RegisterNamedService(
+-        "bcat:s",
+-        std::make_shared<BCAT>(system, module, system.GetFileSystemController(), "bcat:s"));
+-    ServerManager::RunServer(std::move(server_manager));
+-}
+-
+-} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/bcat_module.h b/src/core/hle/service/bcat/bcat_module.h
+deleted file mode 100644
+index 87576288b393..000000000000
+--- a/src/core/hle/service/bcat/bcat_module.h
++++ /dev/null
+@@ -1,46 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#pragma once
+-
+-#include "core/hle/service/service.h"
+-
+-namespace Core {
+-class System;
+-}
+-
+-namespace Service {
+-
+-namespace FileSystem {
+-class FileSystemController;
+-} // namespace FileSystem
+-
+-namespace BCAT {
+-
+-class Backend;
+-
+-class Module final {
+-public:
+-    class Interface : public ServiceFramework<Interface> {
+-    public:
+-        explicit Interface(Core::System& system_, std::shared_ptr<Module> module_,
+-                           FileSystem::FileSystemController& fsc_, const char* name);
+-        ~Interface() override;
+-
+-        void CreateBcatService(HLERequestContext& ctx);
+-        void CreateDeliveryCacheStorageService(HLERequestContext& ctx);
+-        void CreateDeliveryCacheStorageServiceWithApplicationId(HLERequestContext& ctx);
+-
+-    protected:
+-        FileSystem::FileSystemController& fsc;
+-
+-        std::shared_ptr<Module> module;
+-        std::unique_ptr<Backend> backend;
+-    };
+-};
+-
+-void LoopProcess(Core::System& system);
+-
+-} // namespace BCAT
+-
+-} // namespace Service
+diff --git a/src/core/hle/service/bcat/bcat_result.h b/src/core/hle/service/bcat/bcat_result.h
+new file mode 100644
+index 000000000000..edf8a6564182
+--- /dev/null
++++ b/src/core/hle/service/bcat/bcat_result.h
+@@ -0,0 +1,15 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/result.h"
++
++namespace Service::BCAT {
++
++constexpr Result ResultInvalidArgument{ErrorModule::BCAT, 1};
++constexpr Result ResultFailedOpenEntity{ErrorModule::BCAT, 2};
++constexpr Result ResultEntityAlreadyOpen{ErrorModule::BCAT, 6};
++constexpr Result ResultNoOpenEntry{ErrorModule::BCAT, 7};
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/bcat_service.cpp b/src/core/hle/service/bcat/bcat_service.cpp
+new file mode 100644
+index 000000000000..63b1072d2a12
+--- /dev/null
++++ b/src/core/hle/service/bcat/bcat_service.cpp
+@@ -0,0 +1,132 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "common/hex_util.h"
++#include "common/string_util.h"
++#include "core/core.h"
++#include "core/file_sys/errors.h"
++#include "core/hle/service/bcat/backend/backend.h"
++#include "core/hle/service/bcat/bcat_result.h"
++#include "core/hle/service/bcat/bcat_service.h"
++#include "core/hle/service/bcat/bcat_util.h"
++#include "core/hle/service/bcat/delivery_cache_progress_service.h"
++#include "core/hle/service/bcat/delivery_cache_storage_service.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::BCAT {
++
++static u64 GetCurrentBuildID(const Core::System::CurrentBuildProcessID& id) {
++    u64 out{};
++    std::memcpy(&out, id.data(), sizeof(u64));
++    return out;
++}
++
++IBcatService::IBcatService(Core::System& system_, BcatBackend& backend_)
++    : ServiceFramework{system_, "IBcatService"}, backend{backend_},
++      progress{{
++          ProgressServiceBackend{system_, "Normal"},
++          ProgressServiceBackend{system_, "Directory"},
++      }} {
++    // clang-format off
++        static const FunctionInfo functions[] = {
++            {10100, D<&IBcatService::RequestSyncDeliveryCache>, "RequestSyncDeliveryCache"},
++            {10101, D<&IBcatService::RequestSyncDeliveryCacheWithDirectoryName>, "RequestSyncDeliveryCacheWithDirectoryName"},
++            {10200, nullptr, "CancelSyncDeliveryCacheRequest"},
++            {20100, nullptr, "RequestSyncDeliveryCacheWithApplicationId"},
++            {20101, nullptr, "RequestSyncDeliveryCacheWithApplicationIdAndDirectoryName"},
++            {20300, nullptr, "GetDeliveryCacheStorageUpdateNotifier"},
++            {20301, nullptr, "RequestSuspendDeliveryTask"},
++            {20400, nullptr, "RegisterSystemApplicationDeliveryTask"},
++            {20401, nullptr, "UnregisterSystemApplicationDeliveryTask"},
++            {20410, nullptr, "SetSystemApplicationDeliveryTaskTimer"},
++            {30100, D<&IBcatService::SetPassphrase>, "SetPassphrase"},
++            {30101, nullptr, "Unknown30101"},
++            {30102, nullptr, "Unknown30102"},
++            {30200, nullptr, "RegisterBackgroundDeliveryTask"},
++            {30201, nullptr, "UnregisterBackgroundDeliveryTask"},
++            {30202, nullptr, "BlockDeliveryTask"},
++            {30203, nullptr, "UnblockDeliveryTask"},
++            {30210, nullptr, "SetDeliveryTaskTimer"},
++            {30300, D<&IBcatService::RegisterSystemApplicationDeliveryTasks>, "RegisterSystemApplicationDeliveryTasks"},
++            {90100, nullptr, "EnumerateBackgroundDeliveryTask"},
++            {90101, nullptr, "Unknown90101"},
++            {90200, nullptr, "GetDeliveryList"},
++            {90201, D<&IBcatService::ClearDeliveryCacheStorage>, "ClearDeliveryCacheStorage"},
++            {90202, nullptr, "ClearDeliveryTaskSubscriptionStatus"},
++            {90300, nullptr, "GetPushNotificationLog"},
++            {90301, nullptr, "Unknown90301"},
++        };
++    // clang-format on
++    RegisterHandlers(functions);
++}
++
++IBcatService::~IBcatService() = default;
++
++Result IBcatService::RequestSyncDeliveryCache(
++    OutInterface<IDeliveryCacheProgressService> out_interface) {
++    LOG_DEBUG(Service_BCAT, "called");
++
++    auto& progress_backend{GetProgressBackend(SyncType::Normal)};
++    backend.Synchronize({system.GetApplicationProcessProgramID(),
++                         GetCurrentBuildID(system.GetApplicationProcessBuildID())},
++                        GetProgressBackend(SyncType::Normal));
++
++    *out_interface = std::make_shared<IDeliveryCacheProgressService>(
++        system, progress_backend.GetEvent(), progress_backend.GetImpl());
++    R_SUCCEED();
++}
++
++Result IBcatService::RequestSyncDeliveryCacheWithDirectoryName(
++    const DirectoryName& name_raw, OutInterface<IDeliveryCacheProgressService> out_interface) {
++    const auto name = Common::StringFromFixedZeroTerminatedBuffer(name_raw.data(), name_raw.size());
++
++    LOG_DEBUG(Service_BCAT, "called, name={}", name);
++
++    auto& progress_backend{GetProgressBackend(SyncType::Directory)};
++    backend.SynchronizeDirectory({system.GetApplicationProcessProgramID(),
++                                  GetCurrentBuildID(system.GetApplicationProcessBuildID())},
++                                 name, progress_backend);
++
++    *out_interface = std::make_shared<IDeliveryCacheProgressService>(
++        system, progress_backend.GetEvent(), progress_backend.GetImpl());
++    R_SUCCEED();
++}
++
++Result IBcatService::SetPassphrase(u64 application_id,
++                                   InBuffer<BufferAttr_HipcPointer> passphrase_buffer) {
++    LOG_DEBUG(Service_BCAT, "called, application_id={:016X}, passphrase={}", application_id,
++              Common::HexToString(passphrase_buffer));
++
++    R_UNLESS(application_id != 0, ResultInvalidArgument);
++    R_UNLESS(passphrase_buffer.size() <= 0x40, ResultInvalidArgument);
++
++    Passphrase passphrase{};
++    std::memcpy(passphrase.data(), passphrase_buffer.data(),
++                std::min(passphrase.size(), passphrase_buffer.size()));
++
++    backend.SetPassphrase(application_id, passphrase);
++    R_SUCCEED();
++}
++
++Result IBcatService::RegisterSystemApplicationDeliveryTasks() {
++    LOG_WARNING(Service_BCAT, "(STUBBED) called");
++    R_SUCCEED();
++}
++
++Result IBcatService::ClearDeliveryCacheStorage(u64 application_id) {
++    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}", application_id);
++
++    R_UNLESS(application_id != 0, ResultInvalidArgument);
++    R_UNLESS(backend.Clear(application_id), FileSys::ResultPermissionDenied);
++    R_SUCCEED();
++}
++
++ProgressServiceBackend& IBcatService::GetProgressBackend(SyncType type) {
++    return progress.at(static_cast<size_t>(type));
++}
++
++const ProgressServiceBackend& IBcatService::GetProgressBackend(SyncType type) const {
++    return progress.at(static_cast<size_t>(type));
++}
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/bcat_service.h b/src/core/hle/service/bcat/bcat_service.h
+new file mode 100644
+index 000000000000..dda5a2d5f3a6
+--- /dev/null
++++ b/src/core/hle/service/bcat/bcat_service.h
+@@ -0,0 +1,45 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/bcat/backend/backend.h"
++#include "core/hle/service/bcat/bcat_types.h"
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::BCAT {
++class BcatBackend;
++class IDeliveryCacheStorageService;
++class IDeliveryCacheProgressService;
++
++class IBcatService final : public ServiceFramework<IBcatService> {
++public:
++    explicit IBcatService(Core::System& system_, BcatBackend& backend_);
++    ~IBcatService() override;
++
++private:
++    Result RequestSyncDeliveryCache(OutInterface<IDeliveryCacheProgressService> out_interface);
++
++    Result RequestSyncDeliveryCacheWithDirectoryName(
++        const DirectoryName& name, OutInterface<IDeliveryCacheProgressService> out_interface);
++
++    Result SetPassphrase(u64 application_id, InBuffer<BufferAttr_HipcPointer> passphrase_buffer);
++
++    Result RegisterSystemApplicationDeliveryTasks();
++
++    Result ClearDeliveryCacheStorage(u64 application_id);
++
++private:
++    ProgressServiceBackend& GetProgressBackend(SyncType type);
++    const ProgressServiceBackend& GetProgressBackend(SyncType type) const;
++
++    BcatBackend& backend;
++    std::array<ProgressServiceBackend, static_cast<size_t>(SyncType::Count)> progress;
++};
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/bcat_types.h b/src/core/hle/service/bcat/bcat_types.h
+new file mode 100644
+index 000000000000..b35dab7c5aeb
+--- /dev/null
++++ b/src/core/hle/service/bcat/bcat_types.h
+@@ -0,0 +1,66 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <functional>
++
++#include "common/common_funcs.h"
++#include "common/common_types.h"
++#include "core/file_sys/vfs/vfs_types.h"
++#include "core/hle/result.h"
++
++namespace Service::BCAT {
++
++using DirectoryName = std::array<char, 0x20>;
++using FileName = std::array<char, 0x20>;
++using BcatDigest = std::array<u8, 0x10>;
++using Passphrase = std::array<u8, 0x20>;
++using DirectoryGetter = std::function<FileSys::VirtualDir(u64)>;
++
++enum class SyncType {
++    Normal,
++    Directory,
++    Count,
++};
++
++enum class DeliveryCacheProgressStatus : s32 {
++    None = 0x0,
++    Queued = 0x1,
++    Connecting = 0x2,
++    ProcessingDataList = 0x3,
++    Downloading = 0x4,
++    Committing = 0x5,
++    Done = 0x9,
++};
++
++struct DeliveryCacheDirectoryEntry {
++    FileName name;
++    u64 size;
++    BcatDigest digest;
++};
++
++struct TitleIDVersion {
++    u64 title_id;
++    u64 build_id;
++};
++
++struct DeliveryCacheProgressImpl {
++    DeliveryCacheProgressStatus status;
++    Result result;
++    DirectoryName current_directory;
++    FileName current_file;
++    s64 current_downloaded_bytes; ///< Bytes downloaded on current file.
++    s64 current_total_bytes;      ///< Bytes total on current file.
++    s64 total_downloaded_bytes;   ///< Bytes downloaded on overall download.
++    s64 total_bytes;              ///< Bytes total on overall download.
++    INSERT_PADDING_BYTES_NOINIT(
++        0x198); ///< Appears to be unused in official code, possibly reserved for future use.
++};
++static_assert(sizeof(DeliveryCacheProgressImpl) == 0x200,
++              "DeliveryCacheProgressImpl has incorrect size.");
++static_assert(std::is_trivial_v<DeliveryCacheProgressImpl>,
++              "DeliveryCacheProgressImpl type must be trivially copyable.");
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/bcat_util.h b/src/core/hle/service/bcat/bcat_util.h
+new file mode 100644
+index 000000000000..6bf2657eeb85
+--- /dev/null
++++ b/src/core/hle/service/bcat/bcat_util.h
+@@ -0,0 +1,39 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include <array>
++#include <cctype>
++#include <mbedtls/md5.h>
++
++#include "core/hle/service/bcat/bcat_result.h"
++#include "core/hle/service/bcat/bcat_types.h"
++
++namespace Service::BCAT {
++
++// For a name to be valid it must be non-empty, must have a null terminating character as the final
++// char, can only contain numbers, letters, underscores and a hyphen if directory and a period if
++// file.
++constexpr Result VerifyNameValidInternal(std::array<char, 0x20> name, char match_char) {
++    const auto null_chars = std::count(name.begin(), name.end(), 0);
++    const auto bad_chars = std::count_if(name.begin(), name.end(), [match_char](char c) {
++        return !std::isalnum(static_cast<u8>(c)) && c != '_' && c != match_char && c != '\0';
++    });
++    if (null_chars == 0x20 || null_chars == 0 || bad_chars != 0 || name[0x1F] != '\0') {
++        LOG_ERROR(Service_BCAT, "Name passed was invalid!");
++        return ResultInvalidArgument;
++    }
++
++    return ResultSuccess;
++}
++
++constexpr Result VerifyNameValidDir(DirectoryName name) {
++    return VerifyNameValidInternal(name, '-');
++}
++
++constexpr Result VerifyNameValidFile(FileName name) {
++    return VerifyNameValidInternal(name, '.');
++}
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/delivery_cache_directory_service.cpp b/src/core/hle/service/bcat/delivery_cache_directory_service.cpp
+new file mode 100644
+index 000000000000..01f08a2fc5a3
+--- /dev/null
++++ b/src/core/hle/service/bcat/delivery_cache_directory_service.cpp
+@@ -0,0 +1,80 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "common/string_util.h"
++#include "core/file_sys/vfs/vfs_types.h"
++#include "core/hle/service/bcat/bcat_result.h"
++#include "core/hle/service/bcat/bcat_util.h"
++#include "core/hle/service/bcat/delivery_cache_directory_service.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::BCAT {
++
++// The digest is only used to determine if a file is unique compared to others of the same name.
++// Since the algorithm isn't ever checked in game, MD5 is safe.
++static BcatDigest DigestFile(const FileSys::VirtualFile& file) {
++    BcatDigest out{};
++    const auto bytes = file->ReadAllBytes();
++    mbedtls_md5_ret(bytes.data(), bytes.size(), out.data());
++    return out;
++}
++
++IDeliveryCacheDirectoryService::IDeliveryCacheDirectoryService(Core::System& system_,
++                                                               FileSys::VirtualDir root_)
++    : ServiceFramework{system_, "IDeliveryCacheDirectoryService"}, root(std::move(root_)) {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, D<&IDeliveryCacheDirectoryService::Open>, "Open"},
++        {1, D<&IDeliveryCacheDirectoryService::Read>, "Read"},
++        {2, D<&IDeliveryCacheDirectoryService::GetCount>, "GetCount"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IDeliveryCacheDirectoryService::~IDeliveryCacheDirectoryService() = default;
++
++Result IDeliveryCacheDirectoryService::Open(const DirectoryName& dir_name_raw) {
++    const auto dir_name =
++        Common::StringFromFixedZeroTerminatedBuffer(dir_name_raw.data(), dir_name_raw.size());
++
++    LOG_DEBUG(Service_BCAT, "called, dir_name={}", dir_name);
++
++    R_TRY(VerifyNameValidDir(dir_name_raw));
++    R_UNLESS(current_dir == nullptr, ResultEntityAlreadyOpen);
++
++    const auto dir = root->GetSubdirectory(dir_name);
++    R_UNLESS(dir != nullptr, ResultFailedOpenEntity);
++
++    R_SUCCEED();
++}
++
++Result IDeliveryCacheDirectoryService::Read(
++    Out<s32> out_count, OutArray<DeliveryCacheDirectoryEntry, BufferAttr_HipcMapAlias> out_buffer) {
++    LOG_DEBUG(Service_BCAT, "called, write_size={:016X}", out_buffer.size());
++
++    R_UNLESS(current_dir != nullptr, ResultNoOpenEntry);
++
++    const auto files = current_dir->GetFiles();
++    *out_count = static_cast<s32>(std::min(files.size(), out_buffer.size()));
++    std::transform(files.begin(), files.begin() + *out_count, out_buffer.begin(),
++                   [](const auto& file) {
++                       FileName name{};
++                       std::memcpy(name.data(), file->GetName().data(),
++                                   std::min(file->GetName().size(), name.size()));
++                       return DeliveryCacheDirectoryEntry{name, file->GetSize(), DigestFile(file)};
++                   });
++    R_SUCCEED();
++}
++
++Result IDeliveryCacheDirectoryService::GetCount(Out<s32> out_count) {
++    LOG_DEBUG(Service_BCAT, "called");
++
++    R_UNLESS(current_dir != nullptr, ResultNoOpenEntry);
++
++    *out_count = static_cast<s32>(current_dir->GetFiles().size());
++    R_SUCCEED();
++}
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/delivery_cache_directory_service.h b/src/core/hle/service/bcat/delivery_cache_directory_service.h
+new file mode 100644
+index 000000000000..b902c64959b9
+--- /dev/null
++++ b/src/core/hle/service/bcat/delivery_cache_directory_service.h
+@@ -0,0 +1,33 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/file_sys/vfs/vfs.h"
++#include "core/hle/service/bcat/bcat_types.h"
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::BCAT {
++
++class IDeliveryCacheDirectoryService final
++    : public ServiceFramework<IDeliveryCacheDirectoryService> {
++public:
++    explicit IDeliveryCacheDirectoryService(Core::System& system_, FileSys::VirtualDir root_);
++    ~IDeliveryCacheDirectoryService() override;
++
++private:
++    Result Open(const DirectoryName& dir_name_raw);
++    Result Read(Out<s32> out_count,
++                OutArray<DeliveryCacheDirectoryEntry, BufferAttr_HipcMapAlias> out_buffer);
++    Result GetCount(Out<s32> out_count);
++
++    FileSys::VirtualDir root;
++    FileSys::VirtualDir current_dir;
++};
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/delivery_cache_file_service.cpp b/src/core/hle/service/bcat/delivery_cache_file_service.cpp
+new file mode 100644
+index 000000000000..b75fac4bfefa
+--- /dev/null
++++ b/src/core/hle/service/bcat/delivery_cache_file_service.cpp
+@@ -0,0 +1,82 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "common/string_util.h"
++#include "core/hle/service/bcat/bcat_result.h"
++#include "core/hle/service/bcat/bcat_util.h"
++#include "core/hle/service/bcat/delivery_cache_file_service.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::BCAT {
++
++IDeliveryCacheFileService::IDeliveryCacheFileService(Core::System& system_,
++                                                     FileSys::VirtualDir root_)
++    : ServiceFramework{system_, "IDeliveryCacheFileService"}, root(std::move(root_)) {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, D<&IDeliveryCacheFileService::Open>, "Open"},
++        {1, D<&IDeliveryCacheFileService::Read>, "Read"},
++        {2, D<&IDeliveryCacheFileService::GetSize>, "GetSize"},
++        {3, D<&IDeliveryCacheFileService::GetDigest>, "GetDigest"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IDeliveryCacheFileService::~IDeliveryCacheFileService() = default;
++
++Result IDeliveryCacheFileService::Open(const DirectoryName& dir_name_raw,
++                                       const FileName& file_name_raw) {
++    const auto dir_name =
++        Common::StringFromFixedZeroTerminatedBuffer(dir_name_raw.data(), dir_name_raw.size());
++    const auto file_name =
++        Common::StringFromFixedZeroTerminatedBuffer(file_name_raw.data(), file_name_raw.size());
++
++    LOG_DEBUG(Service_BCAT, "called, dir_name={}, file_name={}", dir_name, file_name);
++
++    R_TRY(VerifyNameValidDir(dir_name_raw));
++    R_TRY(VerifyNameValidDir(file_name_raw));
++    R_UNLESS(current_file == nullptr, ResultEntityAlreadyOpen);
++
++    const auto dir = root->GetSubdirectory(dir_name);
++    R_UNLESS(dir != nullptr, ResultFailedOpenEntity);
++
++    current_file = dir->GetFile(file_name);
++    R_UNLESS(current_file != nullptr, ResultFailedOpenEntity);
++
++    R_SUCCEED();
++}
++
++Result IDeliveryCacheFileService::Read(Out<u64> out_buffer_size, u64 offset,
++                                       OutBuffer<BufferAttr_HipcMapAlias> out_buffer) {
++    LOG_DEBUG(Service_BCAT, "called, offset={:016X}, size={:016X}", offset, out_buffer.size());
++
++    R_UNLESS(current_file != nullptr, ResultNoOpenEntry);
++
++    *out_buffer_size = std::min<u64>(current_file->GetSize() - offset, out_buffer.size());
++    const auto buffer = current_file->ReadBytes(*out_buffer_size, offset);
++    memcpy(out_buffer.data(), buffer.data(), buffer.size());
++
++    R_SUCCEED();
++}
++
++Result IDeliveryCacheFileService::GetSize(Out<u64> out_size) {
++    LOG_DEBUG(Service_BCAT, "called");
++
++    R_UNLESS(current_file != nullptr, ResultNoOpenEntry);
++
++    *out_size = current_file->GetSize();
++    R_SUCCEED();
++}
++
++Result IDeliveryCacheFileService::GetDigest(Out<BcatDigest> out_digest) {
++    LOG_DEBUG(Service_BCAT, "called");
++
++    R_UNLESS(current_file != nullptr, ResultNoOpenEntry);
++
++    //*out_digest = DigestFile(current_file);
++    R_SUCCEED();
++}
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/delivery_cache_file_service.h b/src/core/hle/service/bcat/delivery_cache_file_service.h
+new file mode 100644
+index 000000000000..e1012e6873e2
+--- /dev/null
++++ b/src/core/hle/service/bcat/delivery_cache_file_service.h
+@@ -0,0 +1,33 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/file_sys/vfs/vfs.h"
++#include "core/hle/service/bcat/bcat_types.h"
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::BCAT {
++
++class IDeliveryCacheFileService final : public ServiceFramework<IDeliveryCacheFileService> {
++public:
++    explicit IDeliveryCacheFileService(Core::System& system_, FileSys::VirtualDir root_);
++    ~IDeliveryCacheFileService() override;
++
++private:
++    Result Open(const DirectoryName& dir_name_raw, const FileName& file_name_raw);
++    Result Read(Out<u64> out_buffer_size, u64 offset,
++                OutBuffer<BufferAttr_HipcMapAlias> out_buffer);
++    Result GetSize(Out<u64> out_size);
++    Result GetDigest(Out<BcatDigest> out_digest);
++
++    FileSys::VirtualDir root;
++    FileSys::VirtualFile current_file;
++};
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/delivery_cache_progress_service.cpp b/src/core/hle/service/bcat/delivery_cache_progress_service.cpp
+new file mode 100644
+index 000000000000..79e7e0d957f7
+--- /dev/null
++++ b/src/core/hle/service/bcat/delivery_cache_progress_service.cpp
+@@ -0,0 +1,41 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/bcat/bcat_types.h"
++#include "core/hle/service/bcat/delivery_cache_progress_service.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::BCAT {
++
++IDeliveryCacheProgressService::IDeliveryCacheProgressService(Core::System& system_,
++                                                             Kernel::KReadableEvent& event_,
++                                                             const DeliveryCacheProgressImpl& impl_)
++    : ServiceFramework{system_, "IDeliveryCacheProgressService"}, event{event_}, impl{impl_} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, D<&IDeliveryCacheProgressService::GetEvent>, "Get"},
++        {1, D<&IDeliveryCacheProgressService::GetImpl>, "Get"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IDeliveryCacheProgressService::~IDeliveryCacheProgressService() = default;
++
++Result IDeliveryCacheProgressService::GetEvent(OutCopyHandle<Kernel::KReadableEvent> out_event) {
++    LOG_DEBUG(Service_BCAT, "called");
++
++    *out_event = &event;
++    R_SUCCEED();
++}
++
++Result IDeliveryCacheProgressService::GetImpl(
++    OutLargeData<DeliveryCacheProgressImpl, BufferAttr_HipcPointer> out_impl) {
++    LOG_DEBUG(Service_BCAT, "called");
++
++    *out_impl = impl;
++    R_SUCCEED();
++}
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/delivery_cache_progress_service.h b/src/core/hle/service/bcat/delivery_cache_progress_service.h
+new file mode 100644
+index 000000000000..f81a1398065f
+--- /dev/null
++++ b/src/core/hle/service/bcat/delivery_cache_progress_service.h
+@@ -0,0 +1,35 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Kernel {
++class KEvent;
++class KReadableEvent;
++} // namespace Kernel
++
++namespace Service::BCAT {
++struct DeliveryCacheProgressImpl;
++
++class IDeliveryCacheProgressService final : public ServiceFramework<IDeliveryCacheProgressService> {
++public:
++    explicit IDeliveryCacheProgressService(Core::System& system_, Kernel::KReadableEvent& event_,
++                                           const DeliveryCacheProgressImpl& impl_);
++    ~IDeliveryCacheProgressService() override;
++
++private:
++    Result GetEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
++    Result GetImpl(OutLargeData<DeliveryCacheProgressImpl, BufferAttr_HipcPointer> out_impl);
++
++    Kernel::KReadableEvent& event;
++    const DeliveryCacheProgressImpl& impl;
++};
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/delivery_cache_storage_service.cpp b/src/core/hle/service/bcat/delivery_cache_storage_service.cpp
+new file mode 100644
+index 000000000000..4c79d71f4106
+--- /dev/null
++++ b/src/core/hle/service/bcat/delivery_cache_storage_service.cpp
+@@ -0,0 +1,57 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/bcat/bcat_result.h"
++#include "core/hle/service/bcat/delivery_cache_directory_service.h"
++#include "core/hle/service/bcat/delivery_cache_file_service.h"
++#include "core/hle/service/bcat/delivery_cache_storage_service.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::BCAT {
++
++IDeliveryCacheStorageService::IDeliveryCacheStorageService(Core::System& system_,
++                                                           FileSys::VirtualDir root_)
++    : ServiceFramework{system_, "IDeliveryCacheStorageService"}, root(std::move(root_)) {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, D<&IDeliveryCacheStorageService::CreateFileService>, "CreateFileService"},
++        {1, D<&IDeliveryCacheStorageService::CreateDirectoryService>, "CreateDirectoryService"},
++        {10, D<&IDeliveryCacheStorageService::EnumerateDeliveryCacheDirectory>, "EnumerateDeliveryCacheDirectory"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IDeliveryCacheStorageService::~IDeliveryCacheStorageService() = default;
++
++Result IDeliveryCacheStorageService::CreateFileService(
++    OutInterface<IDeliveryCacheFileService> out_interface) {
++    LOG_DEBUG(Service_BCAT, "called");
++
++    *out_interface = std::make_shared<IDeliveryCacheFileService>(system, root);
++    R_SUCCEED();
++}
++
++Result IDeliveryCacheStorageService::CreateDirectoryService(
++    OutInterface<IDeliveryCacheDirectoryService> out_interface) {
++    LOG_DEBUG(Service_BCAT, "called");
++
++    *out_interface = std::make_shared<IDeliveryCacheDirectoryService>(system, root);
++    R_SUCCEED();
++}
++
++Result IDeliveryCacheStorageService::EnumerateDeliveryCacheDirectory(
++    Out<s32> out_directory_count,
++    OutArray<DirectoryName, BufferAttr_HipcMapAlias> out_directories) {
++    LOG_DEBUG(Service_BCAT, "called, size={:016X}", out_directories.size());
++
++    *out_directory_count =
++        static_cast<s32>(std::min(out_directories.size(), entries.size() - next_read_index));
++    memcpy(out_directories.data(), entries.data() + next_read_index,
++           *out_directory_count * sizeof(DirectoryName));
++    next_read_index += *out_directory_count;
++    R_SUCCEED();
++}
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/delivery_cache_storage_service.h b/src/core/hle/service/bcat/delivery_cache_storage_service.h
+new file mode 100644
+index 000000000000..3b8dfb1a3948
+--- /dev/null
++++ b/src/core/hle/service/bcat/delivery_cache_storage_service.h
+@@ -0,0 +1,36 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/file_sys/vfs/vfs.h"
++#include "core/hle/service/bcat/bcat_types.h"
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::BCAT {
++class IDeliveryCacheFileService;
++class IDeliveryCacheDirectoryService;
++
++class IDeliveryCacheStorageService final : public ServiceFramework<IDeliveryCacheStorageService> {
++public:
++    explicit IDeliveryCacheStorageService(Core::System& system_, FileSys::VirtualDir root_);
++    ~IDeliveryCacheStorageService() override;
++
++private:
++    Result CreateFileService(OutInterface<IDeliveryCacheFileService> out_interface);
++    Result CreateDirectoryService(OutInterface<IDeliveryCacheDirectoryService> out_interface);
++    Result EnumerateDeliveryCacheDirectory(
++        Out<s32> out_directory_count,
++        OutArray<DirectoryName, BufferAttr_HipcMapAlias> out_directories);
++
++    FileSys::VirtualDir root;
++    std::vector<DirectoryName> entries;
++    std::size_t next_read_index = 0;
++};
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/news/newly_arrived_event_holder.cpp b/src/core/hle/service/bcat/news/newly_arrived_event_holder.cpp
+new file mode 100644
+index 000000000000..5be167fce68f
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/newly_arrived_event_holder.cpp
+@@ -0,0 +1,34 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/bcat/news/newly_arrived_event_holder.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::News {
++
++INewlyArrivedEventHolder::INewlyArrivedEventHolder(Core::System& system_)
++    : ServiceFramework{system_, "INewlyArrivedEventHolder"}, service_context{
++                                                                 system_,
++                                                                 "INewlyArrivedEventHolder"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, C<&INewlyArrivedEventHolder::Get>, "Get"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++    arrived_event = service_context.CreateEvent("INewlyArrivedEventHolder::ArrivedEvent");
++}
++
++INewlyArrivedEventHolder::~INewlyArrivedEventHolder() {
++    service_context.CloseEvent(arrived_event);
++}
++
++Result INewlyArrivedEventHolder::Get(OutCopyHandle<Kernel::KReadableEvent> out_event) {
++    LOG_INFO(Service_BCAT, "called");
++
++    *out_event = &arrived_event->GetReadableEvent();
++    R_SUCCEED();
++}
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/newly_arrived_event_holder.h b/src/core/hle/service/bcat/news/newly_arrived_event_holder.h
+new file mode 100644
+index 000000000000..6cc9ae099767
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/newly_arrived_event_holder.h
+@@ -0,0 +1,33 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/kernel_helpers.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Kernel {
++class KEvent;
++class KReadableEvent;
++} // namespace Kernel
++
++namespace Service::News {
++
++class INewlyArrivedEventHolder final : public ServiceFramework<INewlyArrivedEventHolder> {
++public:
++    explicit INewlyArrivedEventHolder(Core::System& system_);
++    ~INewlyArrivedEventHolder() override;
++
++private:
++    Result Get(OutCopyHandle<Kernel::KReadableEvent> out_event);
++
++    Kernel::KEvent* arrived_event;
++    KernelHelpers::ServiceContext service_context;
++};
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/news_data_service.cpp b/src/core/hle/service/bcat/news/news_data_service.cpp
+new file mode 100644
+index 000000000000..08103c9c3b08
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/news_data_service.cpp
+@@ -0,0 +1,25 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/bcat/news/news_data_service.h"
++
++namespace Service::News {
++
++INewsDataService::INewsDataService(Core::System& system_)
++    : ServiceFramework{system_, "INewsDataService"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, nullptr, "Open"},
++        {1, nullptr, "OpenWithNewsRecordV1"},
++        {2, nullptr, "Read"},
++        {3, nullptr, "GetSize"},
++        {1001, nullptr, "OpenWithNewsRecord"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++INewsDataService::~INewsDataService() = default;
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/news_data_service.h b/src/core/hle/service/bcat/news/news_data_service.h
+new file mode 100644
+index 000000000000..12082ada4154
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/news_data_service.h
+@@ -0,0 +1,20 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::News {
++
++class INewsDataService final : public ServiceFramework<INewsDataService> {
++public:
++    explicit INewsDataService(Core::System& system_);
++    ~INewsDataService() override;
++};
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/news_database_service.cpp b/src/core/hle/service/bcat/news/news_database_service.cpp
+new file mode 100644
+index 000000000000..18109f9b02bd
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/news_database_service.cpp
+@@ -0,0 +1,35 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/bcat/news/news_database_service.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::News {
++
++INewsDatabaseService::INewsDatabaseService(Core::System& system_)
++    : ServiceFramework{system_, "INewsDatabaseService"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, nullptr, "GetListV1"},
++        {1, C<&INewsDatabaseService::Count>, "Count"},
++        {2, nullptr, "CountWithKey"},
++        {3, nullptr, "UpdateIntegerValue"},
++        {4, nullptr, "UpdateIntegerValueWithAddition"},
++        {5, nullptr, "UpdateStringValue"},
++        {1000, nullptr, "GetList"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++INewsDatabaseService::~INewsDatabaseService() = default;
++
++Result INewsDatabaseService::Count(Out<s32> out_count,
++                                   InBuffer<BufferAttr_HipcPointer> buffer_data) {
++    LOG_WARNING(Service_BCAT, "(STUBBED) called, buffer_size={}", buffer_data.size());
++    *out_count = 0;
++    R_SUCCEED();
++}
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/news_database_service.h b/src/core/hle/service/bcat/news/news_database_service.h
+new file mode 100644
+index 000000000000..f5916634b398
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/news_database_service.h
+@@ -0,0 +1,24 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::News {
++
++class INewsDatabaseService final : public ServiceFramework<INewsDatabaseService> {
++public:
++    explicit INewsDatabaseService(Core::System& system_);
++    ~INewsDatabaseService() override;
++
++private:
++    Result Count(Out<s32> out_count, InBuffer<BufferAttr_HipcPointer> buffer_data);
++};
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/news_service.cpp b/src/core/hle/service/bcat/news/news_service.cpp
+new file mode 100644
+index 000000000000..e19cea7b5484
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/news_service.cpp
+@@ -0,0 +1,46 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/bcat/news/news_service.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::News {
++
++INewsService::INewsService(Core::System& system_) : ServiceFramework{system_, "INewsService"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {10100, nullptr, "PostLocalNews"},
++        {20100, nullptr, "SetPassphrase"},
++        {30100, C<&INewsService::GetSubscriptionStatus>, "GetSubscriptionStatus"},
++        {30101, nullptr, "GetTopicList"},
++        {30110, nullptr, "Unknown30110"},
++        {30200, nullptr, "IsSystemUpdateRequired"},
++        {30201, nullptr, "Unknown30201"},
++        {30210, nullptr, "Unknown30210"},
++        {30300, nullptr, "RequestImmediateReception"},
++        {30400, nullptr, "DecodeArchiveFile"},
++        {30500, nullptr, "Unknown30500"},
++        {30900, nullptr, "Unknown30900"},
++        {30901, nullptr, "Unknown30901"},
++        {30902, nullptr, "Unknown30902"},
++        {40100, nullptr, "SetSubscriptionStatus"},
++        {40101, nullptr, "RequestAutoSubscription"},
++        {40200, nullptr, "ClearStorage"},
++        {40201, nullptr, "ClearSubscriptionStatusAll"},
++        {90100, nullptr, "GetNewsDatabaseDump"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++INewsService::~INewsService() = default;
++
++Result INewsService::GetSubscriptionStatus(Out<u32> out_status,
++                                           InBuffer<BufferAttr_HipcPointer> buffer_data) {
++    LOG_WARNING(Service_BCAT, "(STUBBED) called, buffer_size={}", buffer_data.size());
++    *out_status = 0;
++    R_SUCCEED();
++}
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/news_service.h b/src/core/hle/service/bcat/news/news_service.h
+new file mode 100644
+index 000000000000..8d06be9d6333
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/news_service.h
+@@ -0,0 +1,24 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::News {
++
++class INewsService final : public ServiceFramework<INewsService> {
++public:
++    explicit INewsService(Core::System& system_);
++    ~INewsService() override;
++
++private:
++    Result GetSubscriptionStatus(Out<u32> out_status, InBuffer<BufferAttr_HipcPointer> buffer_data);
++};
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/overwrite_event_holder.cpp b/src/core/hle/service/bcat/news/overwrite_event_holder.cpp
+new file mode 100644
+index 000000000000..c32a5ca8fc86
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/overwrite_event_holder.cpp
+@@ -0,0 +1,33 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/bcat/news/overwrite_event_holder.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::News {
++
++IOverwriteEventHolder::IOverwriteEventHolder(Core::System& system_)
++    : ServiceFramework{system_, "IOverwriteEventHolder"}, service_context{system_,
++                                                                          "IOverwriteEventHolder"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, C<&IOverwriteEventHolder::Get>, "Get"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++    overwrite_event = service_context.CreateEvent("IOverwriteEventHolder::OverwriteEvent");
++}
++
++IOverwriteEventHolder::~IOverwriteEventHolder() {
++    service_context.CloseEvent(overwrite_event);
++}
++
++Result IOverwriteEventHolder::Get(OutCopyHandle<Kernel::KReadableEvent> out_event) {
++    LOG_INFO(Service_BCAT, "called");
++
++    *out_event = &overwrite_event->GetReadableEvent();
++    R_SUCCEED();
++}
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/overwrite_event_holder.h b/src/core/hle/service/bcat/news/overwrite_event_holder.h
+new file mode 100644
+index 000000000000..cdc87d782c9c
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/overwrite_event_holder.h
+@@ -0,0 +1,33 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/kernel_helpers.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Kernel {
++class KEvent;
++class KReadableEvent;
++} // namespace Kernel
++
++namespace Service::News {
++
++class IOverwriteEventHolder final : public ServiceFramework<IOverwriteEventHolder> {
++public:
++    explicit IOverwriteEventHolder(Core::System& system_);
++    ~IOverwriteEventHolder() override;
++
++private:
++    Result Get(OutCopyHandle<Kernel::KReadableEvent> out_event);
++
++    Kernel::KEvent* overwrite_event;
++    KernelHelpers::ServiceContext service_context;
++};
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/service_creator.cpp b/src/core/hle/service/bcat/news/service_creator.cpp
+new file mode 100644
+index 000000000000..d5ba5dff7a89
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/service_creator.cpp
+@@ -0,0 +1,64 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "core/hle/service/bcat/news/newly_arrived_event_holder.h"
++#include "core/hle/service/bcat/news/news_data_service.h"
++#include "core/hle/service/bcat/news/news_database_service.h"
++#include "core/hle/service/bcat/news/news_service.h"
++#include "core/hle/service/bcat/news/overwrite_event_holder.h"
++#include "core/hle/service/bcat/news/service_creator.h"
++#include "core/hle/service/cmif_serialization.h"
++
++namespace Service::News {
++
++IServiceCreator::IServiceCreator(Core::System& system_, u32 permissions_, const char* name_)
++    : ServiceFramework{system_, name_}, permissions{permissions_} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, C<&IServiceCreator::CreateNewsService>, "CreateNewsService"},
++        {1, C<&IServiceCreator::CreateNewlyArrivedEventHolder>, "CreateNewlyArrivedEventHolder"},
++        {2, C<&IServiceCreator::CreateNewsDataService>, "CreateNewsDataService"},
++        {3, C<&IServiceCreator::CreateNewsDatabaseService>, "CreateNewsDatabaseService"},
++        {4, C<&IServiceCreator::CreateOverwriteEventHolder>, "CreateOverwriteEventHolder"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IServiceCreator::~IServiceCreator() = default;
++
++Result IServiceCreator::CreateNewsService(OutInterface<INewsService> out_interface) {
++    LOG_INFO(Service_BCAT, "called");
++    *out_interface = std::make_shared<INewsService>(system);
++    R_SUCCEED();
++}
++
++Result IServiceCreator::CreateNewlyArrivedEventHolder(
++    OutInterface<INewlyArrivedEventHolder> out_interface) {
++    LOG_INFO(Service_BCAT, "called");
++    *out_interface = std::make_shared<INewlyArrivedEventHolder>(system);
++    R_SUCCEED();
++}
++
++Result IServiceCreator::CreateNewsDataService(OutInterface<INewsDataService> out_interface) {
++    LOG_INFO(Service_BCAT, "called");
++    *out_interface = std::make_shared<INewsDataService>(system);
++    R_SUCCEED();
++}
++
++Result IServiceCreator::CreateNewsDatabaseService(
++    OutInterface<INewsDatabaseService> out_interface) {
++    LOG_INFO(Service_BCAT, "called");
++    *out_interface = std::make_shared<INewsDatabaseService>(system);
++    R_SUCCEED();
++}
++
++Result IServiceCreator::CreateOverwriteEventHolder(
++    OutInterface<IOverwriteEventHolder> out_interface) {
++    LOG_INFO(Service_BCAT, "called");
++    *out_interface = std::make_shared<IOverwriteEventHolder>(system);
++    R_SUCCEED();
++}
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/news/service_creator.h b/src/core/hle/service/bcat/news/service_creator.h
+new file mode 100644
+index 000000000000..5a62e7c1a959
+--- /dev/null
++++ b/src/core/hle/service/bcat/news/service_creator.h
+@@ -0,0 +1,35 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::News {
++class INewsService;
++class INewlyArrivedEventHolder;
++class INewsDataService;
++class INewsDatabaseService;
++class IOverwriteEventHolder;
++
++class IServiceCreator final : public ServiceFramework<IServiceCreator> {
++public:
++    explicit IServiceCreator(Core::System& system_, u32 permissions_, const char* name_);
++    ~IServiceCreator() override;
++
++private:
++    Result CreateNewsService(OutInterface<INewsService> out_interface);
++    Result CreateNewlyArrivedEventHolder(OutInterface<INewlyArrivedEventHolder> out_interface);
++    Result CreateNewsDataService(OutInterface<INewsDataService> out_interface);
++    Result CreateNewsDatabaseService(OutInterface<INewsDatabaseService> out_interface);
++    Result CreateOverwriteEventHolder(OutInterface<IOverwriteEventHolder> out_interface);
++
++    u32 permissions;
++};
++
++} // namespace Service::News
+diff --git a/src/core/hle/service/bcat/service_creator.cpp b/src/core/hle/service/bcat/service_creator.cpp
+new file mode 100644
+index 000000000000..ca339e5a6866
+--- /dev/null
++++ b/src/core/hle/service/bcat/service_creator.cpp
+@@ -0,0 +1,62 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/bcat/bcat_service.h"
++#include "core/hle/service/bcat/delivery_cache_storage_service.h"
++#include "core/hle/service/bcat/service_creator.h"
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/filesystem/filesystem.h"
++
++namespace Service::BCAT {
++
++std::unique_ptr<BcatBackend> CreateBackendFromSettings([[maybe_unused]] Core::System& system,
++                                                       DirectoryGetter getter) {
++    return std::make_unique<NullBcatBackend>(std::move(getter));
++}
++
++IServiceCreator::IServiceCreator(Core::System& system_, const char* name_)
++    : ServiceFramework{system_, name_}, fsc{system.GetFileSystemController()} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, D<&IServiceCreator::CreateBcatService>, "CreateBcatService"},
++        {1, D<&IServiceCreator::CreateDeliveryCacheStorageService>, "CreateDeliveryCacheStorageService"},
++        {2, D<&IServiceCreator::CreateDeliveryCacheStorageServiceWithApplicationId>, "CreateDeliveryCacheStorageServiceWithApplicationId"},
++        {3, nullptr, "CreateDeliveryCacheProgressService"},
++        {4, nullptr, "CreateDeliveryCacheProgressServiceWithApplicationId"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++
++    backend =
++        CreateBackendFromSettings(system_, [this](u64 tid) { return fsc.GetBCATDirectory(tid); });
++}
++
++IServiceCreator::~IServiceCreator() = default;
++
++Result IServiceCreator::CreateBcatService(ClientProcessId process_id,
++                                          OutInterface<IBcatService> out_interface) {
++    LOG_INFO(Service_BCAT, "called, process_id={}", process_id.pid);
++    *out_interface = std::make_shared<IBcatService>(system, *backend);
++    R_SUCCEED();
++}
++
++Result IServiceCreator::CreateDeliveryCacheStorageService(
++    ClientProcessId process_id, OutInterface<IDeliveryCacheStorageService> out_interface) {
++    LOG_INFO(Service_BCAT, "called, process_id={}", process_id.pid);
++
++    const auto title_id = system.GetApplicationProcessProgramID();
++    *out_interface =
++        std::make_shared<IDeliveryCacheStorageService>(system, fsc.GetBCATDirectory(title_id));
++    R_SUCCEED();
++}
++
++Result IServiceCreator::CreateDeliveryCacheStorageServiceWithApplicationId(
++    u64 application_id, OutInterface<IDeliveryCacheStorageService> out_interface) {
++    LOG_DEBUG(Service_BCAT, "called, application_id={:016X}", application_id);
++    *out_interface = std::make_shared<IDeliveryCacheStorageService>(
++        system, fsc.GetBCATDirectory(application_id));
++    R_SUCCEED();
++}
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/bcat/service_creator.h b/src/core/hle/service/bcat/service_creator.h
+new file mode 100644
+index 000000000000..50e66332489c
+--- /dev/null
++++ b/src/core/hle/service/bcat/service_creator.h
+@@ -0,0 +1,40 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::FileSystem {
++class FileSystemController;
++}
++
++namespace Service::BCAT {
++class BcatBackend;
++class IBcatService;
++class IDeliveryCacheStorageService;
++
++class IServiceCreator final : public ServiceFramework<IServiceCreator> {
++public:
++    explicit IServiceCreator(Core::System& system_, const char* name_);
++    ~IServiceCreator() override;
++
++private:
++    Result CreateBcatService(ClientProcessId process_id, OutInterface<IBcatService> out_interface);
++
++    Result CreateDeliveryCacheStorageService(
++        ClientProcessId process_id, OutInterface<IDeliveryCacheStorageService> out_interface);
++
++    Result CreateDeliveryCacheStorageServiceWithApplicationId(
++        u64 application_id, OutInterface<IDeliveryCacheStorageService> out_interface);
++
++    std::unique_ptr<BcatBackend> backend;
++    Service::FileSystem::FileSystemController& fsc;
++};
++
++} // namespace Service::BCAT
+diff --git a/src/core/hle/service/service.cpp b/src/core/hle/service/service.cpp
+index 06cbad2681d4..f68c3c6869c5 100644
+--- a/src/core/hle/service/service.cpp
++++ b/src/core/hle/service/service.cpp
+@@ -15,7 +15,7 @@
+ #include "core/hle/service/aoc/aoc_u.h"
+ #include "core/hle/service/apm/apm.h"
+ #include "core/hle/service/audio/audio.h"
+-#include "core/hle/service/bcat/bcat_module.h"
++#include "core/hle/service/bcat/bcat.h"
+ #include "core/hle/service/bpc/bpc.h"
+ #include "core/hle/service/btdrv/btdrv.h"
+ #include "core/hle/service/btm/btm.h"

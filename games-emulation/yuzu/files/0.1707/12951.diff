@@ -1,0 +1,58 @@
+diff --git a/src/core/hle/service/cmif_serialization.h b/src/core/hle/service/cmif_serialization.h
+index e985fe317023..f24682c346cc 100644
+--- a/src/core/hle/service/cmif_serialization.h
++++ b/src/core/hle/service/cmif_serialization.h
+@@ -280,7 +280,7 @@ void ReadInArgument(bool is_domain, CallArguments& args, const u8* raw_data, HLE
+ 
+             u32 value{};
+             std::memcpy(&value, raw_data + ArgOffset, ArgSize);
+-            std::get<ArgIndex>(args) = ctx.GetDomainHandler<ArgType::Type>(value - 1);
++            std::get<ArgIndex>(args) = ctx.GetDomainHandler<typename ArgType::element_type>(value - 1);
+ 
+             return ReadInArgument<MethodArguments, CallArguments, ArgAlign, ArgEnd, HandleIndex, InBufferIndex, OutBufferIndex, true, ArgIndex + 1>(is_domain, args, raw_data, ctx, temp);
+         } else if constexpr (ArgumentTraits<ArgType>::Type == ArgumentType::InCopyHandle) {
+diff --git a/src/core/hle/service/cmif_types.h b/src/core/hle/service/cmif_types.h
+index 84f4c2456a3a..db5a013c7720 100644
+--- a/src/core/hle/service/cmif_types.h
++++ b/src/core/hle/service/cmif_types.h
+@@ -65,6 +65,14 @@ struct ClientProcessId {
+ };
+ 
+ struct ProcessId {
++    explicit ProcessId() : pid() {}
++    explicit ProcessId(u64 p) : pid(p) {}
++    /* implicit */ ProcessId(const ClientProcessId& c) : pid(c.pid) {}
++
++    bool operator==(const ProcessId& rhs) const {
++        return pid == rhs.pid;
++    }
++
+     explicit operator bool() const {
+         return pid != 0;
+     }
+@@ -291,4 +299,4 @@ class OutLargeData {
+ };
+ // clang-format on
+ 
+-} // namespace Service
+\ No newline at end of file
++} // namespace Service
+diff --git a/src/core/hle/service/hle_ipc.cpp b/src/core/hle/service/hle_ipc.cpp
+index 50e1ed7565c3..e0367e774ccd 100644
+--- a/src/core/hle/service/hle_ipc.cpp
++++ b/src/core/hle/service/hle_ipc.cpp
+@@ -299,8 +299,12 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer() {
+     if (GetManager()->IsDomain()) {
+         current_offset = domain_offset - static_cast<u32>(outgoing_domain_objects.size());
+         for (auto& object : outgoing_domain_objects) {
+-            GetManager()->AppendDomainHandler(std::move(object));
+-            cmd_buf[current_offset++] = static_cast<u32_le>(GetManager()->DomainHandlerCount());
++            if (object) {
++                GetManager()->AppendDomainHandler(std::move(object));
++                cmd_buf[current_offset++] = static_cast<u32_le>(GetManager()->DomainHandlerCount());
++            } else {
++                cmd_buf[current_offset++] = 0;
++            }
+         }
+     }
+ 

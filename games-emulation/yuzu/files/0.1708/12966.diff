@@ -1,0 +1,123 @@
+diff --git a/src/core/hle/service/hid/hid_system_server.cpp b/src/core/hle/service/hid/hid_system_server.cpp
+index 22471e9e2930..7126a1dcd765 100644
+--- a/src/core/hle/service/hid/hid_system_server.cpp
++++ b/src/core/hle/service/hid/hid_system_server.cpp
+@@ -508,13 +508,8 @@ void IHidSystemServer::RegisterAppletResourceUserId(HLERequestContext& ctx) {
+     Result result = GetResourceManager()->RegisterAppletResourceUserId(
+         parameters.applet_resource_user_id, parameters.enable_input);
+ 
+-    if (result.IsSuccess()) {
+-        // result = GetResourceManager()->GetNpad()->RegisterAppletResourceUserId(
+-        //     parameters.applet_resource_user_id);
+-    }
+-
+     IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(ResultSuccess);
++    rb.Push(result);
+ }
+ 
+ void IHidSystemServer::UnregisterAppletResourceUserId(HLERequestContext& ctx) {
+@@ -524,8 +519,6 @@ void IHidSystemServer::UnregisterAppletResourceUserId(HLERequestContext& ctx) {
+     LOG_INFO(Service_HID, "called, applet_resource_user_id={}", applet_resource_user_id);
+ 
+     GetResourceManager()->UnregisterAppletResourceUserId(applet_resource_user_id);
+-    // GetResourceManager()->GetNpad()->UnregisterAppletResourceUserId(applet_resource_user_id);
+-    // GetResourceManager()->GetPalma()->UnregisterAppletResourceUserId(applet_resource_user_id);
+ 
+     IPC::ResponseBuilder rb{ctx, 2};
+     rb.Push(ResultSuccess);
+diff --git a/src/hid_core/resource_manager.cpp b/src/hid_core/resource_manager.cpp
+index 245da582e5d9..01261ba97230 100644
+--- a/src/hid_core/resource_manager.cpp
++++ b/src/hid_core/resource_manager.cpp
+@@ -314,6 +314,7 @@ void ResourceManager::UnregisterAppletResourceUserId(u64 aruid) {
+     std::scoped_lock lock{shared_mutex};
+     applet_resource->UnregisterAppletResourceUserId(aruid);
+     npad->UnregisterAppletResourceUserId(aruid);
++    // palma->UnregisterAppletResourceUserId(aruid);
+ }
+ 
+ Result ResourceManager::GetSharedMemoryHandle(Kernel::KSharedMemory** out_handle, u64 aruid) {
+@@ -324,6 +325,7 @@ Result ResourceManager::GetSharedMemoryHandle(Kernel::KSharedMemory** out_handle
+ void ResourceManager::FreeAppletResourceId(u64 aruid) {
+     std::scoped_lock lock{shared_mutex};
+     applet_resource->FreeAppletResourceId(aruid);
++    npad->FreeAppletResourceId(aruid);
+ }
+ 
+ void ResourceManager::EnableInput(u64 aruid, bool is_enabled) {
+diff --git a/src/hid_core/resources/npad/npad.cpp b/src/hid_core/resources/npad/npad.cpp
+index 053625b55bdd..e10e97e1c9dc 100644
+--- a/src/hid_core/resources/npad/npad.cpp
++++ b/src/hid_core/resources/npad/npad.cpp
+@@ -117,6 +117,10 @@ Result NPad::ActivateNpadResource(u64 aruid) {
+     return npad_resource.Activate(aruid);
+ }
+ 
++void NPad::FreeAppletResourceId(u64 aruid) {
++    return npad_resource.FreeAppletResourceId(aruid);
++}
++
+ void NPad::ControllerUpdate(Core::HID::ControllerTriggerType type, std::size_t controller_idx) {
+     if (type == Core::HID::ControllerTriggerType::All) {
+         ControllerUpdate(Core::HID::ControllerTriggerType::Connected, controller_idx);
+diff --git a/src/hid_core/resources/npad/npad.h b/src/hid_core/resources/npad/npad.h
+index c634883460b1..99e761127d57 100644
+--- a/src/hid_core/resources/npad/npad.h
++++ b/src/hid_core/resources/npad/npad.h
+@@ -58,6 +58,8 @@ class NPad final {
+     Result ActivateNpadResource();
+     Result ActivateNpadResource(u64 aruid);
+ 
++    void FreeAppletResourceId(u64 aruid);
++
+     // When the controller is requesting an update for the shared memory
+     void OnUpdate(const Core::Timing::CoreTiming& core_timing);
+ 
+diff --git a/src/hid_core/resources/npad/npad_resource.cpp b/src/hid_core/resources/npad/npad_resource.cpp
+index 8dd86b58ed4a..79f7d74c0ca5 100644
+--- a/src/hid_core/resources/npad/npad_resource.cpp
++++ b/src/hid_core/resources/npad/npad_resource.cpp
+@@ -67,7 +67,7 @@ Result NPadResource::RegisterAppletResourceUserId(u64 aruid) {
+ void NPadResource::UnregisterAppletResourceUserId(u64 aruid) {
+     const u64 aruid_index = GetIndexFromAruid(aruid);
+ 
+-    DestroyStyleSetUpdateEvents(aruid);
++    FreeAppletResourceId(aruid);
+     if (aruid_index < AruidIndexMax) {
+         state[aruid_index] = {};
+         registration_list.flag[aruid_index] = RegistrationStatus::PendingDelete;
+@@ -80,14 +80,18 @@ void NPadResource::UnregisterAppletResourceUserId(u64 aruid) {
+     }
+ }
+ 
+-void NPadResource::DestroyStyleSetUpdateEvents(u64 aruid) {
++void NPadResource::FreeAppletResourceId(u64 aruid) {
+     const u64 aruid_index = GetIndexFromAruid(aruid);
+ 
+     if (aruid_index >= AruidIndexMax) {
+         return;
+     }
+ 
+-    for (auto& controller_state : state[aruid_index].controller_state) {
++    auto& aruid_data = state[aruid_index];
++
++    aruid_data.flag.is_assigned.Assign(false);
++
++    for (auto& controller_state : aruid_data.controller_state) {
+         if (!controller_state.is_styleset_update_event_initialized) {
+             continue;
+         }
+diff --git a/src/hid_core/resources/npad/npad_resource.h b/src/hid_core/resources/npad/npad_resource.h
+index aed89eec69ab..8ee5702fd4d9 100644
+--- a/src/hid_core/resources/npad/npad_resource.h
++++ b/src/hid_core/resources/npad/npad_resource.h
+@@ -55,7 +55,7 @@ class NPadResource final {
+     Result RegisterAppletResourceUserId(u64 aruid);
+     void UnregisterAppletResourceUserId(u64 aruid);
+ 
+-    void DestroyStyleSetUpdateEvents(u64 aruid);
++    void FreeAppletResourceId(u64 aruid);
+ 
+     Result Activate(u64 aruid);
+     Result Activate();

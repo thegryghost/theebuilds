@@ -1,0 +1,1512 @@
+diff --git a/src/common/CMakeLists.txt b/src/common/CMakeLists.txt
+index 85926fc8f54c..c19af2ab89dc 100644
+--- a/src/common/CMakeLists.txt
++++ b/src/common/CMakeLists.txt
+@@ -107,6 +107,8 @@ add_library(common STATIC
+     quaternion.h
+     range_map.h
+     range_mutex.h
++    range_sets.h
++    range_sets.inc
+     reader_writer_queue.h
+     ring_buffer.h
+     ${CMAKE_CURRENT_BINARY_DIR}/scm_rev.cpp
+@@ -121,6 +123,7 @@ add_library(common STATIC
+     settings_input.cpp
+     settings_input.h
+     settings_setting.h
++    slot_vector.h
+     socket_types.h
+     spin_lock.cpp
+     spin_lock.h
+diff --git a/src/common/range_sets.h b/src/common/range_sets.h
+new file mode 100644
+index 000000000000..9eb8648fe3d6
+--- /dev/null
++++ b/src/common/range_sets.h
+@@ -0,0 +1,73 @@
++// SPDX-FileCopyrightText: 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <memory>
++
++#include "common/common_types.h"
++
++namespace Common {
++
++template <typename AddressType>
++class RangeSet {
++public:
++    RangeSet();
++    ~RangeSet();
++
++    RangeSet(RangeSet const&) = delete;
++    RangeSet& operator=(RangeSet const&) = delete;
++
++    RangeSet(RangeSet&& other);
++    RangeSet& operator=(RangeSet&& other);
++
++    void Add(AddressType base_address, size_t size);
++    void Subtract(AddressType base_address, size_t size);
++    void Clear();
++    bool Empty() const;
++
++    template <typename Func>
++    void ForEach(Func&& func) const;
++
++    template <typename Func>
++    void ForEachInRange(AddressType device_addr, size_t size, Func&& func) const;
++
++private:
++    struct RangeSetImpl;
++    std::unique_ptr<RangeSetImpl> m_impl;
++};
++
++template <typename AddressType>
++class OverlapRangeSet {
++public:
++    OverlapRangeSet();
++    ~OverlapRangeSet();
++
++    OverlapRangeSet(OverlapRangeSet const&) = delete;
++    OverlapRangeSet& operator=(OverlapRangeSet const&) = delete;
++
++    OverlapRangeSet(OverlapRangeSet&& other);
++    OverlapRangeSet& operator=(OverlapRangeSet&& other);
++
++    void Add(AddressType base_address, size_t size);
++    void Subtract(AddressType base_address, size_t size);
++
++    template <typename Func>
++    void Subtract(AddressType base_address, size_t size, Func&& on_delete);
++
++    void DeleteAll(AddressType base_address, size_t size);
++    void Clear();
++    bool Empty() const;
++
++    template <typename Func>
++    void ForEach(Func&& func) const;
++
++    template <typename Func>
++    void ForEachInRange(AddressType device_addr, size_t size, Func&& func) const;
++
++private:
++    struct OverlapRangeSetImpl;
++    std::unique_ptr<OverlapRangeSetImpl> m_impl;
++};
++
++} // namespace Common
+\ No newline at end of file
+diff --git a/src/common/range_sets.inc b/src/common/range_sets.inc
+new file mode 100644
+index 000000000000..8ed737ea3dbd
+--- /dev/null
++++ b/src/common/range_sets.inc
+@@ -0,0 +1,304 @@
++// SPDX-FileCopyrightText: 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <limits>
++#include <utility>
++
++#include <boost/icl/interval.hpp>
++#include <boost/icl/interval_base_set.hpp>
++#include <boost/icl/interval_map.hpp>
++#include <boost/icl/interval_set.hpp>
++#include <boost/icl/split_interval_map.hpp>
++#include <boost/pool/pool.hpp>
++#include <boost/pool/pool_alloc.hpp>
++#include <boost/pool/poolfwd.hpp>
++
++#include "common/range_sets.h"
++
++namespace Common {
++
++namespace {
++template <class T>
++using RangeSetsAllocator =
++    boost::fast_pool_allocator<T, boost::default_user_allocator_new_delete,
++                               boost::details::pool::default_mutex, 1024, 2048>;
++}
++
++template <typename AddressType>
++struct RangeSet<AddressType>::RangeSetImpl {
++    using IntervalSet = boost::icl::interval_set<
++        AddressType, std::less, ICL_INTERVAL_INSTANCE(ICL_INTERVAL_DEFAULT, AddressType, std::less),
++        RangeSetsAllocator>;
++    using IntervalType = typename IntervalSet::interval_type;
++
++    RangeSetImpl() = default;
++    ~RangeSetImpl() = default;
++
++    void Add(AddressType base_address, size_t size) {
++        AddressType end_address = base_address + static_cast<AddressType>(size);
++        IntervalType interval{base_address, end_address};
++        m_ranges_set.add(interval);
++    }
++
++    void Subtract(AddressType base_address, size_t size) {
++        AddressType end_address = base_address + static_cast<AddressType>(size);
++        IntervalType interval{base_address, end_address};
++        m_ranges_set.subtract(interval);
++    }
++
++    template <typename Func>
++    void ForEach(Func&& func) const {
++        if (m_ranges_set.empty()) {
++            return;
++        }
++        auto it = m_ranges_set.begin();
++        auto end_it = m_ranges_set.end();
++        for (; it != end_it; it++) {
++            const AddressType inter_addr_end = it->upper();
++            const AddressType inter_addr = it->lower();
++            func(inter_addr, inter_addr_end);
++        }
++    }
++
++    template <typename Func>
++    void ForEachInRange(AddressType base_addr, size_t size, Func&& func) const {
++        if (m_ranges_set.empty()) {
++            return;
++        }
++        const AddressType start_address = base_addr;
++        const AddressType end_address = start_address + size;
++        const RangeSetImpl::IntervalType search_interval{start_address, end_address};
++        auto it = m_ranges_set.lower_bound(search_interval);
++        if (it == m_ranges_set.end()) {
++            return;
++        }
++        auto end_it = m_ranges_set.upper_bound(search_interval);
++        for (; it != end_it; it++) {
++            AddressType inter_addr_end = it->upper();
++            AddressType inter_addr = it->lower();
++            if (inter_addr_end > end_address) {
++                inter_addr_end = end_address;
++            }
++            if (inter_addr < start_address) {
++                inter_addr = start_address;
++            }
++            func(inter_addr, inter_addr_end);
++        }
++    }
++
++    IntervalSet m_ranges_set;
++};
++
++template <typename AddressType>
++struct OverlapRangeSet<AddressType>::OverlapRangeSetImpl {
++    using IntervalSet = boost::icl::split_interval_map<
++        AddressType, s32, boost::icl::partial_enricher, std::less, boost::icl::inplace_plus,
++        boost::icl::inter_section,
++        ICL_INTERVAL_INSTANCE(ICL_INTERVAL_DEFAULT, AddressType, std::less), RangeSetsAllocator>;
++    using IntervalType = typename IntervalSet::interval_type;
++
++    OverlapRangeSetImpl() = default;
++    ~OverlapRangeSetImpl() = default;
++
++    void Add(AddressType base_address, size_t size) {
++        AddressType end_address = base_address + static_cast<AddressType>(size);
++        IntervalType interval{base_address, end_address};
++        m_split_ranges_set += std::make_pair(interval, 1);
++    }
++
++    template <bool has_on_delete, typename Func>
++    void Subtract(AddressType base_address, size_t size, s32 amount,
++                  [[maybe_unused]] Func&& on_delete) {
++        if (m_split_ranges_set.empty()) {
++            return;
++        }
++        AddressType end_address = base_address + static_cast<AddressType>(size);
++        IntervalType interval{base_address, end_address};
++        bool any_removals = false;
++        m_split_ranges_set += std::make_pair(interval, -amount);
++        do {
++            any_removals = false;
++            auto it = m_split_ranges_set.lower_bound(interval);
++            if (it == m_split_ranges_set.end()) {
++                return;
++            }
++            auto end_it = m_split_ranges_set.upper_bound(interval);
++            for (; it != end_it; it++) {
++                if (it->second <= 0) {
++                    if constexpr (has_on_delete) {
++                        if (it->second == 0) {
++                            on_delete(it->first.lower(), it->first.upper());
++                        }
++                    }
++                    any_removals = true;
++                    m_split_ranges_set.erase(it);
++                    break;
++                }
++            }
++        } while (any_removals);
++    }
++
++    template <typename Func>
++    void ForEach(Func&& func) const {
++        if (m_split_ranges_set.empty()) {
++            return;
++        }
++        auto it = m_split_ranges_set.begin();
++        auto end_it = m_split_ranges_set.end();
++        for (; it != end_it; it++) {
++            const AddressType inter_addr_end = it->first.upper();
++            const AddressType inter_addr = it->first.lower();
++            func(inter_addr, inter_addr_end, it->second);
++        }
++    }
++
++    template <typename Func>
++    void ForEachInRange(AddressType base_address, size_t size, Func&& func) const {
++        if (m_split_ranges_set.empty()) {
++            return;
++        }
++        const AddressType start_address = base_address;
++        const AddressType end_address = start_address + size;
++        const OverlapRangeSetImpl::IntervalType search_interval{start_address, end_address};
++        auto it = m_split_ranges_set.lower_bound(search_interval);
++        if (it == m_split_ranges_set.end()) {
++            return;
++        }
++        auto end_it = m_split_ranges_set.upper_bound(search_interval);
++        for (; it != end_it; it++) {
++            auto& inter = it->first;
++            AddressType inter_addr_end = inter.upper();
++            AddressType inter_addr = inter.lower();
++            if (inter_addr_end > end_address) {
++                inter_addr_end = end_address;
++            }
++            if (inter_addr < start_address) {
++                inter_addr = start_address;
++            }
++            func(inter_addr, inter_addr_end, it->second);
++        }
++    }
++
++    IntervalSet m_split_ranges_set;
++};
++
++template <typename AddressType>
++RangeSet<AddressType>::RangeSet() {
++    m_impl = std::make_unique<RangeSet<AddressType>::RangeSetImpl>();
++}
++
++template <typename AddressType>
++RangeSet<AddressType>::~RangeSet() = default;
++
++template <typename AddressType>
++RangeSet<AddressType>::RangeSet(RangeSet&& other) {
++    m_impl = std::make_unique<RangeSet<AddressType>::RangeSetImpl>();
++    m_impl->m_ranges_set = std::move(other.m_impl->m_ranges_set);
++}
++
++template <typename AddressType>
++RangeSet<AddressType>& RangeSet<AddressType>::operator=(RangeSet&& other) {
++    m_impl->m_ranges_set = std::move(other.m_impl->m_ranges_set);
++}
++
++template <typename AddressType>
++void RangeSet<AddressType>::Add(AddressType base_address, size_t size) {
++    m_impl->Add(base_address, size);
++}
++
++template <typename AddressType>
++void RangeSet<AddressType>::Subtract(AddressType base_address, size_t size) {
++    m_impl->Subtract(base_address, size);
++}
++
++template <typename AddressType>
++void RangeSet<AddressType>::Clear() {
++    m_impl->m_ranges_set.clear();
++}
++
++template <typename AddressType>
++bool RangeSet<AddressType>::Empty() const {
++    return m_impl->m_ranges_set.empty();
++}
++
++template <typename AddressType>
++template <typename Func>
++void RangeSet<AddressType>::ForEach(Func&& func) const {
++    m_impl->ForEach(std::move(func));
++}
++
++template <typename AddressType>
++template <typename Func>
++void RangeSet<AddressType>::ForEachInRange(AddressType base_address, size_t size,
++                                           Func&& func) const {
++    m_impl->ForEachInRange(base_address, size, std::move(func));
++}
++
++template <typename AddressType>
++OverlapRangeSet<AddressType>::OverlapRangeSet() {
++    m_impl = std::make_unique<OverlapRangeSet<AddressType>::OverlapRangeSetImpl>();
++}
++
++template <typename AddressType>
++OverlapRangeSet<AddressType>::~OverlapRangeSet() = default;
++
++template <typename AddressType>
++OverlapRangeSet<AddressType>::OverlapRangeSet(OverlapRangeSet&& other) {
++    m_impl = std::make_unique<OverlapRangeSet<AddressType>::OverlapRangeSetImpl>();
++    m_impl->m_split_ranges_set = std::move(other.m_impl->m_split_ranges_set);
++}
++
++template <typename AddressType>
++OverlapRangeSet<AddressType>& OverlapRangeSet<AddressType>::operator=(OverlapRangeSet&& other) {
++    m_impl->m_split_ranges_set = std::move(other.m_impl->m_split_ranges_set);
++}
++
++template <typename AddressType>
++void OverlapRangeSet<AddressType>::Add(AddressType base_address, size_t size) {
++    m_impl->Add(base_address, size);
++}
++
++template <typename AddressType>
++void OverlapRangeSet<AddressType>::Subtract(AddressType base_address, size_t size) {
++    m_impl->template Subtract<false>(base_address, size, 1, [](AddressType, AddressType) {});
++}
++
++template <typename AddressType>
++template <typename Func>
++void OverlapRangeSet<AddressType>::Subtract(AddressType base_address, size_t size,
++                                            Func&& on_delete) {
++    m_impl->template Subtract<true, Func>(base_address, size, 1, std::move(on_delete));
++}
++
++template <typename AddressType>
++void OverlapRangeSet<AddressType>::DeleteAll(AddressType base_address, size_t size) {
++    m_impl->template Subtract<false>(base_address, size, std::numeric_limits<s32>::max(),
++                                     [](AddressType, AddressType) {});
++}
++
++template <typename AddressType>
++void OverlapRangeSet<AddressType>::Clear() {
++    m_impl->m_split_ranges_set.clear();
++}
++
++template <typename AddressType>
++bool OverlapRangeSet<AddressType>::Empty() const {
++    return m_impl->m_split_ranges_set.empty();
++}
++
++template <typename AddressType>
++template <typename Func>
++void OverlapRangeSet<AddressType>::ForEach(Func&& func) const {
++    m_impl->ForEach(func);
++}
++
++template <typename AddressType>
++template <typename Func>
++void OverlapRangeSet<AddressType>::ForEachInRange(AddressType base_address, size_t size,
++                                                  Func&& func) const {
++    m_impl->ForEachInRange(base_address, size, std::move(func));
++}
++
++} // namespace Common
+\ No newline at end of file
+diff --git a/src/video_core/texture_cache/slot_vector.h b/src/common/slot_vector.h
+similarity index 97%
+rename from src/video_core/texture_cache/slot_vector.h
+rename to src/common/slot_vector.h
+index 3ffa2a661764..34ff7de941fc 100644
+--- a/src/video_core/texture_cache/slot_vector.h
++++ b/src/common/slot_vector.h
+@@ -14,7 +14,7 @@
+ #include "common/common_types.h"
+ #include "common/polyfill_ranges.h"
+ 
+-namespace VideoCommon {
++namespace Common {
+ 
+ struct SlotId {
+     static constexpr u32 INVALID_INDEX = std::numeric_limits<u32>::max();
+@@ -217,11 +217,11 @@ class SlotVector {
+     std::vector<u32> free_list;
+ };
+ 
+-} // namespace VideoCommon
++} // namespace Common
+ 
+ template <>
+-struct std::hash<VideoCommon::SlotId> {
+-    size_t operator()(const VideoCommon::SlotId& id) const noexcept {
++struct std::hash<Common::SlotId> {
++    size_t operator()(const Common::SlotId& id) const noexcept {
+         return std::hash<u32>{}(id.index);
+     }
+ };
+diff --git a/src/core/hle/service/nvdrv/core/heap_mapper.cpp b/src/core/hle/service/nvdrv/core/heap_mapper.cpp
+index 096dc5deb5de..af17e3e85c8c 100644
+--- a/src/core/hle/service/nvdrv/core/heap_mapper.cpp
++++ b/src/core/hle/service/nvdrv/core/heap_mapper.cpp
+@@ -3,110 +3,21 @@
+ 
+ #include <mutex>
+ 
+-#include <boost/container/small_vector.hpp>
+-#define BOOST_NO_MT
+-#include <boost/pool/detail/mutex.hpp>
+-#undef BOOST_NO_MT
+-#include <boost/icl/interval.hpp>
+-#include <boost/icl/interval_base_set.hpp>
+-#include <boost/icl/interval_set.hpp>
+-#include <boost/icl/split_interval_map.hpp>
+-#include <boost/pool/pool.hpp>
+-#include <boost/pool/pool_alloc.hpp>
+-#include <boost/pool/poolfwd.hpp>
+-
++#include "common/range_sets.h"
++#include "common/range_sets.inc"
+ #include "core/hle/service/nvdrv/core/heap_mapper.h"
+ #include "video_core/host1x/host1x.h"
+ 
+-namespace boost {
+-template <typename T>
+-class fast_pool_allocator<T, default_user_allocator_new_delete, details::pool::null_mutex, 4096, 0>;
+-}
+-
+ namespace Service::Nvidia::NvCore {
+ 
+-using IntervalCompare = std::less<DAddr>;
+-using IntervalInstance = boost::icl::interval_type_default<DAddr, std::less>;
+-using IntervalAllocator = boost::fast_pool_allocator<DAddr>;
+-using IntervalSet = boost::icl::interval_set<DAddr>;
+-using IntervalType = typename IntervalSet::interval_type;
+-
+-template <typename Type>
+-struct counter_add_functor : public boost::icl::identity_based_inplace_combine<Type> {
+-    // types
+-    typedef counter_add_functor<Type> type;
+-    typedef boost::icl::identity_based_inplace_combine<Type> base_type;
+-
+-    // public member functions
+-    void operator()(Type& current, const Type& added) const {
+-        current += added;
+-        if (current < base_type::identity_element()) {
+-            current = base_type::identity_element();
+-        }
+-    }
+-
+-    // public static functions
+-    static void version(Type&){};
+-};
+-
+-using OverlapCombine = counter_add_functor<int>;
+-using OverlapSection = boost::icl::inter_section<int>;
+-using OverlapCounter = boost::icl::split_interval_map<DAddr, int>;
+-
+ struct HeapMapper::HeapMapperInternal {
+-    HeapMapperInternal(Tegra::Host1x::Host1x& host1x) : device_memory{host1x.MemoryManager()} {}
++    HeapMapperInternal(Tegra::Host1x::Host1x& host1x) : m_device_memory{host1x.MemoryManager()} {}
+     ~HeapMapperInternal() = default;
+ 
+-    template <typename Func>
+-    void ForEachInOverlapCounter(OverlapCounter& current_range, VAddr cpu_addr, u64 size,
+-                                 Func&& func) {
+-        const DAddr start_address = cpu_addr;
+-        const DAddr end_address = start_address + size;
+-        const IntervalType search_interval{start_address, end_address};
+-        auto it = current_range.lower_bound(search_interval);
+-        if (it == current_range.end()) {
+-            return;
+-        }
+-        auto end_it = current_range.upper_bound(search_interval);
+-        for (; it != end_it; it++) {
+-            auto& inter = it->first;
+-            DAddr inter_addr_end = inter.upper();
+-            DAddr inter_addr = inter.lower();
+-            if (inter_addr_end > end_address) {
+-                inter_addr_end = end_address;
+-            }
+-            if (inter_addr < start_address) {
+-                inter_addr = start_address;
+-            }
+-            func(inter_addr, inter_addr_end, it->second);
+-        }
+-    }
+-
+-    void RemoveEachInOverlapCounter(OverlapCounter& current_range,
+-                                    const IntervalType search_interval, int subtract_value) {
+-        bool any_removals = false;
+-        current_range.add(std::make_pair(search_interval, subtract_value));
+-        do {
+-            any_removals = false;
+-            auto it = current_range.lower_bound(search_interval);
+-            if (it == current_range.end()) {
+-                return;
+-            }
+-            auto end_it = current_range.upper_bound(search_interval);
+-            for (; it != end_it; it++) {
+-                if (it->second <= 0) {
+-                    any_removals = true;
+-                    current_range.erase(it);
+-                    break;
+-                }
+-            }
+-        } while (any_removals);
+-    }
+-
+-    IntervalSet base_set;
+-    OverlapCounter mapping_overlaps;
+-    Tegra::MaxwellDeviceMemoryManager& device_memory;
+-    std::mutex guard;
++    Common::RangeSet<VAddr> m_temporary_set;
++    Common::OverlapRangeSet<VAddr> m_mapped_ranges;
++    Tegra::MaxwellDeviceMemoryManager& m_device_memory;
++    std::mutex m_guard;
+ };
+ 
+ HeapMapper::HeapMapper(VAddr start_vaddress, DAddr start_daddress, size_t size, Core::Asid asid,
+@@ -116,60 +27,48 @@ HeapMapper::HeapMapper(VAddr start_vaddress, DAddr start_daddress, size_t size,
+ }
+ 
+ HeapMapper::~HeapMapper() {
+-    m_internal->device_memory.Unmap(m_daddress, m_size);
++    // Unmap whatever has been mapped.
++    m_internal->m_mapped_ranges.ForEach([this](VAddr start_addr, VAddr end_addr, s32 count) {
++        const size_t sub_size = end_addr - start_addr;
++        const size_t offset = start_addr - m_vaddress;
++        m_internal->m_device_memory.Unmap(m_daddress + offset, sub_size);
++    });
+ }
+ 
+ DAddr HeapMapper::Map(VAddr start, size_t size) {
+-    std::scoped_lock lk(m_internal->guard);
+-    m_internal->base_set.clear();
+-    const IntervalType interval{start, start + size};
+-    m_internal->base_set.insert(interval);
+-    m_internal->ForEachInOverlapCounter(m_internal->mapping_overlaps, start, size,
+-                                        [this](VAddr start_addr, VAddr end_addr, int) {
+-                                            const IntervalType other{start_addr, end_addr};
+-                                            m_internal->base_set.subtract(other);
+-                                        });
+-    if (!m_internal->base_set.empty()) {
+-        auto it = m_internal->base_set.begin();
+-        auto end_it = m_internal->base_set.end();
+-        for (; it != end_it; it++) {
+-            const VAddr inter_addr_end = it->upper();
+-            const VAddr inter_addr = it->lower();
+-            const size_t offset = inter_addr - m_vaddress;
+-            const size_t sub_size = inter_addr_end - inter_addr;
+-            m_internal->device_memory.Map(m_daddress + offset, m_vaddress + offset, sub_size,
+-                                          m_asid);
+-        }
+-    }
+-    m_internal->mapping_overlaps += std::make_pair(interval, 1);
+-    m_internal->base_set.clear();
+-    return m_daddress + (start - m_vaddress);
++    std::scoped_lock lk(m_internal->m_guard);
++    // Add the mapping range to a temporary range set.
++    m_internal->m_temporary_set.Clear();
++    m_internal->m_temporary_set.Add(start, size);
++
++    // Remove anything that's already mapped from the temporary range set.
++    m_internal->m_mapped_ranges.ForEachInRange(
++        start, size, [this](VAddr start_addr, VAddr end_addr, s32) {
++            m_internal->m_temporary_set.Subtract(start_addr, end_addr - start_addr);
++        });
++
++    // Map anything that has not been mapped yet.
++    m_internal->m_temporary_set.ForEach([this](VAddr start_addr, VAddr end_addr) {
++        const size_t sub_size = end_addr - start_addr;
++        const size_t offset = start_addr - m_vaddress;
++        m_internal->m_device_memory.Map(m_daddress + offset, m_vaddress + offset, sub_size, m_asid);
++    });
++
++    // Add the mapping range to the split map, to register the map and overlaps.
++    m_internal->m_mapped_ranges.Add(start, size);
++    m_internal->m_temporary_set.Clear();
++    return m_daddress + static_cast<DAddr>(start - m_vaddress);
+ }
+ 
+ void HeapMapper::Unmap(VAddr start, size_t size) {
+-    std::scoped_lock lk(m_internal->guard);
+-    m_internal->base_set.clear();
+-    m_internal->ForEachInOverlapCounter(m_internal->mapping_overlaps, start, size,
+-                                        [this](VAddr start_addr, VAddr end_addr, int value) {
+-                                            if (value <= 1) {
+-                                                const IntervalType other{start_addr, end_addr};
+-                                                m_internal->base_set.insert(other);
+-                                            }
+-                                        });
+-    if (!m_internal->base_set.empty()) {
+-        auto it = m_internal->base_set.begin();
+-        auto end_it = m_internal->base_set.end();
+-        for (; it != end_it; it++) {
+-            const VAddr inter_addr_end = it->upper();
+-            const VAddr inter_addr = it->lower();
+-            const size_t offset = inter_addr - m_vaddress;
+-            const size_t sub_size = inter_addr_end - inter_addr;
+-            m_internal->device_memory.Unmap(m_daddress + offset, sub_size);
+-        }
+-    }
+-    const IntervalType to_remove{start, start + size};
+-    m_internal->RemoveEachInOverlapCounter(m_internal->mapping_overlaps, to_remove, -1);
+-    m_internal->base_set.clear();
++    std::scoped_lock lk(m_internal->m_guard);
++
++    // Just subtract the range and whatever is deleted, unmap it.
++    m_internal->m_mapped_ranges.Subtract(start, size, [this](VAddr start_addr, VAddr end_addr) {
++        const size_t sub_size = end_addr - start_addr;
++        const size_t offset = start_addr - m_vaddress;
++        m_internal->m_device_memory.Unmap(m_daddress + offset, sub_size);
++    });
+ }
+ 
+ } // namespace Service::Nvidia::NvCore
+diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
+index 16c905db9ca9..55180f4b5cfb 100644
+--- a/src/video_core/CMakeLists.txt
++++ b/src/video_core/CMakeLists.txt
+@@ -274,7 +274,6 @@ add_library(video_core STATIC
+     texture_cache/image_view_info.h
+     texture_cache/render_targets.h
+     texture_cache/samples_helper.h
+-    texture_cache/slot_vector.h
+     texture_cache/texture_cache.cpp
+     texture_cache/texture_cache.h
+     texture_cache/texture_cache_base.h
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index b4bf369d1687..6d3d933c59e1 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -7,6 +7,7 @@
+ #include <memory>
+ #include <numeric>
+ 
++#include "common/range_sets.inc"
+ #include "video_core/buffer_cache/buffer_cache_base.h"
+ #include "video_core/guest_memory.h"
+ #include "video_core/host1x/gpu_device_memory_manager.h"
+@@ -20,7 +21,7 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
+     : runtime{runtime_}, device_memory{device_memory_}, memory_tracker{device_memory} {
+     // Ensure the first slot is used for the null buffer
+     void(slot_buffers.insert(runtime, NullBufferParams{}));
+-    common_ranges.clear();
++    gpu_modified_ranges.Clear();
+     inline_buffer_id = NULL_BUFFER_ID;
+ 
+     if (!runtime.CanReportMemoryUsage()) {
+@@ -43,6 +44,9 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
+                  DEFAULT_CRITICAL_MEMORY));
+ }
+ 
++template <class P>
++BufferCache<P>::~BufferCache() = default;
++
+ template <class P>
+ void BufferCache<P>::RunGarbageCollector() {
+     const bool aggressive_gc = total_used_memory >= critical_memory;
+@@ -96,20 +100,17 @@ void BufferCache<P>::TickFrame() {
+     ++frame_tick;
+     delayed_destruction_ring.Tick();
+ 
+-    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+-        for (auto& buffer : async_buffers_death_ring) {
+-            runtime.FreeDeferredStagingBuffer(buffer);
+-        }
+-        async_buffers_death_ring.clear();
++    for (auto& buffer : async_buffers_death_ring) {
++        runtime.FreeDeferredStagingBuffer(buffer);
+     }
++    async_buffers_death_ring.clear();
+ }
+ 
+ template <class P>
+ void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
+     if (memory_tracker.IsRegionGpuModified(device_addr, size)) {
+-        const IntervalType subtract_interval{device_addr, device_addr + size};
+-        ClearDownload(subtract_interval);
+-        common_ranges.subtract(subtract_interval);
++        ClearDownload(device_addr, size);
++        gpu_modified_ranges.Subtract(device_addr, size);
+     }
+     memory_tracker.MarkRegionAsCpuModified(device_addr, size);
+ }
+@@ -174,11 +175,11 @@ void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
+ }
+ 
+ template <class P>
+-void BufferCache<P>::ClearDownload(IntervalType subtract_interval) {
+-    RemoveEachInOverlapCounter(async_downloads, subtract_interval, -1024);
+-    uncommitted_ranges.subtract(subtract_interval);
+-    for (auto& interval_set : committed_ranges) {
+-        interval_set.subtract(subtract_interval);
++void BufferCache<P>::ClearDownload(DAddr device_addr, u64 size) {
++    async_downloads.DeleteAll(device_addr, size);
++    uncommitted_gpu_modified_ranges.Subtract(device_addr, size);
++    for (auto& interval_set : committed_gpu_modified_ranges) {
++        interval_set.Subtract(device_addr, size);
+     }
+ }
+ 
+@@ -195,8 +196,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+         return false;
+     }
+ 
+-    const IntervalType subtract_interval{*cpu_dest_address, *cpu_dest_address + amount};
+-    ClearDownload(subtract_interval);
++    ClearDownload(*cpu_dest_address, amount);
+ 
+     BufferId buffer_a;
+     BufferId buffer_b;
+@@ -215,21 +215,20 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
+         .size = amount,
+     }};
+ 
+-    boost::container::small_vector<IntervalType, 4> tmp_intervals;
++    boost::container::small_vector<std::pair<DAddr, size_t>, 4> tmp_intervals;
+     auto mirror = [&](DAddr base_address, DAddr base_address_end) {
+         const u64 size = base_address_end - base_address;
+         const DAddr diff = base_address - *cpu_src_address;
+         const DAddr new_base_address = *cpu_dest_address + diff;
+-        const IntervalType add_interval{new_base_address, new_base_address + size};
+-        tmp_intervals.push_back(add_interval);
+-        uncommitted_ranges.add(add_interval);
++        tmp_intervals.push_back({new_base_address, size});
++        uncommitted_gpu_modified_ranges.Add(new_base_address, size);
+     };
+-    ForEachInRangeSet(common_ranges, *cpu_src_address, amount, mirror);
++    gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
+     // This subtraction in this order is important for overlapping copies.
+-    common_ranges.subtract(subtract_interval);
++    gpu_modified_ranges.Subtract(*cpu_dest_address, amount);
+     const bool has_new_downloads = tmp_intervals.size() != 0;
+-    for (const IntervalType& add_interval : tmp_intervals) {
+-        common_ranges.add(add_interval);
++    for (const auto& pair : tmp_intervals) {
++        gpu_modified_ranges.Add(pair.first, pair.second);
+     }
+     const auto& copy = copies[0];
+     src_buffer.MarkUsage(copy.src_offset, copy.size);
+@@ -257,9 +256,8 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
+     }
+ 
+     const size_t size = amount * sizeof(u32);
+-    const IntervalType subtract_interval{*cpu_dst_address, *cpu_dst_address + size};
+-    ClearDownload(subtract_interval);
+-    common_ranges.subtract(subtract_interval);
++    ClearDownload(*cpu_dst_address, size);
++    gpu_modified_ranges.Subtract(*cpu_dst_address, size);
+ 
+     const BufferId buffer = FindBuffer(*cpu_dst_address, static_cast<u32>(size));
+     Buffer& dest_buffer = slot_buffers[buffer];
+@@ -300,11 +298,11 @@ std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
+         MarkWrittenBuffer(buffer_id, device_addr, size);
+         break;
+     case ObtainBufferOperation::DiscardWrite: {
+-        DAddr device_addr_start = Common::AlignDown(device_addr, 64);
+-        DAddr device_addr_end = Common::AlignUp(device_addr + size, 64);
+-        IntervalType interval{device_addr_start, device_addr_end};
+-        ClearDownload(interval);
+-        common_ranges.subtract(interval);
++        const DAddr device_addr_start = Common::AlignDown(device_addr, 64);
++        const DAddr device_addr_end = Common::AlignUp(device_addr + size, 64);
++        const size_t new_size = device_addr_end - device_addr_start;
++        ClearDownload(device_addr_start, new_size);
++        gpu_modified_ranges.Subtract(device_addr_start, new_size);
+         break;
+     }
+     default:
+@@ -504,46 +502,40 @@ void BufferCache<P>::FlushCachedWrites() {
+ 
+ template <class P>
+ bool BufferCache<P>::HasUncommittedFlushes() const noexcept {
+-    return !uncommitted_ranges.empty() || !committed_ranges.empty();
++    return !uncommitted_gpu_modified_ranges.Empty() || !committed_gpu_modified_ranges.empty();
+ }
+ 
+ template <class P>
+ void BufferCache<P>::AccumulateFlushes() {
+-    if (uncommitted_ranges.empty()) {
++    if (uncommitted_gpu_modified_ranges.Empty()) {
+         return;
+     }
+-    committed_ranges.emplace_back(std::move(uncommitted_ranges));
++    committed_gpu_modified_ranges.emplace_back(std::move(uncommitted_gpu_modified_ranges));
+ }
+ 
+ template <class P>
+ bool BufferCache<P>::ShouldWaitAsyncFlushes() const noexcept {
+-    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+-        return (!async_buffers.empty() && async_buffers.front().has_value());
+-    } else {
+-        return false;
+-    }
++    return (!async_buffers.empty() && async_buffers.front().has_value());
+ }
+ 
+ template <class P>
+ void BufferCache<P>::CommitAsyncFlushesHigh() {
+     AccumulateFlushes();
+ 
+-    if (committed_ranges.empty()) {
+-        if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+-            async_buffers.emplace_back(std::optional<Async_Buffer>{});
+-        }
++    if (committed_gpu_modified_ranges.empty()) {
++        async_buffers.emplace_back(std::optional<Async_Buffer>{});
+         return;
+     }
+     MICROPROFILE_SCOPE(GPU_DownloadMemory);
+ 
+-    auto it = committed_ranges.begin();
+-    while (it != committed_ranges.end()) {
++    auto it = committed_gpu_modified_ranges.begin();
++    while (it != committed_gpu_modified_ranges.end()) {
+         auto& current_intervals = *it;
+         auto next_it = std::next(it);
+-        while (next_it != committed_ranges.end()) {
+-            for (auto& interval : *next_it) {
+-                current_intervals.subtract(interval);
+-            }
++        while (next_it != committed_gpu_modified_ranges.end()) {
++            next_it->ForEach([&current_intervals](DAddr start, DAddr end) {
++                current_intervals.Subtract(start, end - start);
++            });
+             next_it++;
+         }
+         it++;
+@@ -552,10 +544,10 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
+     boost::container::small_vector<std::pair<BufferCopy, BufferId>, 16> downloads;
+     u64 total_size_bytes = 0;
+     u64 largest_copy = 0;
+-    for (const IntervalSet& intervals : committed_ranges) {
+-        for (auto& interval : intervals) {
+-            const std::size_t size = interval.upper() - interval.lower();
+-            const DAddr device_addr = interval.lower();
++    for (const Common::RangeSet<DAddr>& range_set : committed_gpu_modified_ranges) {
++        range_set.ForEach([&](DAddr interval_lower, DAddr interval_upper) {
++            const std::size_t size = interval_upper - interval_lower;
++            const DAddr device_addr = interval_lower;
+             ForEachBufferInRange(device_addr, size, [&](BufferId buffer_id, Buffer& buffer) {
+                 const DAddr buffer_start = buffer.CpuAddr();
+                 const DAddr buffer_end = buffer_start + buffer.SizeBytes();
+@@ -583,77 +575,35 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
+                             largest_copy = std::max(largest_copy, new_size);
+                         };
+ 
+-                        ForEachInRangeSet(common_ranges, device_addr_out, range_size, add_download);
++                        gpu_modified_ranges.ForEachInRange(device_addr_out, range_size,
++                                                           add_download);
+                     });
+             });
+-        }
++        });
+     }
+-    committed_ranges.clear();
++    committed_gpu_modified_ranges.clear();
+     if (downloads.empty()) {
+-        if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+-            async_buffers.emplace_back(std::optional<Async_Buffer>{});
+-        }
++        async_buffers.emplace_back(std::optional<Async_Buffer>{});
+         return;
+     }
+-    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+-        auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
+-        boost::container::small_vector<BufferCopy, 4> normalized_copies;
+-        IntervalSet new_async_range{};
+-        runtime.PreCopyBarrier();
+-        for (auto& [copy, buffer_id] : downloads) {
+-            copy.dst_offset += download_staging.offset;
+-            const std::array copies{copy};
+-            BufferCopy second_copy{copy};
+-            Buffer& buffer = slot_buffers[buffer_id];
+-            second_copy.src_offset = static_cast<size_t>(buffer.CpuAddr()) + copy.src_offset;
+-            DAddr orig_device_addr = static_cast<DAddr>(second_copy.src_offset);
+-            const IntervalType base_interval{orig_device_addr, orig_device_addr + copy.size};
+-            async_downloads += std::make_pair(base_interval, 1);
+-            buffer.MarkUsage(copy.src_offset, copy.size);
+-            runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
+-            normalized_copies.push_back(second_copy);
+-        }
+-        runtime.PostCopyBarrier();
+-        pending_downloads.emplace_back(std::move(normalized_copies));
+-        async_buffers.emplace_back(download_staging);
+-    } else {
+-        if (!Settings::IsGPULevelHigh()) {
+-            committed_ranges.clear();
+-            uncommitted_ranges.clear();
+-        } else {
+-            if constexpr (USE_MEMORY_MAPS) {
+-                auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
+-                runtime.PreCopyBarrier();
+-                for (auto& [copy, buffer_id] : downloads) {
+-                    // Have in mind the staging buffer offset for the copy
+-                    copy.dst_offset += download_staging.offset;
+-                    const std::array copies{copy};
+-                    Buffer& buffer = slot_buffers[buffer_id];
+-                    buffer.MarkUsage(copy.src_offset, copy.size);
+-                    runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
+-                }
+-                runtime.PostCopyBarrier();
+-                runtime.Finish();
+-                for (const auto& [copy, buffer_id] : downloads) {
+-                    const Buffer& buffer = slot_buffers[buffer_id];
+-                    const DAddr device_addr = buffer.CpuAddr() + copy.src_offset;
+-                    // Undo the modified offset
+-                    const u64 dst_offset = copy.dst_offset - download_staging.offset;
+-                    const u8* read_mapped_memory = download_staging.mapped_span.data() + dst_offset;
+-                    device_memory.WriteBlockUnsafe(device_addr, read_mapped_memory, copy.size);
+-                }
+-            } else {
+-                const std::span<u8> immediate_buffer = ImmediateBuffer(largest_copy);
+-                for (const auto& [copy, buffer_id] : downloads) {
+-                    Buffer& buffer = slot_buffers[buffer_id];
+-                    buffer.ImmediateDownload(copy.src_offset,
+-                                             immediate_buffer.subspan(0, copy.size));
+-                    const DAddr device_addr = buffer.CpuAddr() + copy.src_offset;
+-                    device_memory.WriteBlockUnsafe(device_addr, immediate_buffer.data(), copy.size);
+-                }
+-            }
+-        }
++    auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
++    boost::container::small_vector<BufferCopy, 4> normalized_copies;
++    runtime.PreCopyBarrier();
++    for (auto& [copy, buffer_id] : downloads) {
++        copy.dst_offset += download_staging.offset;
++        const std::array copies{copy};
++        BufferCopy second_copy{copy};
++        Buffer& buffer = slot_buffers[buffer_id];
++        second_copy.src_offset = static_cast<size_t>(buffer.CpuAddr()) + copy.src_offset;
++        const DAddr orig_device_addr = static_cast<DAddr>(second_copy.src_offset);
++        async_downloads.Add(orig_device_addr, copy.size);
++        buffer.MarkUsage(copy.src_offset, copy.size);
++        runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
++        normalized_copies.push_back(second_copy);
+     }
++    runtime.PostCopyBarrier();
++    pending_downloads.emplace_back(std::move(normalized_copies));
++    async_buffers.emplace_back(download_staging);
+ }
+ 
+ template <class P>
+@@ -676,37 +626,31 @@ void BufferCache<P>::PopAsyncBuffers() {
+         async_buffers.pop_front();
+         return;
+     }
+-    if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
+-        auto& downloads = pending_downloads.front();
+-        auto& async_buffer = async_buffers.front();
+-        u8* base = async_buffer->mapped_span.data();
+-        const size_t base_offset = async_buffer->offset;
+-        for (const auto& copy : downloads) {
+-            const DAddr device_addr = static_cast<DAddr>(copy.src_offset);
+-            const u64 dst_offset = copy.dst_offset - base_offset;
+-            const u8* read_mapped_memory = base + dst_offset;
+-            ForEachInOverlapCounter(
+-                async_downloads, device_addr, copy.size, [&](DAddr start, DAddr end, int count) {
+-                    device_memory.WriteBlockUnsafe(start, &read_mapped_memory[start - device_addr],
+-                                                   end - start);
+-                    if (count == 1) {
+-                        const IntervalType base_interval{start, end};
+-                        common_ranges.subtract(base_interval);
+-                    }
+-                });
+-            const IntervalType subtract_interval{device_addr, device_addr + copy.size};
+-            RemoveEachInOverlapCounter(async_downloads, subtract_interval, -1);
+-        }
+-        async_buffers_death_ring.emplace_back(*async_buffer);
+-        async_buffers.pop_front();
+-        pending_downloads.pop_front();
++    auto& downloads = pending_downloads.front();
++    auto& async_buffer = async_buffers.front();
++    u8* base = async_buffer->mapped_span.data();
++    const size_t base_offset = async_buffer->offset;
++    for (const auto& copy : downloads) {
++        const DAddr device_addr = static_cast<DAddr>(copy.src_offset);
++        const u64 dst_offset = copy.dst_offset - base_offset;
++        const u8* read_mapped_memory = base + dst_offset;
++        async_downloads.ForEachInRange(device_addr, copy.size, [&](DAddr start, DAddr end, s32) {
++            device_memory.WriteBlockUnsafe(start, &read_mapped_memory[start - device_addr],
++                                           end - start);
++        });
++        async_downloads.Subtract(device_addr, copy.size, [&](DAddr start, DAddr end) {
++            gpu_modified_ranges.Subtract(start, end - start);
++        });
+     }
++    async_buffers_death_ring.emplace_back(*async_buffer);
++    async_buffers.pop_front();
++    pending_downloads.pop_front();
+ }
+ 
+ template <class P>
+ bool BufferCache<P>::IsRegionGpuModified(DAddr addr, size_t size) {
+     bool is_dirty = false;
+-    ForEachInRangeSet(common_ranges, addr, size, [&](DAddr, DAddr) { is_dirty = true; });
++    gpu_modified_ranges.ForEachInRange(addr, size, [&](DAddr, DAddr) { is_dirty = true; });
+     return is_dirty;
+ }
+ 
+@@ -1320,10 +1264,8 @@ void BufferCache<P>::UpdateComputeTextureBuffers() {
+ template <class P>
+ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u32 size) {
+     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
+-
+-    const IntervalType base_interval{device_addr, device_addr + size};
+-    common_ranges.add(base_interval);
+-    uncommitted_ranges.add(base_interval);
++    gpu_modified_ranges.Add(device_addr, size);
++    uncommitted_gpu_modified_ranges.Add(device_addr, size);
+ }
+ 
+ template <class P>
+@@ -1600,9 +1542,8 @@ bool BufferCache<P>::InlineMemory(DAddr dest_address, size_t copy_size,
+ template <class P>
+ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
+                                                 std::span<const u8> inlined_buffer) {
+-    const IntervalType subtract_interval{dest_address, dest_address + copy_size};
+-    ClearDownload(subtract_interval);
+-    common_ranges.subtract(subtract_interval);
++    ClearDownload(dest_address, copy_size);
++    gpu_modified_ranges.Subtract(dest_address, copy_size);
+ 
+     BufferId buffer_id = FindBuffer(dest_address, static_cast<u32>(copy_size));
+     auto& buffer = slot_buffers[buffer_id];
+@@ -1652,12 +1593,9 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
+                 largest_copy = std::max(largest_copy, new_size);
+             };
+ 
+-            const DAddr start_address = device_addr_out;
+-            const DAddr end_address = start_address + range_size;
+-            ForEachInRangeSet(common_ranges, start_address, range_size, add_download);
+-            const IntervalType subtract_interval{start_address, end_address};
+-            ClearDownload(subtract_interval);
+-            common_ranges.subtract(subtract_interval);
++            gpu_modified_ranges.ForEachInRange(device_addr_out, range_size, add_download);
++            ClearDownload(device_addr_out, range_size);
++            gpu_modified_ranges.Subtract(device_addr_out, range_size);
+         });
+     if (total_size_bytes == 0) {
+         return;
+diff --git a/src/video_core/buffer_cache/buffer_cache_base.h b/src/video_core/buffer_cache/buffer_cache_base.h
+index 80dbb81e7f97..240e9f01509c 100644
+--- a/src/video_core/buffer_cache/buffer_cache_base.h
++++ b/src/video_core/buffer_cache/buffer_cache_base.h
+@@ -13,25 +13,15 @@
+ #include <unordered_map>
+ #include <vector>
+ 
+-#include <boost/container/small_vector.hpp>
+-#define BOOST_NO_MT
+-#include <boost/pool/detail/mutex.hpp>
+-#undef BOOST_NO_MT
+-#include <boost/icl/interval.hpp>
+-#include <boost/icl/interval_base_set.hpp>
+-#include <boost/icl/interval_set.hpp>
+-#include <boost/icl/split_interval_map.hpp>
+-#include <boost/pool/pool.hpp>
+-#include <boost/pool/pool_alloc.hpp>
+-#include <boost/pool/poolfwd.hpp>
+-
+ #include "common/common_types.h"
+ #include "common/div_ceil.h"
+ #include "common/literals.h"
+ #include "common/lru_cache.h"
+ #include "common/microprofile.h"
++#include "common/range_sets.h"
+ #include "common/scope_exit.h"
+ #include "common/settings.h"
++#include "common/slot_vector.h"
+ #include "video_core/buffer_cache/buffer_base.h"
+ #include "video_core/control/channel_state_cache.h"
+ #include "video_core/delayed_destruction_ring.h"
+@@ -41,21 +31,15 @@
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/surface.h"
+-#include "video_core/texture_cache/slot_vector.h"
+ #include "video_core/texture_cache/types.h"
+ 
+-namespace boost {
+-template <typename T>
+-class fast_pool_allocator<T, default_user_allocator_new_delete, details::pool::null_mutex, 4096, 0>;
+-}
+-
+ namespace VideoCommon {
+ 
+ MICROPROFILE_DECLARE(GPU_PrepareBuffers);
+ MICROPROFILE_DECLARE(GPU_BindUploadBuffers);
+ MICROPROFILE_DECLARE(GPU_DownloadMemory);
+ 
+-using BufferId = SlotId;
++using BufferId = Common::SlotId;
+ 
+ using VideoCore::Surface::PixelFormat;
+ using namespace Common::Literals;
+@@ -184,7 +168,6 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
+     static constexpr bool NEEDS_BIND_STORAGE_INDEX = P::NEEDS_BIND_STORAGE_INDEX;
+     static constexpr bool USE_MEMORY_MAPS = P::USE_MEMORY_MAPS;
+     static constexpr bool SEPARATE_IMAGE_BUFFERS_BINDINGS = P::SEPARATE_IMAGE_BUFFER_BINDINGS;
+-    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = P::IMPLEMENTS_ASYNC_DOWNLOADS;
+     static constexpr bool USE_MEMORY_MAPS_FOR_UPLOADS = P::USE_MEMORY_MAPS_FOR_UPLOADS;
+ 
+     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 512_MiB;
+@@ -202,34 +185,6 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
+     using Async_Buffer = typename P::Async_Buffer;
+     using MemoryTracker = typename P::MemoryTracker;
+ 
+-    using IntervalCompare = std::less<DAddr>;
+-    using IntervalInstance = boost::icl::interval_type_default<DAddr, std::less>;
+-    using IntervalAllocator = boost::fast_pool_allocator<DAddr>;
+-    using IntervalSet = boost::icl::interval_set<DAddr>;
+-    using IntervalType = typename IntervalSet::interval_type;
+-
+-    template <typename Type>
+-    struct counter_add_functor : public boost::icl::identity_based_inplace_combine<Type> {
+-        // types
+-        typedef counter_add_functor<Type> type;
+-        typedef boost::icl::identity_based_inplace_combine<Type> base_type;
+-
+-        // public member functions
+-        void operator()(Type& current, const Type& added) const {
+-            current += added;
+-            if (current < base_type::identity_element()) {
+-                current = base_type::identity_element();
+-            }
+-        }
+-
+-        // public static functions
+-        static void version(Type&){};
+-    };
+-
+-    using OverlapCombine = counter_add_functor<int>;
+-    using OverlapSection = boost::icl::inter_section<int>;
+-    using OverlapCounter = boost::icl::split_interval_map<DAddr, int>;
+-
+     struct OverlapResult {
+         boost::container::small_vector<BufferId, 16> ids;
+         DAddr begin;
+@@ -240,6 +195,8 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
+ public:
+     explicit BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, Runtime& runtime_);
+ 
++    ~BufferCache();
++
+     void TickFrame();
+ 
+     void WriteMemory(DAddr device_addr, u64 size);
+@@ -379,75 +336,6 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
+         }
+     }
+ 
+-    template <typename Func>
+-    void ForEachInRangeSet(IntervalSet& current_range, DAddr device_addr, u64 size, Func&& func) {
+-        const DAddr start_address = device_addr;
+-        const DAddr end_address = start_address + size;
+-        const IntervalType search_interval{start_address, end_address};
+-        auto it = current_range.lower_bound(search_interval);
+-        if (it == current_range.end()) {
+-            return;
+-        }
+-        auto end_it = current_range.upper_bound(search_interval);
+-        for (; it != end_it; it++) {
+-            DAddr inter_addr_end = it->upper();
+-            DAddr inter_addr = it->lower();
+-            if (inter_addr_end > end_address) {
+-                inter_addr_end = end_address;
+-            }
+-            if (inter_addr < start_address) {
+-                inter_addr = start_address;
+-            }
+-            func(inter_addr, inter_addr_end);
+-        }
+-    }
+-
+-    template <typename Func>
+-    void ForEachInOverlapCounter(OverlapCounter& current_range, DAddr device_addr, u64 size,
+-                                 Func&& func) {
+-        const DAddr start_address = device_addr;
+-        const DAddr end_address = start_address + size;
+-        const IntervalType search_interval{start_address, end_address};
+-        auto it = current_range.lower_bound(search_interval);
+-        if (it == current_range.end()) {
+-            return;
+-        }
+-        auto end_it = current_range.upper_bound(search_interval);
+-        for (; it != end_it; it++) {
+-            auto& inter = it->first;
+-            DAddr inter_addr_end = inter.upper();
+-            DAddr inter_addr = inter.lower();
+-            if (inter_addr_end > end_address) {
+-                inter_addr_end = end_address;
+-            }
+-            if (inter_addr < start_address) {
+-                inter_addr = start_address;
+-            }
+-            func(inter_addr, inter_addr_end, it->second);
+-        }
+-    }
+-
+-    void RemoveEachInOverlapCounter(OverlapCounter& current_range,
+-                                    const IntervalType search_interval, int subtract_value) {
+-        bool any_removals = false;
+-        current_range.add(std::make_pair(search_interval, subtract_value));
+-        do {
+-            any_removals = false;
+-            auto it = current_range.lower_bound(search_interval);
+-            if (it == current_range.end()) {
+-                return;
+-            }
+-            auto end_it = current_range.upper_bound(search_interval);
+-            for (; it != end_it; it++) {
+-                if (it->second <= 0) {
+-                    any_removals = true;
+-                    current_range.erase(it);
+-                    break;
+-                }
+-            }
+-        } while (any_removals);
+-    }
+-
+     static bool IsRangeGranular(DAddr device_addr, size_t size) {
+         return (device_addr & ~Core::DEVICE_PAGEMASK) ==
+                ((device_addr + size) & ~Core::DEVICE_PAGEMASK);
+@@ -552,14 +440,14 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
+ 
+     [[nodiscard]] bool HasFastUniformBufferBound(size_t stage, u32 binding_index) const noexcept;
+ 
+-    void ClearDownload(IntervalType subtract_interval);
++    void ClearDownload(DAddr base_addr, u64 size);
+ 
+     void InlineMemoryImplementation(DAddr dest_address, size_t copy_size,
+                                     std::span<const u8> inlined_buffer);
+ 
+     Tegra::MaxwellDeviceMemoryManager& device_memory;
+ 
+-    SlotVector<Buffer> slot_buffers;
++    Common::SlotVector<Buffer> slot_buffers;
+     DelayedDestructionRing<Buffer, 8> delayed_destruction_ring;
+ 
+     const Tegra::Engines::DrawManager::IndirectParams* current_draw_indirect{};
+@@ -567,13 +455,12 @@ class BufferCache : public VideoCommon::ChannelSetupCaches<BufferCacheChannelInf
+     u32 last_index_count = 0;
+ 
+     MemoryTracker memory_tracker;
+-    IntervalSet uncommitted_ranges;
+-    IntervalSet common_ranges;
+-    IntervalSet cached_ranges;
+-    std::deque<IntervalSet> committed_ranges;
++    Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
++    Common::RangeSet<DAddr> gpu_modified_ranges;
++    std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
+ 
+     // Async Buffers
+-    OverlapCounter async_downloads;
++    Common::OverlapRangeSet<DAddr> async_downloads;
+     std::deque<std::optional<Async_Buffer>> async_buffers;
+     std::deque<boost::container::small_vector<BufferCopy, 4>> pending_downloads;
+     std::optional<Async_Buffer> current_buffer;
+diff --git a/src/video_core/query_cache.h b/src/video_core/query_cache.h
+index 4861b123a253..e1019f2285f8 100644
+--- a/src/video_core/query_cache.h
++++ b/src/video_core/query_cache.h
+@@ -18,12 +18,12 @@
+ 
+ #include "common/assert.h"
+ #include "common/settings.h"
++#include "common/slot_vector.h"
+ #include "video_core/control/channel_state_cache.h"
+ #include "video_core/engines/maxwell_3d.h"
+ #include "video_core/host1x/gpu_device_memory_manager.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/rasterizer_interface.h"
+-#include "video_core/texture_cache/slot_vector.h"
+ 
+ namespace VideoCore {
+ enum class QueryType {
+@@ -37,7 +37,7 @@ constexpr std::size_t NumQueryTypes = static_cast<size_t>(QueryType::Count);
+ 
+ namespace VideoCommon {
+ 
+-using AsyncJobId = SlotId;
++using AsyncJobId = Common::SlotId;
+ 
+ static constexpr AsyncJobId NULL_ASYNC_JOB_ID{0};
+ 
+@@ -341,7 +341,7 @@ class QueryCacheLegacy : public VideoCommon::ChannelSetupCaches<VideoCommon::Cha
+     static constexpr std::uintptr_t YUZU_PAGESIZE = 4096;
+     static constexpr unsigned YUZU_PAGEBITS = 12;
+ 
+-    SlotVector<AsyncJob> slot_async_jobs;
++    Common::SlotVector<AsyncJob> slot_async_jobs;
+ 
+     VideoCore::RasterizerInterface& rasterizer;
+     Tegra::MaxwellDeviceMemoryManager& device_memory;
+diff --git a/src/video_core/renderer_opengl/gl_buffer_cache.h b/src/video_core/renderer_opengl/gl_buffer_cache.h
+index af34c272b3d5..fd471e979574 100644
+--- a/src/video_core/renderer_opengl/gl_buffer_cache.h
++++ b/src/video_core/renderer_opengl/gl_buffer_cache.h
+@@ -90,7 +90,7 @@ class BufferCacheRuntime {
+     void PostCopyBarrier();
+     void Finish();
+ 
+-    void TickFrame(VideoCommon::SlotVector<Buffer>&) noexcept {}
++    void TickFrame(Common::SlotVector<Buffer>&) noexcept {}
+ 
+     void ClearBuffer(Buffer& dest_buffer, u32 offset, size_t size, u32 value);
+ 
+@@ -251,7 +251,6 @@ struct BufferCacheParams {
+     static constexpr bool NEEDS_BIND_STORAGE_INDEX = true;
+     static constexpr bool USE_MEMORY_MAPS = true;
+     static constexpr bool SEPARATE_IMAGE_BUFFER_BINDINGS = true;
+-    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
+ 
+     // TODO: Investigate why OpenGL seems to perform worse with persistently mapped buffer uploads
+     static constexpr bool USE_MEMORY_MAPS_FOR_UPLOADS = false;
+diff --git a/src/video_core/renderer_opengl/gl_texture_cache.h b/src/video_core/renderer_opengl/gl_texture_cache.h
+index 3e54edcc2131..d4165d8e4d55 100644
+--- a/src/video_core/renderer_opengl/gl_texture_cache.h
++++ b/src/video_core/renderer_opengl/gl_texture_cache.h
+@@ -30,13 +30,13 @@ class Image;
+ class ImageView;
+ class Sampler;
+ 
++using Common::SlotVector;
+ using VideoCommon::ImageId;
+ using VideoCommon::ImageViewId;
+ using VideoCommon::ImageViewType;
+ using VideoCommon::NUM_RT;
+ using VideoCommon::Region2D;
+ using VideoCommon::RenderTargets;
+-using VideoCommon::SlotVector;
+ 
+ struct FormatProperties {
+     GLenum compatibility_class;
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+index 31001d142828..e5e1e3ab63b9 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.cpp
+@@ -368,7 +368,7 @@ u32 BufferCacheRuntime::GetStorageBufferAlignment() const {
+     return static_cast<u32>(device.GetStorageBufferAlignment());
+ }
+ 
+-void BufferCacheRuntime::TickFrame(VideoCommon::SlotVector<Buffer>& slot_buffers) noexcept {
++void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noexcept {
+     for (auto it = slot_buffers.begin(); it != slot_buffers.end(); it++) {
+         it->ResetUsageTracking();
+     }
+diff --git a/src/video_core/renderer_vulkan/vk_buffer_cache.h b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+index e273f4988432..efe960258cd7 100644
+--- a/src/video_core/renderer_vulkan/vk_buffer_cache.h
++++ b/src/video_core/renderer_vulkan/vk_buffer_cache.h
+@@ -81,7 +81,7 @@ class BufferCacheRuntime {
+                                 ComputePassDescriptorQueue& compute_pass_descriptor_queue,
+                                 DescriptorPool& descriptor_pool);
+ 
+-    void TickFrame(VideoCommon::SlotVector<Buffer>& slot_buffers) noexcept;
++    void TickFrame(Common::SlotVector<Buffer>& slot_buffers) noexcept;
+ 
+     void Finish();
+ 
+@@ -181,7 +181,6 @@ struct BufferCacheParams {
+     static constexpr bool NEEDS_BIND_STORAGE_INDEX = false;
+     static constexpr bool USE_MEMORY_MAPS = true;
+     static constexpr bool SEPARATE_IMAGE_BUFFER_BINDINGS = false;
+-    static constexpr bool IMPLEMENTS_ASYNC_DOWNLOADS = true;
+     static constexpr bool USE_MEMORY_MAPS_FOR_UPLOADS = true;
+ };
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_texture_cache.h b/src/video_core/renderer_vulkan/vk_texture_cache.h
+index 0dbde65d6b4b..aaeb5ef934a1 100644
+--- a/src/video_core/renderer_vulkan/vk_texture_cache.h
++++ b/src/video_core/renderer_vulkan/vk_texture_cache.h
+@@ -20,11 +20,11 @@ struct ResolutionScalingInfo;
+ 
+ namespace Vulkan {
+ 
++using Common::SlotVector;
+ using VideoCommon::ImageId;
+ using VideoCommon::NUM_RT;
+ using VideoCommon::Region2D;
+ using VideoCommon::RenderTargets;
+-using VideoCommon::SlotVector;
+ using VideoCore::Surface::PixelFormat;
+ 
+ class BlitImageHelper;
+diff --git a/src/video_core/texture_cache/texture_cache_base.h b/src/video_core/texture_cache/texture_cache_base.h
+index e7b9101215e9..da98a634b519 100644
+--- a/src/video_core/texture_cache/texture_cache_base.h
++++ b/src/video_core/texture_cache/texture_cache_base.h
+@@ -21,6 +21,7 @@
+ #include "common/lru_cache.h"
+ #include "common/polyfill_ranges.h"
+ #include "common/scratch_buffer.h"
++#include "common/slot_vector.h"
+ #include "common/thread_worker.h"
+ #include "video_core/compatible_formats.h"
+ #include "video_core/control/channel_state_cache.h"
+@@ -32,7 +33,6 @@
+ #include "video_core/texture_cache/image_info.h"
+ #include "video_core/texture_cache/image_view_base.h"
+ #include "video_core/texture_cache/render_targets.h"
+-#include "video_core/texture_cache/slot_vector.h"
+ #include "video_core/texture_cache/types.h"
+ #include "video_core/textures/texture.h"
+ 
+@@ -451,16 +451,16 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
+     struct PendingDownload {
+         bool is_swizzle;
+         size_t async_buffer_id;
+-        SlotId object_id;
++        Common::SlotId object_id;
+     };
+ 
+-    SlotVector<Image> slot_images;
+-    SlotVector<ImageMapView> slot_map_views;
+-    SlotVector<ImageView> slot_image_views;
+-    SlotVector<ImageAlloc> slot_image_allocs;
+-    SlotVector<Sampler> slot_samplers;
+-    SlotVector<Framebuffer> slot_framebuffers;
+-    SlotVector<BufferDownload> slot_buffer_downloads;
++    Common::SlotVector<Image> slot_images;
++    Common::SlotVector<ImageMapView> slot_map_views;
++    Common::SlotVector<ImageView> slot_image_views;
++    Common::SlotVector<ImageAlloc> slot_image_allocs;
++    Common::SlotVector<Sampler> slot_samplers;
++    Common::SlotVector<Framebuffer> slot_framebuffers;
++    Common::SlotVector<BufferDownload> slot_buffer_downloads;
+ 
+     // TODO: This data structure is not optimal and it should be reworked
+ 
+diff --git a/src/video_core/texture_cache/types.h b/src/video_core/texture_cache/types.h
+index 0453456b4b86..07c3043865ff 100644
+--- a/src/video_core/texture_cache/types.h
++++ b/src/video_core/texture_cache/types.h
+@@ -5,21 +5,21 @@
+ 
+ #include "common/common_funcs.h"
+ #include "common/common_types.h"
+-#include "video_core/texture_cache/slot_vector.h"
++#include "common/slot_vector.h"
+ 
+ namespace VideoCommon {
+ 
+ constexpr size_t NUM_RT = 8;
+ constexpr size_t MAX_MIP_LEVELS = 14;
+ 
+-constexpr SlotId CORRUPT_ID{0xfffffffe};
++constexpr Common::SlotId CORRUPT_ID{0xfffffffe};
+ 
+-using ImageId = SlotId;
+-using ImageMapId = SlotId;
+-using ImageViewId = SlotId;
+-using ImageAllocId = SlotId;
+-using SamplerId = SlotId;
+-using FramebufferId = SlotId;
++using ImageId = Common::SlotId;
++using ImageMapId = Common::SlotId;
++using ImageViewId = Common::SlotId;
++using ImageAllocId = Common::SlotId;
++using SamplerId = Common::SlotId;
++using FramebufferId = Common::SlotId;
+ 
+ /// Fake image ID for null image views
+ constexpr ImageId NULL_IMAGE_ID{0};

@@ -1,0 +1,17 @@
+diff --git a/src/yuzu/hotkeys.cpp b/src/yuzu/hotkeys.cpp
+index 170f1468434e..1931dcd1f627 100644
+--- a/src/yuzu/hotkeys.cpp
++++ b/src/yuzu/hotkeys.cpp
+@@ -190,10 +190,8 @@ void ControllerShortcut::ControllerUpdateEvent(Core::HID::ControllerTriggerType
+     if (type != Core::HID::ControllerTriggerType::Button) {
+         return;
+     }
+-    if (!Settings::values.controller_navigation) {
+-        return;
+-    }
+-    if (button_sequence.npad.raw == Core::HID::NpadButton::None) {
++    if (button_sequence.npad.raw == Core::HID::NpadButton::None &&
++        button_sequence.capture.raw == 0 && button_sequence.home.raw == 0) {
+         return;
+     }
+ 

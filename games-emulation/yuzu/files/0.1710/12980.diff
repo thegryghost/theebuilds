@@ -1,0 +1,7 @@
+diff --git a/externals/dynarmic b/externals/dynarmic
+index ca0e264f4f96..ba8192d89078 160000
+--- a/externals/dynarmic
++++ b/externals/dynarmic
+@@ -1 +1 @@
+-Subproject commit ca0e264f4f962e29baa23a3282ce484625866b98
++Subproject commit ba8192d89078af51ae6f97c9352e3683612cdff1

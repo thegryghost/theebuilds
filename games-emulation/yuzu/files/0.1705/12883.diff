@@ -1,0 +1,100 @@
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
+index e6646ba0469d..68fe3887410f 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_as_gpu.cpp
+@@ -123,6 +123,8 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
+         vm.va_range_end = params.va_range_end;
+     }
+ 
++    const u64 max_big_page_bits = Common::Log2Ceil64(vm.va_range_end);
++
+     const auto start_pages{static_cast<u32>(vm.va_range_start >> VM::PAGE_SIZE_BITS)};
+     const auto end_pages{static_cast<u32>(vm.va_range_split >> VM::PAGE_SIZE_BITS)};
+     vm.small_page_allocator = std::make_shared<VM::Allocator>(start_pages, end_pages);
+@@ -132,8 +134,8 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
+         static_cast<u32>((vm.va_range_end - vm.va_range_split) >> vm.big_page_size_bits)};
+     vm.big_page_allocator = std::make_unique<VM::Allocator>(start_big_pages, end_big_pages);
+ 
+-    gmmu = std::make_shared<Tegra::MemoryManager>(system, 40, vm.big_page_size_bits,
+-                                                  VM::PAGE_SIZE_BITS);
++    gmmu = std::make_shared<Tegra::MemoryManager>(system, max_big_page_bits, vm.va_range_split,
++                                                  vm.big_page_size_bits, VM::PAGE_SIZE_BITS);
+     system.GPU().InitAddressSpace(*gmmu);
+     vm.initialised = true;
+ 
+diff --git a/src/video_core/host1x/host1x.cpp b/src/video_core/host1x/host1x.cpp
+index c4c7a5883df6..e923bfa2288c 100644
+--- a/src/video_core/host1x/host1x.cpp
++++ b/src/video_core/host1x/host1x.cpp
+@@ -10,7 +10,7 @@ namespace Host1x {
+ 
+ Host1x::Host1x(Core::System& system_)
+     : system{system_}, syncpoint_manager{},
+-      memory_manager(system.DeviceMemory()), gmmu_manager{system, memory_manager, 32, 12},
++      memory_manager(system.DeviceMemory()), gmmu_manager{system, memory_manager, 32, 0, 12},
+       allocator{std::make_unique<Common::FlatAllocator<u32, 0, 32>>(1 << 12)} {}
+ 
+ Host1x::~Host1x() = default;
+diff --git a/src/video_core/memory_manager.cpp b/src/video_core/memory_manager.cpp
+index a52f8e4860eb..ffafc48eff82 100644
+--- a/src/video_core/memory_manager.cpp
++++ b/src/video_core/memory_manager.cpp
+@@ -22,11 +22,12 @@ using Tegra::Memory::GuestMemoryFlags;
+ std::atomic<size_t> MemoryManager::unique_identifier_generator{};
+ 
+ MemoryManager::MemoryManager(Core::System& system_, MaxwellDeviceMemoryManager& memory_,
+-                             u64 address_space_bits_, u64 big_page_bits_, u64 page_bits_)
++                             u64 address_space_bits_, GPUVAddr split_address_, u64 big_page_bits_,
++                             u64 page_bits_)
+     : system{system_}, memory{memory_}, address_space_bits{address_space_bits_},
+-      page_bits{page_bits_}, big_page_bits{big_page_bits_}, entries{}, big_entries{},
+-      page_table{address_space_bits, address_space_bits + page_bits - 38,
+-                 page_bits != big_page_bits ? page_bits : 0},
++      split_address{split_address_}, page_bits{page_bits_}, big_page_bits{big_page_bits_},
++      entries{}, big_entries{}, page_table{address_space_bits, address_space_bits + page_bits - 38,
++                                           page_bits != big_page_bits ? page_bits : 0},
+       kind_map{PTEKind::INVALID}, unique_identifier{unique_identifier_generator.fetch_add(
+                                       1, std::memory_order_acq_rel)},
+       accumulator{std::make_unique<VideoCommon::InvalidationAccumulator>()} {
+@@ -48,10 +49,10 @@ MemoryManager::MemoryManager(Core::System& system_, MaxwellDeviceMemoryManager&
+     entries.resize(page_table_size / 32, 0);
+ }
+ 
+-MemoryManager::MemoryManager(Core::System& system_, u64 address_space_bits_, u64 big_page_bits_,
+-                             u64 page_bits_)
+-    : MemoryManager(system_, system_.Host1x().MemoryManager(), address_space_bits_, big_page_bits_,
+-                    page_bits_) {}
++MemoryManager::MemoryManager(Core::System& system_, u64 address_space_bits_,
++                             GPUVAddr split_address_, u64 big_page_bits_, u64 page_bits_)
++    : MemoryManager(system_, system_.Host1x().MemoryManager(), address_space_bits_, split_address_,
++                    big_page_bits_, page_bits_) {}
+ 
+ MemoryManager::~MemoryManager() = default;
+ 
+diff --git a/src/video_core/memory_manager.h b/src/video_core/memory_manager.h
+index c5255f36ce2a..ac7c1472afc0 100644
+--- a/src/video_core/memory_manager.h
++++ b/src/video_core/memory_manager.h
+@@ -36,10 +36,11 @@ namespace Tegra {
+ class MemoryManager final {
+ public:
+     explicit MemoryManager(Core::System& system_, u64 address_space_bits_ = 40,
+-                           u64 big_page_bits_ = 16, u64 page_bits_ = 12);
+-    explicit MemoryManager(Core::System& system_, MaxwellDeviceMemoryManager& memory_,
+-                           u64 address_space_bits_ = 40, u64 big_page_bits_ = 16,
++                           GPUVAddr split_address = 1ULL << 34, u64 big_page_bits_ = 16,
+                            u64 page_bits_ = 12);
++    explicit MemoryManager(Core::System& system_, MaxwellDeviceMemoryManager& memory_,
++                           u64 address_space_bits_ = 40, GPUVAddr split_address = 1ULL << 34,
++                           u64 big_page_bits_ = 16, u64 page_bits_ = 12);
+     ~MemoryManager();
+ 
+     size_t GetID() const {
+@@ -192,6 +193,7 @@ class MemoryManager final {
+     MaxwellDeviceMemoryManager& memory;
+ 
+     const u64 address_space_bits;
++    GPUVAddr split_address;
+     const u64 page_bits;
+     u64 address_space_size;
+     u64 page_size;

@@ -1,0 +1,14 @@
+diff --git a/src/core/memory/cheat_engine.cpp b/src/core/memory/cheat_engine.cpp
+index 470521f44855..f36e098e01f7 100644
+--- a/src/core/memory/cheat_engine.cpp
++++ b/src/core/memory/cheat_engine.cpp
+@@ -64,7 +64,8 @@ void StandardVmCallbacks::MemoryWriteUnsafe(VAddr address, const void* data, u64
+         return;
+     }
+ 
+-    if (system.ApplicationMemory().WriteBlock(address, data, size)) {
++    if (system.ApplicationMemory().WriteBlock(address, data, size) &&
++        system.ApplicationProcess()->Is64Bit()) {
+         Core::InvalidateInstructionCacheRange(system.ApplicationProcess(), address, size);
+     }
+ }

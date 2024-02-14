@@ -1,0 +1,270 @@
+diff --git a/src/core/memory/cheat_engine.cpp b/src/core/memory/cheat_engine.cpp
+index 96fa7fa3ae8c..7a8c14c2b2ca 100644
+--- a/src/core/memory/cheat_engine.cpp
++++ b/src/core/memory/cheat_engine.cpp
+@@ -9,6 +9,7 @@
+ #include "core/core_timing.h"
+ #include "core/hle/kernel/k_page_table.h"
+ #include "core/hle/kernel/k_process.h"
++#include "core/hle/kernel/k_process_page_table.h"
+ #include "core/hle/service/hid/hid_server.h"
+ #include "core/hle/service/sm/sm.h"
+ #include "core/memory.h"
+@@ -85,8 +86,12 @@ VAddr StandardVmCallbacks::SanitizeAddress(VAddr in) const {
+     if ((in < metadata.main_nso_extents.base ||
+          in >= metadata.main_nso_extents.base + metadata.main_nso_extents.size) &&
+         (in < metadata.heap_extents.base ||
+-         in >= metadata.heap_extents.base + metadata.heap_extents.size)) {
+-        LOG_ERROR(CheatEngine,
++         in >= metadata.heap_extents.base + metadata.heap_extents.size) &&
++        (in < metadata.alias_extents.base ||
++         in >= metadata.heap_extents.base + metadata.alias_extents.size) &&
++        (in < metadata.aslr_extents.base ||
++         in >= metadata.heap_extents.base + metadata.aslr_extents.size)) {
++        LOG_DEBUG(CheatEngine,
+                   "Cheat attempting to access memory at invalid address={:016X}, if this "
+                   "persists, "
+                   "the cheat may be incorrect. However, this may be normal early in execution if "
+@@ -211,16 +216,14 @@ void CheatEngine::Initialize() {
+         .base = GetInteger(page_table.GetHeapRegionStart()),
+         .size = page_table.GetHeapRegionSize(),
+     };
+-
+-    metadata.address_space_extents = {
+-        .base = GetInteger(page_table.GetAddressSpaceStart()),
+-        .size = page_table.GetAddressSpaceSize(),
+-    };
+-
+-    metadata.alias_extents = {
++    metadata.aslr_extents = {
+         .base = GetInteger(page_table.GetAliasCodeRegionStart()),
+         .size = page_table.GetAliasCodeRegionSize(),
+     };
++    metadata.alias_extents = {
++        .base = GetInteger(page_table.GetAliasRegionStart()),
++        .size = page_table.GetAliasRegionSize(),
++    };
+ 
+     is_pending_reload.exchange(true);
+ }
+diff --git a/src/core/memory/cheat_engine.h b/src/core/memory/cheat_engine.h
+index ced2168d133b..64a9c486b902 100644
+--- a/src/core/memory/cheat_engine.h
++++ b/src/core/memory/cheat_engine.h
+@@ -37,7 +37,7 @@ class StandardVmCallbacks : public DmntCheatVm::Callbacks {
+     VAddr SanitizeAddress(VAddr address) const;
+ 
+     const CheatProcessMetadata& metadata;
+-    System& system;
++    Core::System& system;
+ };
+ 
+ // Intermediary class that parses a text file or other disk format for storing cheats into a
+diff --git a/src/core/memory/dmnt_cheat_types.h b/src/core/memory/dmnt_cheat_types.h
+index c6b40e505129..64c072d3ded5 100644
+--- a/src/core/memory/dmnt_cheat_types.h
++++ b/src/core/memory/dmnt_cheat_types.h
+@@ -18,7 +18,7 @@ struct CheatProcessMetadata {
+     MemoryRegionExtents main_nso_extents{};
+     MemoryRegionExtents heap_extents{};
+     MemoryRegionExtents alias_extents{};
+-    MemoryRegionExtents address_space_extents{};
++    MemoryRegionExtents aslr_extents{};
+     std::array<u8, 0x20> main_nso_build_id{};
+ };
+ 
+diff --git a/src/core/memory/dmnt_cheat_vm.cpp b/src/core/memory/dmnt_cheat_vm.cpp
+index 31ffc4fbba68..9424e0f73d1b 100644
+--- a/src/core/memory/dmnt_cheat_vm.cpp
++++ b/src/core/memory/dmnt_cheat_vm.cpp
+@@ -322,8 +322,9 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
+     } break;
+     case CheatVmOpcodeType::EndConditionalBlock: {
+         // 20000000
+-        // There's actually nothing left to process here!
+-        opcode.opcode = EndConditionalOpcode{};
++        opcode.opcode = EndConditionalOpcode{
++            .is_else = ((first_dword >> 24) & 0xf) == 1,
++        };
+     } break;
+     case CheatVmOpcodeType::ControlLoop: {
+         // 300R0000 VVVVVVVV
+@@ -555,6 +556,18 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
+             .idx = first_dword & 0xF,
+         };
+     } break;
++    case CheatVmOpcodeType::PauseProcess: {
++        /* FF0????? */
++        /* FF0 = opcode 0xFF0 */
++        /* Pauses the current process. */
++        opcode.opcode = PauseProcessOpcode{};
++    } break;
++    case CheatVmOpcodeType::ResumeProcess: {
++        /* FF0????? */
++        /* FF0 = opcode 0xFF0 */
++        /* Pauses the current process. */
++        opcode.opcode = ResumeProcessOpcode{};
++    } break;
+     case CheatVmOpcodeType::DebugLog: {
+         // FFFTIX##
+         // FFFTI0Ma aaaaaaaa
+@@ -621,7 +634,7 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
+     return valid;
+ }
+ 
+-void DmntCheatVm::SkipConditionalBlock() {
++void DmntCheatVm::SkipConditionalBlock(bool is_if) {
+     if (condition_depth > 0) {
+         // We want to continue until we're out of the current block.
+         const std::size_t desired_depth = condition_depth - 1;
+@@ -637,8 +650,12 @@ void DmntCheatVm::SkipConditionalBlock() {
+             // We also support nesting of conditional blocks, and Gateway does not.
+             if (skip_opcode.begin_conditional_block) {
+                 condition_depth++;
+-            } else if (std::holds_alternative<EndConditionalOpcode>(skip_opcode.opcode)) {
+-                condition_depth--;
++            } else if (auto end_cond = std::get_if<EndConditionalOpcode>(&skip_opcode.opcode)) {
++                if (!end_cond->is_else) {
++                    condition_depth--;
++                } else if (is_if && condition_depth - 1 == desired_depth) {
++                    break;
++                }
+             }
+         }
+     } else {
+@@ -675,6 +692,10 @@ u64 DmntCheatVm::GetCheatProcessAddress(const CheatProcessMetadata& metadata,
+         return metadata.main_nso_extents.base + rel_address;
+     case MemoryAccessType::Heap:
+         return metadata.heap_extents.base + rel_address;
++    case MemoryAccessType::Alias:
++        return metadata.alias_extents.base + rel_address;
++    case MemoryAccessType::Aslr:
++        return metadata.aslr_extents.base + rel_address;
+     }
+ }
+ 
+@@ -682,7 +703,6 @@ void DmntCheatVm::ResetState() {
+     registers.fill(0);
+     saved_values.fill(0);
+     loop_tops.fill(0);
+-    static_registers.fill(0);
+     instruction_ptr = 0;
+     condition_depth = 0;
+     decode_success = true;
+@@ -794,13 +814,18 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
+             }
+             // Skip conditional block if condition not met.
+             if (!cond_met) {
+-                SkipConditionalBlock();
++                SkipConditionalBlock(true);
+             }
+-        } else if (std::holds_alternative<EndConditionalOpcode>(cur_opcode.opcode)) {
+-            // Decrement the condition depth.
+-            // We will assume, graciously, that mismatched conditional block ends are a nop.
+-            if (condition_depth > 0) {
+-                condition_depth--;
++        } else if (auto end_cond = std::get_if<EndConditionalOpcode>(&cur_opcode.opcode)) {
++            if (end_cond->is_else) {
++                /* Skip to the end of the conditional block. */
++                this->SkipConditionalBlock(false);
++            } else {
++                /* Decrement the condition depth. */
++                /* We will assume, graciously, that mismatched conditional block ends are a nop. */
++                if (condition_depth > 0) {
++                    condition_depth--;
++                }
+             }
+         } else if (auto ctrl_loop = std::get_if<ControlLoopOpcode>(&cur_opcode.opcode)) {
+             if (ctrl_loop->start_loop) {
+@@ -908,7 +933,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
+             // Check for keypress.
+             if ((begin_keypress_cond->key_mask & kDown) != begin_keypress_cond->key_mask) {
+                 // Keys not pressed. Skip conditional block.
+-                SkipConditionalBlock();
++                SkipConditionalBlock(true);
+             }
+         } else if (auto perform_math_reg =
+                        std::get_if<PerformArithmeticRegisterOpcode>(&cur_opcode.opcode)) {
+@@ -1116,7 +1141,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
+ 
+             // Skip conditional block if condition not met.
+             if (!cond_met) {
+-                SkipConditionalBlock();
++                SkipConditionalBlock(true);
+             }
+         } else if (auto save_restore_reg =
+                        std::get_if<SaveRestoreRegisterOpcode>(&cur_opcode.opcode)) {
+@@ -1178,6 +1203,10 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
+                 // Store a register to a static register.
+                 static_registers[rw_static_reg->static_idx] = registers[rw_static_reg->idx];
+             }
++        } else if (std::holds_alternative<PauseProcessOpcode>(cur_opcode.opcode)) {
++            // TODO: Pause cheat process
++        } else if (std::holds_alternative<ResumeProcessOpcode>(cur_opcode.opcode)) {
++            // TODO: Resume cheat process
+         } else if (auto debug_log = std::get_if<DebugLogOpcode>(&cur_opcode.opcode)) {
+             // Read value from memory.
+             u64 log_value = 0;
+diff --git a/src/core/memory/dmnt_cheat_vm.h b/src/core/memory/dmnt_cheat_vm.h
+index 641cb09c46e1..32797dcd7ec6 100644
+--- a/src/core/memory/dmnt_cheat_vm.h
++++ b/src/core/memory/dmnt_cheat_vm.h
+@@ -42,12 +42,16 @@ enum class CheatVmOpcodeType : u32 {
+     DoubleExtendedWidth = 0xF0,
+ 
+     // Double-extended width opcodes.
++    PauseProcess = 0xFF0,
++    ResumeProcess = 0xFF1,
+     DebugLog = 0xFFF,
+ };
+ 
+ enum class MemoryAccessType : u32 {
+     MainNso = 0,
+     Heap = 1,
++    Alias = 2,
++    Aslr = 3,
+ };
+ 
+ enum class ConditionalComparisonType : u32 {
+@@ -131,7 +135,9 @@ struct BeginConditionalOpcode {
+     VmInt value{};
+ };
+ 
+-struct EndConditionalOpcode {};
++struct EndConditionalOpcode {
++    bool is_else;
++};
+ 
+ struct ControlLoopOpcode {
+     bool start_loop{};
+@@ -222,6 +228,10 @@ struct ReadWriteStaticRegisterOpcode {
+     u32 idx{};
+ };
+ 
++struct PauseProcessOpcode {};
++
++struct ResumeProcessOpcode {};
++
+ struct DebugLogOpcode {
+     u32 bit_width{};
+     u32 log_id{};
+@@ -244,8 +254,8 @@ struct CheatVmOpcode {
+                  PerformArithmeticStaticOpcode, BeginKeypressConditionalOpcode,
+                  PerformArithmeticRegisterOpcode, StoreRegisterToAddressOpcode,
+                  BeginRegisterConditionalOpcode, SaveRestoreRegisterOpcode,
+-                 SaveRestoreRegisterMaskOpcode, ReadWriteStaticRegisterOpcode, DebugLogOpcode,
+-                 UnrecognizedInstruction>
++                 SaveRestoreRegisterMaskOpcode, ReadWriteStaticRegisterOpcode, PauseProcessOpcode,
++                 ResumeProcessOpcode, DebugLogOpcode, UnrecognizedInstruction>
+         opcode{};
+ };
+ 
+@@ -296,7 +306,7 @@ class DmntCheatVm {
+     std::array<std::size_t, NumRegisters> loop_tops{};
+ 
+     bool DecodeNextOpcode(CheatVmOpcode& out);
+-    void SkipConditionalBlock();
++    void SkipConditionalBlock(bool is_if);
+     void ResetState();
+ 
+     // For implementing the DebugLog opcode.

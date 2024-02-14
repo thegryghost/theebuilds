@@ -1,0 +1,278 @@
+diff --git a/src/hid_core/resource_manager.cpp b/src/hid_core/resource_manager.cpp
+index 68ce2c7aefc5..245da582e5d9 100644
+--- a/src/hid_core/resource_manager.cpp
++++ b/src/hid_core/resource_manager.cpp
+@@ -52,9 +52,42 @@ ResourceManager::ResourceManager(Core::System& system_,
+                                  std::shared_ptr<HidFirmwareSettings> settings)
+     : firmware_settings{settings}, system{system_}, service_context{system_, "hid"} {
+     applet_resource = std::make_shared<AppletResource>(system);
++
++    // Register update callbacks
++    npad_update_event = Core::Timing::CreateEvent("HID::UpdatePadCallback",
++                                                  [this](s64 time, std::chrono::nanoseconds ns_late)
++                                                      -> std::optional<std::chrono::nanoseconds> {
++                                                      UpdateNpad(ns_late);
++                                                      return std::nullopt;
++                                                  });
++    default_update_event = Core::Timing::CreateEvent(
++        "HID::UpdateDefaultCallback",
++        [this](s64 time,
++               std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
++            UpdateControllers(ns_late);
++            return std::nullopt;
++        });
++    mouse_keyboard_update_event = Core::Timing::CreateEvent(
++        "HID::UpdateMouseKeyboardCallback",
++        [this](s64 time,
++               std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
++            UpdateMouseKeyboard(ns_late);
++            return std::nullopt;
++        });
++    motion_update_event = Core::Timing::CreateEvent(
++        "HID::UpdateMotionCallback",
++        [this](s64 time,
++               std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
++            UpdateMotion(ns_late);
++            return std::nullopt;
++        });
+ }
+ 
+ ResourceManager::~ResourceManager() {
++    system.CoreTiming().UnscheduleEvent(npad_update_event);
++    system.CoreTiming().UnscheduleEvent(default_update_event);
++    system.CoreTiming().UnscheduleEvent(mouse_keyboard_update_event);
++    system.CoreTiming().UnscheduleEvent(motion_update_event);
+     system.CoreTiming().UnscheduleEvent(touch_update_event);
+     input_event->Finalize();
+ };
+@@ -201,6 +234,7 @@ void ResourceManager::InitializeHidCommonSampler() {
+ 
+     debug_pad->SetAppletResource(applet_resource, &shared_mutex);
+     digitizer->SetAppletResource(applet_resource, &shared_mutex);
++    unique_pad->SetAppletResource(applet_resource, &shared_mutex);
+     keyboard->SetAppletResource(applet_resource, &shared_mutex);
+ 
+     const auto settings =
+@@ -214,6 +248,14 @@ void ResourceManager::InitializeHidCommonSampler() {
+     home_button->SetAppletResource(applet_resource, &shared_mutex);
+     sleep_button->SetAppletResource(applet_resource, &shared_mutex);
+     capture_button->SetAppletResource(applet_resource, &shared_mutex);
++
++    system.CoreTiming().ScheduleLoopingEvent(npad_update_ns, npad_update_ns, npad_update_event);
++    system.CoreTiming().ScheduleLoopingEvent(default_update_ns, default_update_ns,
++                                             default_update_event);
++    system.CoreTiming().ScheduleLoopingEvent(mouse_keyboard_update_ns, mouse_keyboard_update_ns,
++                                             mouse_keyboard_update_event);
++    system.CoreTiming().ScheduleLoopingEvent(motion_update_ns, motion_update_ns,
++                                             motion_update_event);
+ }
+ 
+ void ResourceManager::InitializeTouchScreenSampler() {
+@@ -465,55 +507,9 @@ IAppletResource::IAppletResource(Core::System& system_, std::shared_ptr<Resource
+         {0, &IAppletResource::GetSharedMemoryHandle, "GetSharedMemoryHandle"},
+     };
+     RegisterHandlers(functions);
+-
+-    // Register update callbacks
+-    npad_update_event = Core::Timing::CreateEvent(
+-        "HID::UpdatePadCallback",
+-        [this, resource](
+-            s64 time, std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+-            const auto guard = LockService();
+-            resource->UpdateNpad(ns_late);
+-            return std::nullopt;
+-        });
+-    default_update_event = Core::Timing::CreateEvent(
+-        "HID::UpdateDefaultCallback",
+-        [this, resource](
+-            s64 time, std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+-            const auto guard = LockService();
+-            resource->UpdateControllers(ns_late);
+-            return std::nullopt;
+-        });
+-    mouse_keyboard_update_event = Core::Timing::CreateEvent(
+-        "HID::UpdateMouseKeyboardCallback",
+-        [this, resource](
+-            s64 time, std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+-            const auto guard = LockService();
+-            resource->UpdateMouseKeyboard(ns_late);
+-            return std::nullopt;
+-        });
+-    motion_update_event = Core::Timing::CreateEvent(
+-        "HID::UpdateMotionCallback",
+-        [this, resource](
+-            s64 time, std::chrono::nanoseconds ns_late) -> std::optional<std::chrono::nanoseconds> {
+-            const auto guard = LockService();
+-            resource->UpdateMotion(ns_late);
+-            return std::nullopt;
+-        });
+-
+-    system.CoreTiming().ScheduleLoopingEvent(npad_update_ns, npad_update_ns, npad_update_event);
+-    system.CoreTiming().ScheduleLoopingEvent(default_update_ns, default_update_ns,
+-                                             default_update_event);
+-    system.CoreTiming().ScheduleLoopingEvent(mouse_keyboard_update_ns, mouse_keyboard_update_ns,
+-                                             mouse_keyboard_update_event);
+-    system.CoreTiming().ScheduleLoopingEvent(motion_update_ns, motion_update_ns,
+-                                             motion_update_event);
+ }
+ 
+ IAppletResource::~IAppletResource() {
+-    system.CoreTiming().UnscheduleEvent(npad_update_event);
+-    system.CoreTiming().UnscheduleEvent(default_update_event);
+-    system.CoreTiming().UnscheduleEvent(mouse_keyboard_update_event);
+-    system.CoreTiming().UnscheduleEvent(motion_update_event);
+     resource_manager->FreeAppletResourceId(aruid);
+ }
+ 
+diff --git a/src/hid_core/resource_manager.h b/src/hid_core/resource_manager.h
+index 0bfe09511335..dc3ff01f80aa 100644
+--- a/src/hid_core/resource_manager.h
++++ b/src/hid_core/resource_manager.h
+@@ -147,6 +147,10 @@ class ResourceManager {
+     std::shared_ptr<SixAxis> six_axis{nullptr};
+     std::shared_ptr<SleepButton> sleep_button{nullptr};
+     std::shared_ptr<UniquePad> unique_pad{nullptr};
++    std::shared_ptr<Core::Timing::EventType> npad_update_event;
++    std::shared_ptr<Core::Timing::EventType> default_update_event;
++    std::shared_ptr<Core::Timing::EventType> mouse_keyboard_update_event;
++    std::shared_ptr<Core::Timing::EventType> motion_update_event;
+ 
+     // TODO: Create these resources
+     // std::shared_ptr<AudioControl> audio_control{nullptr};
+@@ -179,11 +183,6 @@ class IAppletResource final : public ServiceFramework<IAppletResource> {
+ private:
+     void GetSharedMemoryHandle(HLERequestContext& ctx);
+ 
+-    std::shared_ptr<Core::Timing::EventType> npad_update_event{nullptr};
+-    std::shared_ptr<Core::Timing::EventType> default_update_event{nullptr};
+-    std::shared_ptr<Core::Timing::EventType> mouse_keyboard_update_event{nullptr};
+-    std::shared_ptr<Core::Timing::EventType> motion_update_event{nullptr};
+-
+     u64 aruid{};
+     std::shared_ptr<ResourceManager> resource_manager;
+ };
+diff --git a/src/hid_core/resources/digitizer/digitizer.cpp b/src/hid_core/resources/digitizer/digitizer.cpp
+index cd72fd6e5341..5d7dcadfe352 100644
+--- a/src/hid_core/resources/digitizer/digitizer.cpp
++++ b/src/hid_core/resources/digitizer/digitizer.cpp
+@@ -17,10 +17,6 @@ void Digitizer::OnInit() {}
+ void Digitizer::OnRelease() {}
+ 
+ void Digitizer::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+-    if (!smart_update) {
+-        return;
+-    }
+-
+     std::scoped_lock shared_lock{*shared_mutex};
+     const u64 aruid = applet_resource->GetActiveAruid();
+     auto* data = applet_resource->GetAruidData(aruid);
+diff --git a/src/hid_core/resources/digitizer/digitizer.h b/src/hid_core/resources/digitizer/digitizer.h
+index e031a16b0459..68b03111c385 100644
+--- a/src/hid_core/resources/digitizer/digitizer.h
++++ b/src/hid_core/resources/digitizer/digitizer.h
+@@ -20,8 +20,5 @@ class Digitizer final : public ControllerBase {
+ 
+     // When the controller is requesting an update for the shared memory
+     void OnUpdate(const Core::Timing::CoreTiming& core_timing) override;
+-
+-private:
+-    bool smart_update{};
+ };
+ } // namespace Service::HID
+diff --git a/src/hid_core/resources/npad/npad.cpp b/src/hid_core/resources/npad/npad.cpp
+index 1a58eff4a1e8..fe3fdc5cde5e 100644
+--- a/src/hid_core/resources/npad/npad.cpp
++++ b/src/hid_core/resources/npad/npad.cpp
+@@ -102,6 +102,8 @@ Result NPad::Activate(u64 aruid) {
+         for (std::size_t i = 0; i < 19; ++i) {
+             WriteEmptyEntry(npad);
+         }
++
++        controller.is_active = true;
+     }
+ 
+     return ResultSuccess;
+@@ -467,6 +469,13 @@ void NPad::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+             continue;
+         }
+ 
++        bool is_set{};
++        npad_resource.IsSupportedNpadStyleSet(is_set, aruid);
++        // Wait until style is defined
++        if (!is_set) {
++            continue;
++        }
++
+         for (std::size_t i = 0; i < controller_data[aruid_index].size(); ++i) {
+             auto& controller = controller_data[aruid_index][i];
+             controller.shared_memory =
+@@ -484,6 +493,10 @@ void NPad::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+                 continue;
+             }
+ 
++            if (!controller.is_active) {
++                continue;
++            }
++
+             RequestPadStateUpdate(aruid, controller.device->GetNpadIdType());
+             auto& pad_state = controller.npad_pad_state;
+             auto& libnx_state = controller.npad_libnx_state;
+@@ -592,7 +605,9 @@ void NPad::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+             libnx_state.npad_buttons.raw = pad_state.npad_buttons.raw;
+             libnx_state.l_stick = pad_state.l_stick;
+             libnx_state.r_stick = pad_state.r_stick;
+-            npad->system_ext_lifo.WriteNextEntry(pad_state);
++            libnx_state.sampling_number =
++                npad->system_ext_lifo.ReadCurrentEntry().state.sampling_number + 1;
++            npad->system_ext_lifo.WriteNextEntry(libnx_state);
+ 
+             press_state |= static_cast<u64>(pad_state.npad_buttons.raw);
+         }
+@@ -1060,6 +1075,7 @@ void NPad::UnregisterAppletResourceUserId(u64 aruid) {
+     // TODO: Remove this once abstract pad is emulated properly
+     const auto aruid_index = npad_resource.GetIndexFromAruid(aruid);
+     for (auto& controller : controller_data[aruid_index]) {
++        controller.is_active = false;
+         controller.is_connected = false;
+         controller.shared_memory = nullptr;
+     }
+diff --git a/src/hid_core/resources/npad/npad.h b/src/hid_core/resources/npad/npad.h
+index 4e26ed2e8f34..c634883460b1 100644
+--- a/src/hid_core/resources/npad/npad.h
++++ b/src/hid_core/resources/npad/npad.h
+@@ -164,6 +164,7 @@ class NPad final {
+         NpadInternalState* shared_memory = nullptr;
+         Core::HID::EmulatedController* device = nullptr;
+ 
++        bool is_active{};
+         bool is_connected{};
+ 
+         // Dual joycons can have only one side connected
+diff --git a/src/hid_core/resources/unique_pad/unique_pad.cpp b/src/hid_core/resources/unique_pad/unique_pad.cpp
+index 89fc572693c6..b2db55c5add0 100644
+--- a/src/hid_core/resources/unique_pad/unique_pad.cpp
++++ b/src/hid_core/resources/unique_pad/unique_pad.cpp
+@@ -17,10 +17,6 @@ void UniquePad::OnInit() {}
+ void UniquePad::OnRelease() {}
+ 
+ void UniquePad::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
+-    if (!smart_update) {
+-        return;
+-    }
+-
+     const u64 aruid = applet_resource->GetActiveAruid();
+     auto* data = applet_resource->GetAruidData(aruid);
+ 
+diff --git a/src/hid_core/resources/unique_pad/unique_pad.h b/src/hid_core/resources/unique_pad/unique_pad.h
+index 674ad1691c5d..4873b7f7e581 100644
+--- a/src/hid_core/resources/unique_pad/unique_pad.h
++++ b/src/hid_core/resources/unique_pad/unique_pad.h
+@@ -20,8 +20,5 @@ class UniquePad final : public ControllerBase {
+ 
+     // When the controller is requesting an update for the shared memory
+     void OnUpdate(const Core::Timing::CoreTiming& core_timing) override;
+-
+-private:
+-    bool smart_update{};
+ };
+ } // namespace Service::HID

@@ -1,0 +1,322 @@
+diff --git a/src/video_core/control/scheduler.cpp b/src/video_core/control/scheduler.cpp
+index f7cbe204ee8c..3165f9bf368b 100644
+--- a/src/video_core/control/scheduler.cpp
++++ b/src/video_core/control/scheduler.cpp
+@@ -13,20 +13,102 @@ Scheduler::Scheduler(GPU& gpu_) : gpu{gpu_} {}
+ 
+ Scheduler::~Scheduler() = default;
+ 
++void Scheduler::Init() {
++    master_control = Common::Fiber::ThreadToFiber();
++}
++
++void Scheduler::Resume() {
++    bool nothing_pending;
++    do {
++        nothing_pending = true;
++        current_fifo = nullptr;
++        {
++            std::unique_lock lk(scheduling_guard);
++            size_t num_iters = gpfifos.size();
++            for (size_t i = 0; i < num_iters; i++) {
++                size_t current_id = (current_fifo_rotation_id + i) % gpfifos.size();
++                auto& fifo = gpfifos[current_id];
++                if (!fifo.is_active) {
++                    continue;
++                }
++                std::scoped_lock lk2(fifo.guard);
++                if (!fifo.pending_work.empty() || fifo.working.load(std::memory_order_acquire)) {
++                    current_fifo = &fifo;
++                    current_fifo_rotation_id = current_id;
++                    nothing_pending = false;
++                    break;
++                }
++            }
++        }
++        if (current_fifo) {
++            Common::Fiber::YieldTo(master_control, *current_fifo->context);
++            current_fifo = nullptr;
++        }
++    } while (!nothing_pending);
++}
++
++void Scheduler::Yield() {
++    ASSERT(current_fifo != nullptr);
++    Common::Fiber::YieldTo(current_fifo->context, *master_control);
++    gpu.BindChannel(current_fifo->bind_id);
++}
++
+ void Scheduler::Push(s32 channel, CommandList&& entries) {
+     std::unique_lock lk(scheduling_guard);
+-    auto it = channels.find(channel);
+-    ASSERT(it != channels.end());
+-    auto channel_state = it->second;
+-    gpu.BindChannel(channel_state->bind_id);
+-    channel_state->dma_pusher->Push(std::move(entries));
+-    channel_state->dma_pusher->DispatchCalls();
++    auto it = channel_gpfifo_ids.find(channel);
++    ASSERT(it != channel_gpfifo_ids.end());
++    auto gpfifo_id = it->second;
++    auto& fifo = gpfifos[gpfifo_id];
++    {
++        std::scoped_lock lk2(fifo.guard);
++        fifo.pending_work.emplace_back(std::move(entries));
++    }
++}
++
++void Scheduler::ChannelLoop(size_t gpfifo_id, s32 channel_id) {
++    gpu.BindChannel(channel_id);
++    auto& fifo = gpfifos[gpfifo_id];
++    while (true) {
++        auto* channel_state = channels[channel_id].get();
++        fifo.guard.lock();
++        while (!fifo.pending_work.empty()) {
++            {
++
++                fifo.working.store(true, std::memory_order_release);
++                CommandList&& entries = std::move(fifo.pending_work.front());
++                channel_state->dma_pusher->Push(std::move(entries));
++                fifo.pending_work.pop_front();
++            }
++            fifo.guard.unlock();
++            channel_state->dma_pusher->DispatchCalls();
++            fifo.guard.lock();
++        }
++        fifo.working.store(false, std::memory_order_relaxed);
++        fifo.guard.unlock();
++        Common::Fiber::YieldTo(fifo.context, *master_control);
++        gpu.BindChannel(channel_id);
++    }
+ }
+ 
+ void Scheduler::DeclareChannel(std::shared_ptr<ChannelState> new_channel) {
+     s32 channel = new_channel->bind_id;
+     std::unique_lock lk(scheduling_guard);
+     channels.emplace(channel, new_channel);
++    size_t new_fifo_id;
++    if (!free_fifos.empty()) {
++        new_fifo_id = free_fifos.front();
++        free_fifos.pop_front();
++    } else {
++        new_fifo_id = gpfifos.size();
++        gpfifos.emplace_back();
++    }
++    auto& new_fifo = gpfifos[new_fifo_id];
++    channel_gpfifo_ids[channel] = new_fifo_id;
++    new_fifo.is_active = true;
++    new_fifo.bind_id = channel;
++    new_fifo.pending_work.clear();
++    std::function<void()> callback = std::bind(&Scheduler::ChannelLoop, this, new_fifo_id, channel);
++    new_fifo.context = std::make_shared<Common::Fiber>(std::move(callback));
+ }
+ 
+ } // namespace Tegra::Control
+diff --git a/src/video_core/control/scheduler.h b/src/video_core/control/scheduler.h
+index 44addf61c4bc..c6f374f66a29 100644
+--- a/src/video_core/control/scheduler.h
++++ b/src/video_core/control/scheduler.h
+@@ -3,10 +3,13 @@
+ 
+ #pragma once
+ 
++#include <atomic>
++#include <deque>
+ #include <memory>
+ #include <mutex>
+ #include <unordered_map>
+ 
++#include "common/fiber.h"
+ #include "video_core/dma_pusher.h"
+ 
+ namespace Tegra {
+@@ -22,14 +25,36 @@ class Scheduler {
+     explicit Scheduler(GPU& gpu_);
+     ~Scheduler();
+ 
++    void Init();
++
++    void Resume();
++
++    void Yield();
++
+     void Push(s32 channel, CommandList&& entries);
+ 
+     void DeclareChannel(std::shared_ptr<ChannelState> new_channel);
+ 
+ private:
++    void ChannelLoop(size_t gpfifo_id, s32 channel_id);
++
+     std::unordered_map<s32, std::shared_ptr<ChannelState>> channels;
++    std::unordered_map<s32, size_t> channel_gpfifo_ids;
+     std::mutex scheduling_guard;
++    std::shared_ptr<Common::Fiber> master_control;
++    struct GPFifoContext {
++        bool is_active;
++        std::shared_ptr<Common::Fiber> context;
++        std::deque<CommandList> pending_work;
++        std::atomic<bool> working{};
++        std::mutex guard;
++        s32 bind_id;
++    };
++    std::deque<GPFifoContext> gpfifos;
++    std::deque<size_t> free_fifos;
+     GPU& gpu;
++    size_t current_fifo_rotation_id{};
++    GPFifoContext* current_fifo{};
+ };
+ 
+ } // namespace Control
+diff --git a/src/video_core/engines/puller.cpp b/src/video_core/engines/puller.cpp
+index 8dd34c04ab4f..f51dbe47e7ae 100644
+--- a/src/video_core/engines/puller.cpp
++++ b/src/video_core/engines/puller.cpp
+@@ -6,6 +6,7 @@
+ #include "common/settings.h"
+ #include "core/core.h"
+ #include "video_core/control/channel_state.h"
++#include "video_core/control/scheduler.h"
+ #include "video_core/dma_pusher.h"
+ #include "video_core/engines/fermi_2d.h"
+ #include "video_core/engines/kepler_compute.h"
+@@ -14,6 +15,8 @@
+ #include "video_core/engines/maxwell_dma.h"
+ #include "video_core/engines/puller.h"
+ #include "video_core/gpu.h"
++#include "video_core/host1x/host1x.h"
++#include "video_core/host1x/syncpoint_manager.h"
+ #include "video_core/memory_manager.h"
+ #include "video_core/rasterizer_interface.h"
+ 
+@@ -60,11 +63,14 @@ void Puller::ProcessBindMethod(const MethodCall& method_call) {
+ }
+ 
+ void Puller::ProcessFenceActionMethod() {
++    auto& syncpoint_manager = gpu.Host1x().GetSyncpointManager();
+     switch (regs.fence_action.op) {
+     case Puller::FenceOperation::Acquire:
+-        // UNIMPLEMENTED_MSG("Channel Scheduling pending.");
+-        // WaitFence(regs.fence_action.syncpoint_id, regs.fence_value);
+-        rasterizer->ReleaseFences();
++        while (regs.fence_value >
++               syncpoint_manager.GetGuestSyncpointValue(regs.fence_action.syncpoint_id)) {
++            rasterizer->ReleaseFences();
++            gpu.Scheduler().Yield();
++        }
+         break;
+     case Puller::FenceOperation::Increment:
+         rasterizer->SignalSyncPoint(regs.fence_action.syncpoint_id);
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index f4a5d831cdeb..e6066f0e58ef 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -401,6 +401,14 @@ std::shared_ptr<Control::ChannelState> GPU::AllocateChannel() {
+     return impl->AllocateChannel();
+ }
+ 
++Tegra::Control::Scheduler& GPU::Scheduler() {
++    return *impl->scheduler;
++}
++
++const Tegra::Control::Scheduler& GPU::Scheduler() const {
++    return *impl->scheduler;
++}
++
+ void GPU::InitChannel(Control::ChannelState& to_init) {
+     impl->InitChannel(to_init);
+ }
+diff --git a/src/video_core/gpu.h b/src/video_core/gpu.h
+index c4602ca372fb..dd24d2a6e91c 100644
+--- a/src/video_core/gpu.h
++++ b/src/video_core/gpu.h
+@@ -124,7 +124,8 @@ class KeplerCompute;
+ 
+ namespace Control {
+ struct ChannelState;
+-}
++class Scheduler;
++} // namespace Control
+ 
+ namespace Host1x {
+ class Host1x;
+@@ -204,6 +205,12 @@ class GPU final {
+     /// Returns a const reference to the shader notifier.
+     [[nodiscard]] const VideoCore::ShaderNotify& ShaderNotify() const;
+ 
++    /// Returns GPU Channel Scheduler.
++    [[nodiscard]] Tegra::Control::Scheduler& Scheduler();
++
++    /// Returns GPU Channel Scheduler.
++    [[nodiscard]] const Tegra::Control::Scheduler& Scheduler() const;
++
+     [[nodiscard]] u64 GetTicks() const;
+ 
+     [[nodiscard]] bool IsAsync() const;
+diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
+index 58d8110b8646..498f99d391cf 100644
+--- a/src/video_core/gpu_thread.cpp
++++ b/src/video_core/gpu_thread.cpp
+@@ -33,13 +33,15 @@ static void RunThread(std::stop_token stop_token, Core::System& system,
+ 
+     CommandDataContainer next;
+ 
++    scheduler.Init();
++
+     while (!stop_token.stop_requested()) {
+         state.queue.PopWait(next, stop_token);
+         if (stop_token.stop_requested()) {
+             break;
+         }
+-        if (auto* submit_list = std::get_if<SubmitListCommand>(&next.data)) {
+-            scheduler.Push(submit_list->channel, std::move(submit_list->entries));
++        if (std::holds_alternative<SubmitListCommand>(next.data)) {
++            scheduler.Resume();
+         } else if (std::holds_alternative<GPUTickCommand>(next.data)) {
+             system.GPU().TickWork();
+         } else if (const auto* flush = std::get_if<FlushRegionCommand>(&next.data)) {
+@@ -66,14 +68,16 @@ ThreadManager::~ThreadManager() = default;
+ 
+ void ThreadManager::StartThread(VideoCore::RendererBase& renderer,
+                                 Core::Frontend::GraphicsContext& context,
+-                                Tegra::Control::Scheduler& scheduler) {
++                                Tegra::Control::Scheduler& scheduler_) {
+     rasterizer = renderer.ReadRasterizer();
++    scheduler = &scheduler_;
+     thread = std::jthread(RunThread, std::ref(system), std::ref(renderer), std::ref(context),
+-                          std::ref(scheduler), std::ref(state));
++                          std::ref(scheduler_), std::ref(state));
+ }
+ 
+ void ThreadManager::SubmitList(s32 channel, Tegra::CommandList&& entries) {
+-    PushCommand(SubmitListCommand(channel, std::move(entries)));
++    scheduler->Push(channel, std::move(entries));
++    PushCommand(SubmitListCommand());
+ }
+ 
+ void ThreadManager::FlushRegion(DAddr addr, u64 size) {
+diff --git a/src/video_core/gpu_thread.h b/src/video_core/gpu_thread.h
+index dc0fce9f8244..52798fde64d7 100644
+--- a/src/video_core/gpu_thread.h
++++ b/src/video_core/gpu_thread.h
+@@ -36,13 +36,7 @@ class RendererBase;
+ namespace VideoCommon::GPUThread {
+ 
+ /// Command to signal to the GPU thread that a command list is ready for processing
+-struct SubmitListCommand final {
+-    explicit SubmitListCommand(s32 channel_, Tegra::CommandList&& entries_)
+-        : channel{channel_}, entries{std::move(entries_)} {}
+-
+-    s32 channel;
+-    Tegra::CommandList entries;
+-};
++struct SubmitListCommand final {};
+ 
+ /// Command to signal to the GPU thread to flush a region
+ struct FlushRegionCommand final {
+@@ -124,6 +118,7 @@ class ThreadManager final {
+ private:
+     /// Pushes a command to be executed by the GPU thread
+     u64 PushCommand(CommandData&& command_data, bool block = false);
++    Tegra::Control::Scheduler* scheduler;
+ 
+     Core::System& system;
+     const bool is_async;

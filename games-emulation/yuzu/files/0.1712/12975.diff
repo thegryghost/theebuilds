@@ -1,0 +1,62 @@
+diff --git a/src/video_core/texture_cache/image_info.cpp b/src/video_core/texture_cache/image_info.cpp
+index b72788c6d548..9444beccebb2 100644
+--- a/src/video_core/texture_cache/image_info.cpp
++++ b/src/video_core/texture_cache/image_info.cpp
+@@ -42,6 +42,7 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
+         };
+     }
+     rescaleable = false;
++    is_sparse = config.is_sparse != 0;
+     tile_width_spacing = config.tile_width_spacing;
+     if (config.texture_type != TextureType::Texture2D &&
+         config.texture_type != TextureType::Texture2DNoMipmap) {
+diff --git a/src/video_core/texture_cache/image_info.h b/src/video_core/texture_cache/image_info.h
+index 8a4cb0cbdbee..eb490a64242f 100644
+--- a/src/video_core/texture_cache/image_info.h
++++ b/src/video_core/texture_cache/image_info.h
+@@ -41,6 +41,7 @@ struct ImageInfo {
+     bool downscaleable = false;
+     bool forced_flushed = false;
+     bool dma_downloaded = false;
++    bool is_sparse = false;
+ };
+ 
+ } // namespace VideoCommon
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index a20c956ffc04..25c4a09579c6 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -600,17 +600,17 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
+                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
+     for (const ImageId id : deleted_images) {
+         Image& image = slot_images[id];
+-        if (True(image.flags & ImageFlagBits::CpuModified)) {
+-            continue;
++        if (False(image.flags & ImageFlagBits::CpuModified)) {
++            image.flags |= ImageFlagBits::CpuModified;
++            if (True(image.flags & ImageFlagBits::Tracked)) {
++                UntrackImage(image, id);
++            }
+         }
+-        image.flags |= ImageFlagBits::CpuModified;
++
+         if (True(image.flags & ImageFlagBits::Remapped)) {
+             continue;
+         }
+         image.flags |= ImageFlagBits::Remapped;
+-        if (True(image.flags & ImageFlagBits::Tracked)) {
+-            UntrackImage(image, id);
+-        }
+     }
+ }
+ 
+@@ -1463,7 +1463,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
+     const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+     Image& new_image = slot_images[new_image_id];
+ 
+-    if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes)) {
++    if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
++        new_info.is_sparse) {
+         new_image.flags |= ImageFlagBits::Sparse;
+     }
+ 

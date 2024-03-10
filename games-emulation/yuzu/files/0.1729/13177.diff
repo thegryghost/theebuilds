@@ -1,0 +1,156 @@
+diff --git a/src/core/file_sys/vfs/vfs_offset.cpp b/src/core/file_sys/vfs/vfs_offset.cpp
+index 1a37d2670880..6b51ed3eb9e9 100644
+--- a/src/core/file_sys/vfs/vfs_offset.cpp
++++ b/src/core/file_sys/vfs/vfs_offset.cpp
+@@ -9,9 +9,8 @@
+ namespace FileSys {
+ 
+ OffsetVfsFile::OffsetVfsFile(VirtualFile file_, std::size_t size_, std::size_t offset_,
+-                             std::string name_, VirtualDir parent_)
+-    : file(file_), offset(offset_), size(size_), name(std::move(name_)),
+-      parent(parent_ == nullptr ? file->GetContainingDirectory() : std::move(parent_)) {}
++                             std::string name_)
++    : file(file_), offset(offset_), size(size_), name(std::move(name_)) {}
+ 
+ OffsetVfsFile::~OffsetVfsFile() = default;
+ 
+@@ -37,7 +36,7 @@ bool OffsetVfsFile::Resize(std::size_t new_size) {
+ }
+ 
+ VirtualDir OffsetVfsFile::GetContainingDirectory() const {
+-    return parent;
++    return nullptr;
+ }
+ 
+ bool OffsetVfsFile::IsWritable() const {
+diff --git a/src/core/file_sys/vfs/vfs_offset.h b/src/core/file_sys/vfs/vfs_offset.h
+index 4abe41d8e527..9800b4fd0917 100644
+--- a/src/core/file_sys/vfs/vfs_offset.h
++++ b/src/core/file_sys/vfs/vfs_offset.h
+@@ -16,7 +16,7 @@ namespace FileSys {
+ class OffsetVfsFile : public VfsFile {
+ public:
+     OffsetVfsFile(VirtualFile file, std::size_t size, std::size_t offset = 0,
+-                  std::string new_name = "", VirtualDir new_parent = nullptr);
++                  std::string new_name = "");
+     ~OffsetVfsFile() override;
+ 
+     std::string GetName() const override;
+@@ -44,7 +44,6 @@ class OffsetVfsFile : public VfsFile {
+     std::size_t offset;
+     std::size_t size;
+     std::string name;
+-    VirtualDir parent;
+ };
+ 
+ } // namespace FileSys
+diff --git a/src/core/file_sys/vfs/vfs_real.cpp b/src/core/file_sys/vfs/vfs_real.cpp
+index 3ad073e4ab9e..052684e9db4f 100644
+--- a/src/core/file_sys/vfs/vfs_real.cpp
++++ b/src/core/file_sys/vfs/vfs_real.cpp
+@@ -76,6 +76,7 @@ VfsEntryType RealVfsFilesystem::GetEntryType(std::string_view path_) const {
+ }
+ 
+ VirtualFile RealVfsFilesystem::OpenFileFromEntry(std::string_view path_, std::optional<u64> size,
++                                                 std::optional<std::string> parent_path,
+                                                  OpenMode perms) {
+     const auto path = FS::SanitizePath(path_, FS::DirectorySeparator::PlatformDefault);
+     std::scoped_lock lk{list_lock};
+@@ -94,14 +95,14 @@ VirtualFile RealVfsFilesystem::OpenFileFromEntry(std::string_view path_, std::op
+     this->InsertReferenceIntoListLocked(*reference);
+ 
+     auto file = std::shared_ptr<RealVfsFile>(
+-        new RealVfsFile(*this, std::move(reference), path, perms, size));
++        new RealVfsFile(*this, std::move(reference), path, perms, size, std::move(parent_path)));
+     cache[path] = file;
+ 
+     return file;
+ }
+ 
+ VirtualFile RealVfsFilesystem::OpenFile(std::string_view path_, OpenMode perms) {
+-    return OpenFileFromEntry(path_, {}, perms);
++    return OpenFileFromEntry(path_, {}, {}, perms);
+ }
+ 
+ VirtualFile RealVfsFilesystem::CreateFile(std::string_view path_, OpenMode perms) {
+@@ -268,10 +269,11 @@ void RealVfsFilesystem::RemoveReferenceFromListLocked(FileReference& reference)
+ }
+ 
+ RealVfsFile::RealVfsFile(RealVfsFilesystem& base_, std::unique_ptr<FileReference> reference_,
+-                         const std::string& path_, OpenMode perms_, std::optional<u64> size_)
++                         const std::string& path_, OpenMode perms_, std::optional<u64> size_,
++                         std::optional<std::string> parent_path_)
+     : base(base_), reference(std::move(reference_)), path(path_),
+-      parent_path(FS::GetParentPath(path_)), path_components(FS::SplitPathComponentsCopy(path_)),
+-      size(size_), perms(perms_) {}
++      parent_path(parent_path_ ? std::move(*parent_path_) : FS::GetParentPath(path_)),
++      path_components(FS::SplitPathComponentsCopy(path_)), size(size_), perms(perms_) {}
+ 
+ RealVfsFile::~RealVfsFile() {
+     base.DropReference(std::move(reference));
+@@ -348,7 +350,7 @@ std::vector<VirtualFile> RealVfsDirectory::IterateEntries<RealVfsFile, VfsFile>(
+                                            &out](const std::filesystem::directory_entry& entry) {
+         const auto full_path_string = FS::PathToUTF8String(entry.path());
+ 
+-        out.emplace_back(base.OpenFileFromEntry(full_path_string, entry.file_size(), perms));
++        out.emplace_back(base.OpenFileFromEntry(full_path_string, entry.file_size(), path, perms));
+ 
+         return true;
+     };
+diff --git a/src/core/file_sys/vfs/vfs_real.h b/src/core/file_sys/vfs/vfs_real.h
+index 5c2172cce155..a773fc375ab8 100644
+--- a/src/core/file_sys/vfs/vfs_real.h
++++ b/src/core/file_sys/vfs/vfs_real.h
+@@ -62,6 +62,7 @@ class RealVfsFilesystem : public VfsFilesystem {
+ private:
+     friend class RealVfsDirectory;
+     VirtualFile OpenFileFromEntry(std::string_view path, std::optional<u64> size,
++                                  std::optional<std::string> parent_path,
+                                   OpenMode perms = OpenMode::Read);
+ 
+ private:
+@@ -91,7 +92,7 @@ class RealVfsFile : public VfsFile {
+ private:
+     RealVfsFile(RealVfsFilesystem& base, std::unique_ptr<FileReference> reference,
+                 const std::string& path, OpenMode perms = OpenMode::Read,
+-                std::optional<u64> size = {});
++                std::optional<u64> size = {}, std::optional<std::string> parent_path = {});
+ 
+     RealVfsFilesystem& base;
+     std::unique_ptr<FileReference> reference;
+diff --git a/src/core/loader/loader.cpp b/src/core/loader/loader.cpp
+index b6e355622ea1..6aabdc75e1a6 100644
+--- a/src/core/loader/loader.cpp
++++ b/src/core/loader/loader.cpp
+@@ -36,22 +36,23 @@ std::optional<FileType> IdentifyFileLoader(FileSys::VirtualFile file) {
+ } // namespace
+ 
+ FileType IdentifyFile(FileSys::VirtualFile file) {
+-    if (const auto romdir_type = IdentifyFileLoader<AppLoader_DeconstructedRomDirectory>(file)) {
+-        return *romdir_type;
+-    } else if (const auto nso_type = IdentifyFileLoader<AppLoader_NSO>(file)) {
+-        return *nso_type;
++    if (const auto nsp_type = IdentifyFileLoader<AppLoader_NSP>(file)) {
++        return *nsp_type;
++    } else if (const auto xci_type = IdentifyFileLoader<AppLoader_XCI>(file)) {
++        return *xci_type;
+     } else if (const auto nro_type = IdentifyFileLoader<AppLoader_NRO>(file)) {
+         return *nro_type;
+     } else if (const auto nca_type = IdentifyFileLoader<AppLoader_NCA>(file)) {
+         return *nca_type;
+-    } else if (const auto xci_type = IdentifyFileLoader<AppLoader_XCI>(file)) {
+-        return *xci_type;
+     } else if (const auto nax_type = IdentifyFileLoader<AppLoader_NAX>(file)) {
+         return *nax_type;
+-    } else if (const auto nsp_type = IdentifyFileLoader<AppLoader_NSP>(file)) {
+-        return *nsp_type;
+     } else if (const auto kip_type = IdentifyFileLoader<AppLoader_KIP>(file)) {
+         return *kip_type;
++    } else if (const auto nso_type = IdentifyFileLoader<AppLoader_NSO>(file)) {
++        return *nso_type;
++    } else if (const auto romdir_type =
++                   IdentifyFileLoader<AppLoader_DeconstructedRomDirectory>(file)) {
++        return *romdir_type;
+     } else {
+         return FileType::Unknown;
+     }

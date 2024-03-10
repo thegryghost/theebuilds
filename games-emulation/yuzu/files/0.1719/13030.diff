@@ -1,0 +1,550 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 7770dbeaeb04..df47033e3274 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -491,12 +491,12 @@ add_library(core STATIC
+     hle/service/apm/apm_controller.h
+     hle/service/apm/apm_interface.cpp
+     hle/service/apm/apm_interface.h
+-    hle/service/audio/audctl.cpp
+-    hle/service/audio/audctl.h
+     hle/service/audio/audin_u.cpp
+     hle/service/audio/audin_u.h
+     hle/service/audio/audio.cpp
+     hle/service/audio/audio.h
++    hle/service/audio/audio_controller.cpp
++    hle/service/audio/audio_controller.h
+     hle/service/audio/audout_u.cpp
+     hle/service/audio/audout_u.h
+     hle/service/audio/audrec_a.cpp
+diff --git a/src/core/hle/service/audio/audctl.cpp b/src/core/hle/service/audio/audctl.cpp
+deleted file mode 100644
+index cf4bb403478f..000000000000
+--- a/src/core/hle/service/audio/audctl.cpp
++++ /dev/null
+@@ -1,201 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#include "common/logging/log.h"
+-#include "core/hle/service/audio/audctl.h"
+-#include "core/hle/service/ipc_helpers.h"
+-#include "core/hle/service/set/system_settings_server.h"
+-#include "core/hle/service/sm/sm.h"
+-
+-namespace Service::Audio {
+-
+-AudCtl::AudCtl(Core::System& system_) : ServiceFramework{system_, "audctl"} {
+-    // clang-format off
+-    static const FunctionInfo functions[] = {
+-        {0, nullptr, "GetTargetVolume"},
+-        {1, nullptr, "SetTargetVolume"},
+-        {2, &AudCtl::GetTargetVolumeMin, "GetTargetVolumeMin"},
+-        {3, &AudCtl::GetTargetVolumeMax, "GetTargetVolumeMax"},
+-        {4, nullptr, "IsTargetMute"},
+-        {5, nullptr, "SetTargetMute"},
+-        {6, nullptr, "IsTargetConnected"},
+-        {7, nullptr, "SetDefaultTarget"},
+-        {8, nullptr, "GetDefaultTarget"},
+-        {9, &AudCtl::GetAudioOutputMode, "GetAudioOutputMode"},
+-        {10, &AudCtl::SetAudioOutputMode, "SetAudioOutputMode"},
+-        {11, nullptr, "SetForceMutePolicy"},
+-        {12, &AudCtl::GetForceMutePolicy, "GetForceMutePolicy"},
+-        {13, &AudCtl::GetOutputModeSetting, "GetOutputModeSetting"},
+-        {14, &AudCtl::SetOutputModeSetting, "SetOutputModeSetting"},
+-        {15, nullptr, "SetOutputTarget"},
+-        {16, nullptr, "SetInputTargetForceEnabled"},
+-        {17, &AudCtl::SetHeadphoneOutputLevelMode, "SetHeadphoneOutputLevelMode"},
+-        {18, &AudCtl::GetHeadphoneOutputLevelMode, "GetHeadphoneOutputLevelMode"},
+-        {19, nullptr, "AcquireAudioVolumeUpdateEventForPlayReport"},
+-        {20, nullptr, "AcquireAudioOutputDeviceUpdateEventForPlayReport"},
+-        {21, nullptr, "GetAudioOutputTargetForPlayReport"},
+-        {22, nullptr, "NotifyHeadphoneVolumeWarningDisplayedEvent"},
+-        {23, nullptr, "SetSystemOutputMasterVolume"},
+-        {24, nullptr, "GetSystemOutputMasterVolume"},
+-        {25, nullptr, "GetAudioVolumeDataForPlayReport"},
+-        {26, nullptr, "UpdateHeadphoneSettings"},
+-        {27, nullptr, "SetVolumeMappingTableForDev"},
+-        {28, nullptr, "GetAudioOutputChannelCountForPlayReport"},
+-        {29, nullptr, "BindAudioOutputChannelCountUpdateEventForPlayReport"},
+-        {30, &AudCtl::SetSpeakerAutoMuteEnabled, "SetSpeakerAutoMuteEnabled"},
+-        {31, &AudCtl::IsSpeakerAutoMuteEnabled, "IsSpeakerAutoMuteEnabled"},
+-        {32, nullptr, "GetActiveOutputTarget"},
+-        {33, nullptr, "GetTargetDeviceInfo"},
+-        {34, nullptr, "AcquireTargetNotification"},
+-        {35, nullptr, "SetHearingProtectionSafeguardTimerRemainingTimeForDebug"},
+-        {36, nullptr, "GetHearingProtectionSafeguardTimerRemainingTimeForDebug"},
+-        {37, nullptr, "SetHearingProtectionSafeguardEnabled"},
+-        {38, nullptr, "IsHearingProtectionSafeguardEnabled"},
+-        {39, nullptr, "IsHearingProtectionSafeguardMonitoringOutputForDebug"},
+-        {40, nullptr, "GetSystemInformationForDebug"},
+-        {41, nullptr, "SetVolumeButtonLongPressTime"},
+-        {42, nullptr, "SetNativeVolumeForDebug"},
+-        {10000, nullptr, "NotifyAudioOutputTargetForPlayReport"},
+-        {10001, nullptr, "NotifyAudioOutputChannelCountForPlayReport"},
+-        {10002, nullptr, "NotifyUnsupportedUsbOutputDeviceAttachedForPlayReport"},
+-        {10100, nullptr, "GetAudioVolumeDataForPlayReport"},
+-        {10101, nullptr, "BindAudioVolumeUpdateEventForPlayReport"},
+-        {10102, nullptr, "BindAudioOutputTargetUpdateEventForPlayReport"},
+-        {10103, nullptr, "GetAudioOutputTargetForPlayReport"},
+-        {10104, nullptr, "GetAudioOutputChannelCountForPlayReport"},
+-        {10105, nullptr, "BindAudioOutputChannelCountUpdateEventForPlayReport"},
+-        {10106, nullptr, "GetDefaultAudioOutputTargetForPlayReport"},
+-        {50000, nullptr, "SetAnalogInputBoostGainForPrototyping"},
+-    };
+-    // clang-format on
+-
+-    RegisterHandlers(functions);
+-
+-    m_set_sys =
+-        system.ServiceManager().GetService<Service::Set::ISystemSettingsServer>("set:sys", true);
+-}
+-
+-AudCtl::~AudCtl() = default;
+-
+-void AudCtl::GetTargetVolumeMin(HLERequestContext& ctx) {
+-    LOG_DEBUG(Audio, "called.");
+-
+-    // This service function is currently hardcoded on the
+-    // actual console to this value (as of 8.0.0).
+-    constexpr s32 target_min_volume = 0;
+-
+-    IPC::ResponseBuilder rb{ctx, 3};
+-    rb.Push(ResultSuccess);
+-    rb.Push(target_min_volume);
+-}
+-
+-void AudCtl::GetTargetVolumeMax(HLERequestContext& ctx) {
+-    LOG_DEBUG(Audio, "called.");
+-
+-    // This service function is currently hardcoded on the
+-    // actual console to this value (as of 8.0.0).
+-    constexpr s32 target_max_volume = 15;
+-
+-    IPC::ResponseBuilder rb{ctx, 3};
+-    rb.Push(ResultSuccess);
+-    rb.Push(target_max_volume);
+-}
+-
+-void AudCtl::GetAudioOutputMode(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const auto target{rp.PopEnum<Set::AudioOutputModeTarget>()};
+-
+-    Set::AudioOutputMode output_mode{};
+-    const auto result = m_set_sys->GetAudioOutputMode(&output_mode, target);
+-
+-    LOG_INFO(Service_SET, "called, target={}, output_mode={}", target, output_mode);
+-
+-    IPC::ResponseBuilder rb{ctx, 3};
+-    rb.Push(result);
+-    rb.PushEnum(output_mode);
+-}
+-
+-void AudCtl::SetAudioOutputMode(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const auto target{rp.PopEnum<Set::AudioOutputModeTarget>()};
+-    const auto output_mode{rp.PopEnum<Set::AudioOutputMode>()};
+-
+-    const auto result = m_set_sys->SetAudioOutputMode(target, output_mode);
+-
+-    LOG_INFO(Service_SET, "called, target={}, output_mode={}", target, output_mode);
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(result);
+-}
+-
+-void AudCtl::GetForceMutePolicy(HLERequestContext& ctx) {
+-    LOG_WARNING(Audio, "(STUBBED) called");
+-
+-    IPC::ResponseBuilder rb{ctx, 3};
+-    rb.Push(ResultSuccess);
+-    rb.PushEnum(ForceMutePolicy::Disable);
+-}
+-
+-void AudCtl::GetOutputModeSetting(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const auto target{rp.PopEnum<Set::AudioOutputModeTarget>()};
+-
+-    LOG_WARNING(Audio, "(STUBBED) called, target={}", target);
+-
+-    IPC::ResponseBuilder rb{ctx, 3};
+-    rb.Push(ResultSuccess);
+-    rb.PushEnum(Set::AudioOutputMode::ch_7_1);
+-}
+-
+-void AudCtl::SetOutputModeSetting(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const auto target{rp.PopEnum<Set::AudioOutputModeTarget>()};
+-    const auto output_mode{rp.PopEnum<Set::AudioOutputMode>()};
+-
+-    LOG_INFO(Service_SET, "called, target={}, output_mode={}", target, output_mode);
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(ResultSuccess);
+-}
+-
+-void AudCtl::SetHeadphoneOutputLevelMode(HLERequestContext& ctx) {
+-    LOG_WARNING(Audio, "(STUBBED) called");
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(ResultSuccess);
+-}
+-
+-void AudCtl::GetHeadphoneOutputLevelMode(HLERequestContext& ctx) {
+-    LOG_WARNING(Audio, "(STUBBED) called");
+-
+-    IPC::ResponseBuilder rb{ctx, 3};
+-    rb.Push(ResultSuccess);
+-    rb.PushEnum(HeadphoneOutputLevelMode::Normal);
+-}
+-
+-void AudCtl::SetSpeakerAutoMuteEnabled(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const auto is_speaker_auto_mute_enabled{rp.Pop<bool>()};
+-
+-    LOG_WARNING(Audio, "(STUBBED) called, is_speaker_auto_mute_enabled={}",
+-                is_speaker_auto_mute_enabled);
+-
+-    const auto result = m_set_sys->SetSpeakerAutoMuteFlag(is_speaker_auto_mute_enabled);
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(result);
+-}
+-
+-void AudCtl::IsSpeakerAutoMuteEnabled(HLERequestContext& ctx) {
+-    bool is_speaker_auto_mute_enabled{};
+-    const auto result = m_set_sys->GetSpeakerAutoMuteFlag(&is_speaker_auto_mute_enabled);
+-
+-    LOG_WARNING(Audio, "(STUBBED) called, is_speaker_auto_mute_enabled={}",
+-                is_speaker_auto_mute_enabled);
+-
+-    IPC::ResponseBuilder rb{ctx, 3};
+-    rb.Push(result);
+-    rb.Push<u8>(is_speaker_auto_mute_enabled);
+-}
+-
+-} // namespace Service::Audio
+diff --git a/src/core/hle/service/audio/audctl.h b/src/core/hle/service/audio/audctl.h
+deleted file mode 100644
+index 4c90ead70e27..000000000000
+--- a/src/core/hle/service/audio/audctl.h
++++ /dev/null
+@@ -1,50 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#pragma once
+-
+-#include "core/hle/service/service.h"
+-
+-namespace Core {
+-class System;
+-}
+-
+-namespace Service::Set {
+-class ISystemSettingsServer;
+-}
+-
+-namespace Service::Audio {
+-
+-class AudCtl final : public ServiceFramework<AudCtl> {
+-public:
+-    explicit AudCtl(Core::System& system_);
+-    ~AudCtl() override;
+-
+-private:
+-    enum class ForceMutePolicy {
+-        Disable,
+-        SpeakerMuteOnHeadphoneUnplugged,
+-    };
+-
+-    enum class HeadphoneOutputLevelMode {
+-        Normal,
+-        HighPower,
+-    };
+-
+-    void GetTargetVolumeMin(HLERequestContext& ctx);
+-    void GetTargetVolumeMax(HLERequestContext& ctx);
+-    void GetAudioOutputMode(HLERequestContext& ctx);
+-    void SetAudioOutputMode(HLERequestContext& ctx);
+-    void GetForceMutePolicy(HLERequestContext& ctx);
+-    void GetOutputModeSetting(HLERequestContext& ctx);
+-    void SetOutputModeSetting(HLERequestContext& ctx);
+-    void SetHeadphoneOutputLevelMode(HLERequestContext& ctx);
+-    void GetHeadphoneOutputLevelMode(HLERequestContext& ctx);
+-    void SetSpeakerAutoMuteEnabled(HLERequestContext& ctx);
+-    void IsSpeakerAutoMuteEnabled(HLERequestContext& ctx);
+-    void AcquireTargetNotification(HLERequestContext& ctx);
+-
+-    std::shared_ptr<Service::Set::ISystemSettingsServer> m_set_sys;
+-};
+-
+-} // namespace Service::Audio
+diff --git a/src/core/hle/service/audio/audio.cpp b/src/core/hle/service/audio/audio.cpp
+index dccd16309ffe..44af030eb283 100644
+--- a/src/core/hle/service/audio/audio.cpp
++++ b/src/core/hle/service/audio/audio.cpp
+@@ -2,9 +2,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "core/core.h"
+-#include "core/hle/service/audio/audctl.h"
+ #include "core/hle/service/audio/audin_u.h"
+ #include "core/hle/service/audio/audio.h"
++#include "core/hle/service/audio/audio_controller.h"
+ #include "core/hle/service/audio/audout_u.h"
+ #include "core/hle/service/audio/audrec_a.h"
+ #include "core/hle/service/audio/audrec_u.h"
+@@ -18,7 +18,7 @@ namespace Service::Audio {
+ void LoopProcess(Core::System& system) {
+     auto server_manager = std::make_unique<ServerManager>(system);
+ 
+-    server_manager->RegisterNamedService("audctl", std::make_shared<AudCtl>(system));
++    server_manager->RegisterNamedService("audctl", std::make_shared<IAudioController>(system));
+     server_manager->RegisterNamedService("audout:u", std::make_shared<AudOutU>(system));
+     server_manager->RegisterNamedService("audin:u", std::make_shared<AudInU>(system));
+     server_manager->RegisterNamedService("audrec:a", std::make_shared<AudRecA>(system));
+diff --git a/src/core/hle/service/audio/audio_controller.cpp b/src/core/hle/service/audio/audio_controller.cpp
+new file mode 100644
+index 000000000000..a6da66d0f537
+--- /dev/null
++++ b/src/core/hle/service/audio/audio_controller.cpp
+@@ -0,0 +1,174 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "common/logging/log.h"
++#include "core/hle/service/audio/audio_controller.h"
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/ipc_helpers.h"
++#include "core/hle/service/set/system_settings_server.h"
++#include "core/hle/service/sm/sm.h"
++
++namespace Service::Audio {
++
++IAudioController::IAudioController(Core::System& system_)
++    : ServiceFramework{system_, "audctl"}, service_context{system, "audctl"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, nullptr, "GetTargetVolume"},
++        {1, nullptr, "SetTargetVolume"},
++        {2, C<&IAudioController::GetTargetVolumeMin>, "GetTargetVolumeMin"},
++        {3, C<&IAudioController::GetTargetVolumeMax>, "GetTargetVolumeMax"},
++        {4, nullptr, "IsTargetMute"},
++        {5, nullptr, "SetTargetMute"},
++        {6, nullptr, "IsTargetConnected"},
++        {7, nullptr, "SetDefaultTarget"},
++        {8, nullptr, "GetDefaultTarget"},
++        {9, C<&IAudioController::GetAudioOutputMode>, "GetAudioOutputMode"},
++        {10, C<&IAudioController::SetAudioOutputMode>, "SetAudioOutputMode"},
++        {11, nullptr, "SetForceMutePolicy"},
++        {12, C<&IAudioController::GetForceMutePolicy>, "GetForceMutePolicy"},
++        {13, C<&IAudioController::GetOutputModeSetting>, "GetOutputModeSetting"},
++        {14, C<&IAudioController::SetOutputModeSetting>, "SetOutputModeSetting"},
++        {15, nullptr, "SetOutputTarget"},
++        {16, nullptr, "SetInputTargetForceEnabled"},
++        {17, C<&IAudioController::SetHeadphoneOutputLevelMode>, "SetHeadphoneOutputLevelMode"},
++        {18, C<&IAudioController::GetHeadphoneOutputLevelMode>, "GetHeadphoneOutputLevelMode"},
++        {19, nullptr, "AcquireAudioVolumeUpdateEventForPlayReport"},
++        {20, nullptr, "AcquireAudioOutputDeviceUpdateEventForPlayReport"},
++        {21, nullptr, "GetAudioOutputTargetForPlayReport"},
++        {22, nullptr, "NotifyHeadphoneVolumeWarningDisplayedEvent"},
++        {23, nullptr, "SetSystemOutputMasterVolume"},
++        {24, nullptr, "GetSystemOutputMasterVolume"},
++        {25, nullptr, "GetAudioVolumeDataForPlayReport"},
++        {26, nullptr, "UpdateHeadphoneSettings"},
++        {27, nullptr, "SetVolumeMappingTableForDev"},
++        {28, nullptr, "GetAudioOutputChannelCountForPlayReport"},
++        {29, nullptr, "BindAudioOutputChannelCountUpdateEventForPlayReport"},
++        {30, C<&IAudioController::SetSpeakerAutoMuteEnabled>, "SetSpeakerAutoMuteEnabled"},
++        {31, C<&IAudioController::IsSpeakerAutoMuteEnabled>, "IsSpeakerAutoMuteEnabled"},
++        {32, nullptr, "GetActiveOutputTarget"},
++        {33, nullptr, "GetTargetDeviceInfo"},
++        {34, C<&IAudioController::AcquireTargetNotification>, "AcquireTargetNotification"},
++        {35, nullptr, "SetHearingProtectionSafeguardTimerRemainingTimeForDebug"},
++        {36, nullptr, "GetHearingProtectionSafeguardTimerRemainingTimeForDebug"},
++        {37, nullptr, "SetHearingProtectionSafeguardEnabled"},
++        {38, nullptr, "IsHearingProtectionSafeguardEnabled"},
++        {39, nullptr, "IsHearingProtectionSafeguardMonitoringOutputForDebug"},
++        {40, nullptr, "GetSystemInformationForDebug"},
++        {41, nullptr, "SetVolumeButtonLongPressTime"},
++        {42, nullptr, "SetNativeVolumeForDebug"},
++        {10000, nullptr, "NotifyAudioOutputTargetForPlayReport"},
++        {10001, nullptr, "NotifyAudioOutputChannelCountForPlayReport"},
++        {10002, nullptr, "NotifyUnsupportedUsbOutputDeviceAttachedForPlayReport"},
++        {10100, nullptr, "GetAudioVolumeDataForPlayReport"},
++        {10101, nullptr, "BindAudioVolumeUpdateEventForPlayReport"},
++        {10102, nullptr, "BindAudioOutputTargetUpdateEventForPlayReport"},
++        {10103, nullptr, "GetAudioOutputTargetForPlayReport"},
++        {10104, nullptr, "GetAudioOutputChannelCountForPlayReport"},
++        {10105, nullptr, "BindAudioOutputChannelCountUpdateEventForPlayReport"},
++        {10106, nullptr, "GetDefaultAudioOutputTargetForPlayReport"},
++        {50000, nullptr, "SetAnalogInputBoostGainForPrototyping"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++
++    m_set_sys =
++        system.ServiceManager().GetService<Service::Set::ISystemSettingsServer>("set:sys", true);
++    notification_event = service_context.CreateEvent("IAudioController:NotificationEvent");
++}
++
++IAudioController::~IAudioController() {
++    service_context.CloseEvent(notification_event);
++};
++
++Result IAudioController::GetTargetVolumeMin(Out<s32> out_target_min_volume) {
++    LOG_DEBUG(Audio, "called.");
++
++    // This service function is currently hardcoded on the
++    // actual console to this value (as of 8.0.0).
++    *out_target_min_volume = 0;
++    R_SUCCEED();
++}
++
++Result IAudioController::GetTargetVolumeMax(Out<s32> out_target_max_volume) {
++    LOG_DEBUG(Audio, "called.");
++
++    // This service function is currently hardcoded on the
++    // actual console to this value (as of 8.0.0).
++    *out_target_max_volume = 15;
++    R_SUCCEED();
++}
++
++Result IAudioController::GetAudioOutputMode(Out<Set::AudioOutputMode> out_output_mode,
++                                            Set::AudioOutputModeTarget target) {
++    const auto result = m_set_sys->GetAudioOutputMode(out_output_mode, target);
++
++    LOG_INFO(Service_SET, "called, target={}, output_mode={}", target, *out_output_mode);
++    R_RETURN(result);
++}
++
++Result IAudioController::SetAudioOutputMode(Set::AudioOutputModeTarget target,
++                                            Set::AudioOutputMode output_mode) {
++    LOG_INFO(Service_SET, "called, target={}, output_mode={}", target, output_mode);
++
++    R_RETURN(m_set_sys->SetAudioOutputMode(target, output_mode));
++}
++
++Result IAudioController::GetForceMutePolicy(Out<ForceMutePolicy> out_mute_policy) {
++    LOG_WARNING(Audio, "(STUBBED) called");
++
++    // Removed on FW 13.2.1+
++    *out_mute_policy = ForceMutePolicy::Disable;
++    R_SUCCEED();
++}
++
++Result IAudioController::GetOutputModeSetting(Out<Set::AudioOutputMode> out_output_mode,
++                                              Set::AudioOutputModeTarget target) {
++    LOG_WARNING(Audio, "(STUBBED) called, target={}", target);
++
++    *out_output_mode = Set::AudioOutputMode::ch_7_1;
++    R_SUCCEED();
++}
++
++Result IAudioController::SetOutputModeSetting(Set::AudioOutputModeTarget target,
++                                              Set::AudioOutputMode output_mode) {
++    LOG_INFO(Service_SET, "called, target={}, output_mode={}", target, output_mode);
++    R_SUCCEED();
++}
++
++Result IAudioController::SetHeadphoneOutputLevelMode(HeadphoneOutputLevelMode output_level_mode) {
++    LOG_WARNING(Audio, "(STUBBED) called");
++    R_SUCCEED();
++}
++
++Result IAudioController::GetHeadphoneOutputLevelMode(
++    Out<HeadphoneOutputLevelMode> out_output_level_mode) {
++    LOG_INFO(Audio, "called");
++
++    *out_output_level_mode = HeadphoneOutputLevelMode::Normal;
++    R_SUCCEED();
++}
++
++Result IAudioController::SetSpeakerAutoMuteEnabled(bool is_speaker_auto_mute_enabled) {
++    LOG_INFO(Audio, "called, is_speaker_auto_mute_enabled={}", is_speaker_auto_mute_enabled);
++
++    R_RETURN(m_set_sys->SetSpeakerAutoMuteFlag(is_speaker_auto_mute_enabled));
++}
++
++Result IAudioController::IsSpeakerAutoMuteEnabled(Out<bool> out_is_speaker_auto_mute_enabled) {
++    const auto result = m_set_sys->GetSpeakerAutoMuteFlag(out_is_speaker_auto_mute_enabled);
++
++    LOG_INFO(Audio, "called, is_speaker_auto_mute_enabled={}", *out_is_speaker_auto_mute_enabled);
++    R_RETURN(result);
++}
++
++Result IAudioController::AcquireTargetNotification(
++    OutCopyHandle<Kernel::KReadableEvent> out_notification_event) {
++    LOG_WARNING(Service_AM, "(STUBBED) called");
++
++    *out_notification_event = &notification_event->GetReadableEvent();
++    R_SUCCEED();
++}
++
++} // namespace Service::Audio
+diff --git a/src/core/hle/service/audio/audio_controller.h b/src/core/hle/service/audio/audio_controller.h
+new file mode 100644
+index 000000000000..9e8514373c38
+--- /dev/null
++++ b/src/core/hle/service/audio/audio_controller.h
+@@ -0,0 +1,58 @@
++// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++#include "core/hle/service/set/settings_types.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::Set {
++class ISystemSettingsServer;
++}
++
++namespace Service::Audio {
++
++class IAudioController final : public ServiceFramework<IAudioController> {
++public:
++    explicit IAudioController(Core::System& system_);
++    ~IAudioController() override;
++
++private:
++    enum class ForceMutePolicy {
++        Disable,
++        SpeakerMuteOnHeadphoneUnplugged,
++    };
++
++    enum class HeadphoneOutputLevelMode {
++        Normal,
++        HighPower,
++    };
++
++    Result GetTargetVolumeMin(Out<s32> out_target_min_volume);
++    Result GetTargetVolumeMax(Out<s32> out_target_max_volume);
++    Result GetAudioOutputMode(Out<Set::AudioOutputMode> out_output_mode,
++                              Set::AudioOutputModeTarget target);
++    Result SetAudioOutputMode(Set::AudioOutputModeTarget target, Set::AudioOutputMode output_mode);
++    Result GetForceMutePolicy(Out<ForceMutePolicy> out_mute_policy);
++    Result GetOutputModeSetting(Out<Set::AudioOutputMode> out_output_mode,
++                                Set::AudioOutputModeTarget target);
++    Result SetOutputModeSetting(Set::AudioOutputModeTarget target,
++                                Set::AudioOutputMode output_mode);
++    Result SetHeadphoneOutputLevelMode(HeadphoneOutputLevelMode output_level_mode);
++    Result GetHeadphoneOutputLevelMode(Out<HeadphoneOutputLevelMode> out_output_level_mode);
++    Result SetSpeakerAutoMuteEnabled(bool is_speaker_auto_mute_enabled);
++    Result IsSpeakerAutoMuteEnabled(Out<bool> out_is_speaker_auto_mute_enabled);
++    Result AcquireTargetNotification(OutCopyHandle<Kernel::KReadableEvent> out_notification_event);
++
++    KernelHelpers::ServiceContext service_context;
++
++    Kernel::KEvent* notification_event;
++    std::shared_ptr<Service::Set::ISystemSettingsServer> m_set_sys;
++};
++
++} // namespace Service::Audio

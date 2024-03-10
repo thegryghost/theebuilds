@@ -1,0 +1,3791 @@
+diff --git a/src/android/app/src/main/jni/native.cpp b/src/android/app/src/main/jni/native.cpp
+index a4d8454e8d00..17cf2f9fd425 100644
+--- a/src/android/app/src/main/jni/native.cpp
++++ b/src/android/app/src/main/jni/native.cpp
+@@ -453,7 +453,9 @@ static Core::SystemResultStatus RunEmulation(const std::string& filepath,
+                                              const size_t program_index,
+                                              const bool frontend_initiated) {
+     MicroProfileOnThreadCreate("EmuThread");
+-    SCOPE_EXIT({ MicroProfileShutdown(); });
++    SCOPE_EXIT {
++        MicroProfileShutdown();
++    };
+ 
+     LOG_INFO(Frontend, "starting");
+ 
+@@ -462,7 +464,9 @@ static Core::SystemResultStatus RunEmulation(const std::string& filepath,
+         return Core::SystemResultStatus::ErrorLoader;
+     }
+ 
+-    SCOPE_EXIT({ EmulationSession::GetInstance().ShutdownEmulation(); });
++    SCOPE_EXIT {
++        EmulationSession::GetInstance().ShutdownEmulation();
++    };
+ 
+     jconst result = EmulationSession::GetInstance().InitializeEmulation(filepath, program_index,
+                                                                         frontend_initiated);
+diff --git a/src/audio_core/sink/cubeb_sink.cpp b/src/audio_core/sink/cubeb_sink.cpp
+index d97ca2a406c2..49efae8e3e15 100644
+--- a/src/audio_core/sink/cubeb_sink.cpp
++++ b/src/audio_core/sink/cubeb_sink.cpp
+@@ -357,7 +357,9 @@ bool IsCubebSuitable() {
+         return false;
+     }
+ 
+-    SCOPE_EXIT({ cubeb_destroy(ctx); });
++    SCOPE_EXIT {
++        cubeb_destroy(ctx);
++    };
+ 
+ #ifdef _WIN32
+     if (SUCCEEDED(com_init_result)) {
+diff --git a/src/audio_core/sink/sink_stream.cpp b/src/audio_core/sink/sink_stream.cpp
+index c047b0668381..0a98eb31e2d1 100644
+--- a/src/audio_core/sink/sink_stream.cpp
++++ b/src/audio_core/sink/sink_stream.cpp
+@@ -20,10 +20,10 @@
+ namespace AudioCore::Sink {
+ 
+ void SinkStream::AppendBuffer(SinkBuffer& buffer, std::span<s16> samples) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         queue.enqueue(buffer);
+         ++queued_buffers;
+-    });
++    };
+ 
+     if (type == StreamType::In) {
+         return;
+diff --git a/src/common/demangle.cpp b/src/common/demangle.cpp
+index 6e117cb4149e..b2c9d126aaa1 100644
+--- a/src/common/demangle.cpp
++++ b/src/common/demangle.cpp
+@@ -20,7 +20,9 @@ std::string DemangleSymbol(const std::string& mangled) {
+     }
+ 
+     char* demangled = nullptr;
+-    SCOPE_EXIT({ std::free(demangled); });
++    SCOPE_EXIT {
++        std::free(demangled);
++    };
+ 
+     if (is_itanium(mangled)) {
+         demangled = llvm::itaniumDemangle(mangled.c_str());
+diff --git a/src/common/host_memory.cpp b/src/common/host_memory.cpp
+index 860c39e6a9ae..e0b5a6a67c79 100644
+--- a/src/common/host_memory.cpp
++++ b/src/common/host_memory.cpp
+@@ -430,11 +430,11 @@ class HostMemory::Impl {
+     explicit Impl(size_t backing_size_, size_t virtual_size_)
+         : backing_size{backing_size_}, virtual_size{virtual_size_} {
+         bool good = false;
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (!good) {
+                 Release();
+             }
+-        });
++        };
+ 
+         long page_size = sysconf(_SC_PAGESIZE);
+         if (page_size != 0x1000) {
+diff --git a/src/common/page_table.cpp b/src/common/page_table.cpp
+index 85dc18c11078..3205eb7dab1c 100644
+--- a/src/common/page_table.cpp
++++ b/src/common/page_table.cpp
+@@ -24,10 +24,10 @@ bool PageTable::ContinueTraversal(TraversalEntry* out_entry, TraversalContext* c
+     out_entry->block_size = page_size;
+ 
+     // Regardless of whether the page was mapped, advance on exit.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         context->next_page += 1;
+         context->next_offset += page_size;
+-    });
++    };
+ 
+     // Validate that we can read the actual entry.
+     const auto page = context->next_page;
+diff --git a/src/common/scope_exit.h b/src/common/scope_exit.h
+index e9c789c885f4..f3e88cde95d1 100644
+--- a/src/common/scope_exit.h
++++ b/src/common/scope_exit.h
+@@ -7,29 +7,61 @@
+ #include "common/common_funcs.h"
+ 
+ namespace detail {
+-template <typename Func>
+-struct ScopeExitHelper {
+-    explicit ScopeExitHelper(Func&& func_) : func(std::move(func_)) {}
+-    ~ScopeExitHelper() {
++template <class F>
++class ScopeGuard {
++    YUZU_NON_COPYABLE(ScopeGuard);
++
++private:
++    F f;
++    bool active;
++
++public:
++    constexpr ScopeGuard(F f_) : f(std::move(f_)), active(true) {}
++    constexpr ~ScopeGuard() {
+         if (active) {
+-            func();
++            f();
+         }
+     }
+-
+-    void Cancel() {
++    constexpr void Cancel() {
+         active = false;
+     }
+ 
+-    Func func;
+-    bool active{true};
++    constexpr ScopeGuard(ScopeGuard&& rhs) : f(std::move(rhs.f)), active(rhs.active) {
++        rhs.Cancel();
++    }
++
++    ScopeGuard& operator=(ScopeGuard&& rhs) = delete;
+ };
+ 
+-template <typename Func>
+-ScopeExitHelper<Func> ScopeExit(Func&& func) {
+-    return ScopeExitHelper<Func>(std::forward<Func>(func));
++template <class F>
++constexpr ScopeGuard<F> MakeScopeGuard(F f) {
++    return ScopeGuard<F>(std::move(f));
+ }
++
++enum class ScopeGuardOnExit {};
++
++template <typename F>
++constexpr ScopeGuard<F> operator+(ScopeGuardOnExit, F&& f) {
++    return ScopeGuard<F>(std::forward<F>(f));
++}
++
+ } // namespace detail
+ 
++#define CONCATENATE_IMPL(s1, s2) s1##s2
++#define CONCATENATE(s1, s2) CONCATENATE_IMPL(s1, s2)
++
++#ifdef __COUNTER__
++#define ANONYMOUS_VARIABLE(pref) CONCATENATE(pref, __COUNTER__)
++#else
++#define ANONYMOUS_VARIABLE(pref) CONCATENATE(pref, __LINE__)
++#endif
++
++/**
++ * This macro is similar to SCOPE_EXIT, except the object is caller managed. This is intended to be
++ * used when the caller might want to cancel the ScopeExit.
++ */
++#define SCOPE_GUARD detail::ScopeGuardOnExit() + [&]()
++
+ /**
+  * This macro allows you to conveniently specify a block of code that will run on scope exit. Handy
+  * for doing ad-hoc clean-up tasks in a function with multiple returns.
+@@ -38,7 +70,7 @@ ScopeExitHelper<Func> ScopeExit(Func&& func) {
+  * \code
+  * const int saved_val = g_foo;
+  * g_foo = 55;
+- * SCOPE_EXIT({ g_foo = saved_val; });
++ * SCOPE_EXIT{ g_foo = saved_val; };
+  *
+  * if (Bar()) {
+  *     return 0;
+@@ -47,10 +79,4 @@ ScopeExitHelper<Func> ScopeExit(Func&& func) {
+  * }
+  * \endcode
+  */
+-#define SCOPE_EXIT(body) auto CONCAT2(scope_exit_helper_, __LINE__) = detail::ScopeExit([&]() body)
+-
+-/**
+- * This macro is similar to SCOPE_EXIT, except the object is caller managed. This is intended to be
+- * used when the caller might want to cancel the ScopeExit.
+- */
+-#define SCOPE_GUARD(body) detail::ScopeExit([&]() body)
++#define SCOPE_EXIT auto ANONYMOUS_VARIABLE(SCOPE_EXIT_STATE_) = SCOPE_GUARD
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 7770dbeaeb04..acd5ac591a71 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -2,8 +2,8 @@
+ # SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ add_library(core STATIC
+-    arm/arm_interface.h
+     arm/arm_interface.cpp
++    arm/arm_interface.h
+     arm/debug.cpp
+     arm/debug.h
+     arm/exclusive_monitor.cpp
+@@ -37,10 +37,10 @@ add_library(core STATIC
+     debugger/gdbstub.h
+     debugger/gdbstub_arch.cpp
+     debugger/gdbstub_arch.h
+-    device_memory_manager.h
+-    device_memory_manager.inc
+     device_memory.cpp
+     device_memory.h
++    device_memory_manager.h
++    device_memory_manager.inc
+     file_sys/bis_factory.cpp
+     file_sys/bis_factory.h
+     file_sys/card_image.cpp
+@@ -59,8 +59,12 @@ add_library(core STATIC
+     file_sys/fs_path.h
+     file_sys/fs_path_utility.h
+     file_sys/fs_string_util.h
++    file_sys/fsa/fs_i_directory.h
++    file_sys/fsa/fs_i_file.h
++    file_sys/fsa/fs_i_filesystem.h
+     file_sys/fsmitm_romfsbuild.cpp
+     file_sys/fsmitm_romfsbuild.h
++    file_sys/fssrv/fssrv_sf_path.h
+     file_sys/fssystem/fs_i_storage.h
+     file_sys/fssystem/fs_types.h
+     file_sys/fssystem/fssystem_aes_ctr_counter_extended_storage.cpp
+@@ -390,6 +394,18 @@ add_library(core STATIC
+     hle/service/acc/errors.h
+     hle/service/acc/profile_manager.cpp
+     hle/service/acc/profile_manager.h
++    hle/service/am/am.cpp
++    hle/service/am/am.h
++    hle/service/am/am_results.h
++    hle/service/am/am_types.h
++    hle/service/am/applet.cpp
++    hle/service/am/applet.h
++    hle/service/am/applet_data_broker.cpp
++    hle/service/am/applet_data_broker.h
++    hle/service/am/applet_manager.cpp
++    hle/service/am/applet_manager.h
++    hle/service/am/applet_message_queue.cpp
++    hle/service/am/applet_message_queue.h
+     hle/service/am/frontend/applet_cabinet.cpp
+     hle/service/am/frontend/applet_cabinet.h
+     hle/service/am/frontend/applet_controller.cpp
+@@ -411,18 +427,6 @@ add_library(core STATIC
+     hle/service/am/frontend/applet_web_browser_types.h
+     hle/service/am/frontend/applets.cpp
+     hle/service/am/frontend/applets.h
+-    hle/service/am/am.cpp
+-    hle/service/am/am.h
+-    hle/service/am/am_results.h
+-    hle/service/am/am_types.h
+-    hle/service/am/applet.cpp
+-    hle/service/am/applet.h
+-    hle/service/am/applet_manager.cpp
+-    hle/service/am/applet_data_broker.cpp
+-    hle/service/am/applet_data_broker.h
+-    hle/service/am/applet_manager.h
+-    hle/service/am/applet_message_queue.cpp
+-    hle/service/am/applet_message_queue.h
+     hle/service/am/hid_registration.cpp
+     hle/service/am/hid_registration.h
+     hle/service/am/library_applet_storage.cpp
+@@ -441,10 +445,10 @@ add_library(core STATIC
+     hle/service/am/service/application_creator.h
+     hle/service/am/service/application_functions.cpp
+     hle/service/am/service/application_functions.h
+-    hle/service/am/service/application_proxy_service.cpp
+-    hle/service/am/service/application_proxy_service.h
+     hle/service/am/service/application_proxy.cpp
+     hle/service/am/service/application_proxy.h
++    hle/service/am/service/application_proxy_service.cpp
++    hle/service/am/service/application_proxy_service.h
+     hle/service/am/service/audio_controller.cpp
+     hle/service/am/service/audio_controller.h
+     hle/service/am/service/common_state_getter.cpp
+@@ -473,10 +477,10 @@ add_library(core STATIC
+     hle/service/am/service/process_winding_controller.h
+     hle/service/am/service/self_controller.cpp
+     hle/service/am/service/self_controller.h
+-    hle/service/am/service/storage_accessor.cpp
+-    hle/service/am/service/storage_accessor.h
+     hle/service/am/service/storage.cpp
+     hle/service/am/service/storage.h
++    hle/service/am/service/storage_accessor.cpp
++    hle/service/am/service/storage_accessor.h
+     hle/service/am/service/system_applet_proxy.cpp
+     hle/service/am/service/system_applet_proxy.h
+     hle/service/am/service/window_controller.cpp
+@@ -510,18 +514,6 @@ add_library(core STATIC
+     hle/service/audio/hwopus.h
+     hle/service/bcat/backend/backend.cpp
+     hle/service/bcat/backend/backend.h
+-    hle/service/bcat/news/newly_arrived_event_holder.cpp
+-    hle/service/bcat/news/newly_arrived_event_holder.h
+-    hle/service/bcat/news/news_data_service.cpp
+-    hle/service/bcat/news/news_data_service.h
+-    hle/service/bcat/news/news_database_service.cpp
+-    hle/service/bcat/news/news_database_service.h
+-    hle/service/bcat/news/news_service.cpp
+-    hle/service/bcat/news/news_service.h
+-    hle/service/bcat/news/overwrite_event_holder.cpp
+-    hle/service/bcat/news/overwrite_event_holder.h
+-    hle/service/bcat/news/service_creator.cpp
+-    hle/service/bcat/news/service_creator.h
+     hle/service/bcat/bcat.cpp
+     hle/service/bcat/bcat.h
+     hle/service/bcat/bcat_result.h
+@@ -537,6 +529,18 @@ add_library(core STATIC
+     hle/service/bcat/delivery_cache_progress_service.h
+     hle/service/bcat/delivery_cache_storage_service.cpp
+     hle/service/bcat/delivery_cache_storage_service.h
++    hle/service/bcat/news/newly_arrived_event_holder.cpp
++    hle/service/bcat/news/newly_arrived_event_holder.h
++    hle/service/bcat/news/news_data_service.cpp
++    hle/service/bcat/news/news_data_service.h
++    hle/service/bcat/news/news_database_service.cpp
++    hle/service/bcat/news/news_database_service.h
++    hle/service/bcat/news/news_service.cpp
++    hle/service/bcat/news/news_service.h
++    hle/service/bcat/news/overwrite_event_holder.cpp
++    hle/service/bcat/news/overwrite_event_holder.h
++    hle/service/bcat/news/service_creator.cpp
++    hle/service/bcat/news/service_creator.h
+     hle/service/bcat/service_creator.cpp
+     hle/service/bcat/service_creator.h
+     hle/service/bpc/bpc.cpp
+@@ -600,8 +604,6 @@ add_library(core STATIC
+     hle/service/filesystem/romfs_controller.h
+     hle/service/filesystem/save_data_controller.cpp
+     hle/service/filesystem/save_data_controller.h
+-    hle/service/fgm/fgm.cpp
+-    hle/service/fgm/fgm.h
+     hle/service/friend/friend.cpp
+     hle/service/friend/friend.h
+     hle/service/friend/friend_interface.cpp
+@@ -804,10 +806,10 @@ add_library(core STATIC
+     hle/service/nvnflinger/fb_share_buffer_manager.h
+     hle/service/nvnflinger/graphic_buffer_producer.cpp
+     hle/service/nvnflinger/graphic_buffer_producer.h
+-    hle/service/nvnflinger/hos_binder_driver_server.cpp
+-    hle/service/nvnflinger/hos_binder_driver_server.h
+     hle/service/nvnflinger/hardware_composer.cpp
+     hle/service/nvnflinger/hardware_composer.h
++    hle/service/nvnflinger/hos_binder_driver_server.cpp
++    hle/service/nvnflinger/hos_binder_driver_server.h
+     hle/service/nvnflinger/hwc_layer.h
+     hle/service/nvnflinger/nvnflinger.cpp
+     hle/service/nvnflinger/nvnflinger.h
+@@ -831,11 +833,11 @@ add_library(core STATIC
+     hle/service/omm/power_state_interface.h
+     hle/service/os/event.cpp
+     hle/service/os/event.h
++    hle/service/os/multi_wait.cpp
++    hle/service/os/multi_wait.h
+     hle/service/os/multi_wait_holder.cpp
+     hle/service/os/multi_wait_holder.h
+     hle/service/os/multi_wait_utils.h
+-    hle/service/os/multi_wait.cpp
+-    hle/service/os/multi_wait.h
+     hle/service/os/mutex.cpp
+     hle/service/os/mutex.h
+     hle/service/pcie/pcie.cpp
+@@ -873,15 +875,17 @@ add_library(core STATIC
+     hle/service/psc/time/common.cpp
+     hle/service/psc/time/common.h
+     hle/service/psc/time/errors.h
+-    hle/service/psc/time/shared_memory.cpp
+-    hle/service/psc/time/shared_memory.h
+-    hle/service/psc/time/static.cpp
+-    hle/service/psc/time/static.h
+     hle/service/psc/time/manager.h
++    hle/service/psc/time/power_state_request_manager.cpp
++    hle/service/psc/time/power_state_request_manager.h
+     hle/service/psc/time/power_state_service.cpp
+     hle/service/psc/time/power_state_service.h
+     hle/service/psc/time/service_manager.cpp
+     hle/service/psc/time/service_manager.h
++    hle/service/psc/time/shared_memory.cpp
++    hle/service/psc/time/shared_memory.h
++    hle/service/psc/time/static.cpp
++    hle/service/psc/time/static.h
+     hle/service/psc/time/steady_clock.cpp
+     hle/service/psc/time/steady_clock.h
+     hle/service/psc/time/system_clock.cpp
+@@ -890,8 +894,6 @@ add_library(core STATIC
+     hle/service/psc/time/time_zone.h
+     hle/service/psc/time/time_zone_service.cpp
+     hle/service/psc/time/time_zone_service.h
+-    hle/service/psc/time/power_state_request_manager.cpp
+-    hle/service/psc/time/power_state_request_manager.h
+     hle/service/ptm/psm.cpp
+     hle/service/ptm/psm.h
+     hle/service/ptm/ptm.cpp
+@@ -908,19 +910,19 @@ add_library(core STATIC
+     hle/service/server_manager.h
+     hle/service/service.cpp
+     hle/service/service.h
++    hle/service/set/factory_settings_server.cpp
++    hle/service/set/factory_settings_server.h
++    hle/service/set/firmware_debug_settings_server.cpp
++    hle/service/set/firmware_debug_settings_server.h
++    hle/service/set/key_code_map.h
+     hle/service/set/setting_formats/appln_settings.cpp
+     hle/service/set/setting_formats/appln_settings.h
+     hle/service/set/setting_formats/device_settings.cpp
+     hle/service/set/setting_formats/device_settings.h
+-    hle/service/set/setting_formats/system_settings.cpp
+-    hle/service/set/setting_formats/system_settings.h
+     hle/service/set/setting_formats/private_settings.cpp
+     hle/service/set/setting_formats/private_settings.h
+-    hle/service/set/factory_settings_server.cpp
+-    hle/service/set/factory_settings_server.h
+-    hle/service/set/firmware_debug_settings_server.cpp
+-    hle/service/set/firmware_debug_settings_server.h
+-    hle/service/set/key_code_map.h
++    hle/service/set/setting_formats/system_settings.cpp
++    hle/service/set/setting_formats/system_settings.h
+     hle/service/set/settings.cpp
+     hle/service/set/settings.h
+     hle/service/set/settings_server.cpp
+@@ -955,16 +957,16 @@ add_library(core STATIC
+     hle/service/ssl/ssl_backend.h
+     hle/service/usb/usb.cpp
+     hle/service/usb/usb.h
+-    hle/service/vi/display/vi_display.cpp
+-    hle/service/vi/display/vi_display.h
+-    hle/service/vi/layer/vi_layer.cpp
+-    hle/service/vi/layer/vi_layer.h
+     hle/service/vi/application_display_service.cpp
+     hle/service/vi/application_display_service.h
+     hle/service/vi/application_root_service.cpp
+     hle/service/vi/application_root_service.h
++    hle/service/vi/display/vi_display.cpp
++    hle/service/vi/display/vi_display.h
+     hle/service/vi/hos_binder_driver.cpp
+     hle/service/vi/hos_binder_driver.h
++    hle/service/vi/layer/vi_layer.cpp
++    hle/service/vi/layer/vi_layer.h
+     hle/service/vi/manager_display_service.cpp
+     hle/service/vi/manager_display_service.h
+     hle/service/vi/manager_root_service.cpp
+@@ -975,10 +977,10 @@ add_library(core STATIC
+     hle/service/vi/system_display_service.h
+     hle/service/vi/system_root_service.cpp
+     hle/service/vi/system_root_service.h
+-    hle/service/vi/vi_results.h
+-    hle/service/vi/vi_types.h
+     hle/service/vi/vi.cpp
+     hle/service/vi/vi.h
++    hle/service/vi/vi_results.h
++    hle/service/vi/vi_types.h
+     internal_network/network.cpp
+     internal_network/network.h
+     internal_network/network_interface.cpp
+diff --git a/src/core/cpu_manager.cpp b/src/core/cpu_manager.cpp
+index 7a5c22f78c4d..9b1c773877bb 100644
+--- a/src/core/cpu_manager.cpp
++++ b/src/core/cpu_manager.cpp
+@@ -199,10 +199,10 @@ void CpuManager::RunThread(std::stop_token token, std::size_t core) {
+     data.host_context = Common::Fiber::ThreadToFiber();
+ 
+     // Cleanup
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         data.host_context->Exit();
+         MicroProfileOnThreadExit();
+-    });
++    };
+ 
+     // Running
+     if (!gpu_barrier->Sync(token)) {
+diff --git a/src/core/device_memory_manager.inc b/src/core/device_memory_manager.inc
+index 6dfee806cf1b..37c1e69c33b9 100644
+--- a/src/core/device_memory_manager.inc
++++ b/src/core/device_memory_manager.inc
+@@ -391,12 +391,12 @@ void DeviceMemoryManager<Traits>::WalkBlock(DAddr addr, std::size_t size, auto o
+             std::min((next_pages << Memory::YUZU_PAGEBITS) - page_offset, remaining_size);
+         const auto current_vaddr =
+             static_cast<u64>((page_index << Memory::YUZU_PAGEBITS) + page_offset);
+-        SCOPE_EXIT({
++        SCOPE_EXIT{
+             page_index += next_pages;
+             page_offset = 0;
+             increment(copy_amount);
+             remaining_size -= copy_amount;
+-        });
++        };
+ 
+         auto phys_addr = compressed_physical_ptr[page_index];
+         if (phys_addr == 0) {
+diff --git a/src/core/file_sys/fs_directory.h b/src/core/file_sys/fs_directory.h
+index 25c9cb18a3d7..3f90abb8f6ba 100644
+--- a/src/core/file_sys/fs_directory.h
++++ b/src/core/file_sys/fs_directory.h
+@@ -3,6 +3,10 @@
+ 
+ #pragma once
+ 
++#include <string_view>
++#include "common/common_funcs.h"
++#include "common/common_types.h"
++
+ namespace FileSys {
+ 
+ constexpr inline size_t EntryNameLengthMax = 0x300;
+diff --git a/src/core/file_sys/fs_filesystem.h b/src/core/file_sys/fs_filesystem.h
+index 7f237b7fac09..598b59a74738 100644
+--- a/src/core/file_sys/fs_filesystem.h
++++ b/src/core/file_sys/fs_filesystem.h
+@@ -23,6 +23,8 @@ enum class OpenDirectoryMode : u64 {
+     File = (1 << 1),
+ 
+     All = (Directory | File),
++
++    NotRequireFileSize = (1ULL << 31),
+ };
+ DECLARE_ENUM_FLAG_OPERATORS(OpenDirectoryMode)
+ 
+diff --git a/src/core/file_sys/fs_memory_management.h b/src/core/file_sys/fs_memory_management.h
+index f03c6354b816..080017c5dde8 100644
+--- a/src/core/file_sys/fs_memory_management.h
++++ b/src/core/file_sys/fs_memory_management.h
+@@ -10,7 +10,7 @@ namespace FileSys {
+ 
+ constexpr size_t RequiredAlignment = alignof(u64);
+ 
+-void* AllocateUnsafe(size_t size) {
++inline void* AllocateUnsafe(size_t size) {
+     // Allocate
+     void* const ptr = ::operator new(size, std::align_val_t{RequiredAlignment});
+ 
+@@ -21,16 +21,16 @@ void* AllocateUnsafe(size_t size) {
+     return ptr;
+ }
+ 
+-void DeallocateUnsafe(void* ptr, size_t size) {
++inline void DeallocateUnsafe(void* ptr, size_t size) {
+     // Deallocate the pointer
+     ::operator delete(ptr, std::align_val_t{RequiredAlignment});
+ }
+ 
+-void* Allocate(size_t size) {
++inline void* Allocate(size_t size) {
+     return AllocateUnsafe(size);
+ }
+ 
+-void Deallocate(void* ptr, size_t size) {
++inline void Deallocate(void* ptr, size_t size) {
+     // If the pointer is non-null, deallocate it
+     if (ptr != nullptr) {
+         DeallocateUnsafe(ptr, size);
+diff --git a/src/core/file_sys/fs_path.h b/src/core/file_sys/fs_path.h
+index 56ba08a6a514..1566e82b9d64 100644
+--- a/src/core/file_sys/fs_path.h
++++ b/src/core/file_sys/fs_path.h
+@@ -381,7 +381,7 @@ class Path {
+ 
+         // Check that it's possible for us to remove a child
+         auto* p = m_write_buffer.Get();
+-        s32 len = std::strlen(p);
++        s32 len = static_cast<s32>(std::strlen(p));
+         R_UNLESS(len != 1 || (p[0] != '/' && p[0] != '.'), ResultNotImplemented);
+ 
+         // Handle a trailing separator
+diff --git a/src/core/file_sys/fs_path_utility.h b/src/core/file_sys/fs_path_utility.h
+index e9011d0654fd..cdfd8c772990 100644
+--- a/src/core/file_sys/fs_path_utility.h
++++ b/src/core/file_sys/fs_path_utility.h
+@@ -426,9 +426,10 @@ class PathNormalizer {
+         R_SUCCEED();
+     }
+ 
+-    static Result Normalize(char* dst, size_t* out_len, const char* path, size_t max_out_size,
+-                            bool is_windows_path, bool is_drive_relative_path,
+-                            bool allow_all_characters = false) {
++    static constexpr Result Normalize(char* dst, size_t* out_len, const char* path,
++                                      size_t max_out_size, bool is_windows_path,
++                                      bool is_drive_relative_path,
++                                      bool allow_all_characters = false) {
+         // Use StringTraits names for remainder of scope
+         using namespace StringTraits;
+ 
+@@ -447,7 +448,7 @@ class PathNormalizer {
+         char* replacement_path = nullptr;
+         size_t replacement_path_size = 0;
+ 
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (replacement_path != nullptr) {
+                 if (std::is_constant_evaluated()) {
+                     delete[] replacement_path;
+@@ -455,7 +456,7 @@ class PathNormalizer {
+                     Deallocate(replacement_path, replacement_path_size);
+                 }
+             }
+-        });
++        };
+ 
+         // Perform path replacement, if necessary
+         if (IsParentDirectoryPathReplacementNeeded(cur_path)) {
+@@ -1102,8 +1103,8 @@ class PathFormatter {
+         R_SUCCEED();
+     }
+ 
+-    static Result Normalize(char* dst, size_t dst_size, const char* path, size_t path_len,
+-                            const PathFlags& flags) {
++    static constexpr Result Normalize(char* dst, size_t dst_size, const char* path, size_t path_len,
++                                      const PathFlags& flags) {
+         // Use StringTraits names for remainder of scope
+         using namespace StringTraits;
+ 
+@@ -1199,7 +1200,7 @@ class PathFormatter {
+             const size_t replaced_src_len = path_len - (src - path);
+ 
+             char* replaced_src = nullptr;
+-            SCOPE_EXIT({
++            SCOPE_EXIT {
+                 if (replaced_src != nullptr) {
+                     if (std::is_constant_evaluated()) {
+                         delete[] replaced_src;
+@@ -1207,7 +1208,7 @@ class PathFormatter {
+                         Deallocate(replaced_src, replaced_src_len);
+                     }
+                 }
+-            });
++            };
+ 
+             if (std::is_constant_evaluated()) {
+                 replaced_src = new char[replaced_src_len];
+diff --git a/src/core/file_sys/fs_string_util.h b/src/core/file_sys/fs_string_util.h
+index 874e09054015..c751a8f1a20d 100644
+--- a/src/core/file_sys/fs_string_util.h
++++ b/src/core/file_sys/fs_string_util.h
+@@ -19,6 +19,11 @@ constexpr int Strlen(const T* str) {
+     return length;
+ }
+ 
++template <typename T>
++constexpr int Strnlen(const T* str, std::size_t count) {
++    return Strnlen(str, static_cast<int>(count));
++}
++
+ template <typename T>
+ constexpr int Strnlen(const T* str, int count) {
+     ASSERT(str != nullptr);
+@@ -32,6 +37,11 @@ constexpr int Strnlen(const T* str, int count) {
+     return length;
+ }
+ 
++template <typename T>
++constexpr int Strncmp(const T* lhs, const T* rhs, std::size_t count) {
++    return Strncmp(lhs, rhs, static_cast<int>(count));
++}
++
+ template <typename T>
+ constexpr int Strncmp(const T* lhs, const T* rhs, int count) {
+     ASSERT(lhs != nullptr);
+@@ -51,6 +61,11 @@ constexpr int Strncmp(const T* lhs, const T* rhs, int count) {
+     return l - r;
+ }
+ 
++template <typename T>
++static constexpr int Strlcpy(T* dst, const T* src, std::size_t count) {
++    return Strlcpy<T>(dst, src, static_cast<int>(count));
++}
++
+ template <typename T>
+ static constexpr int Strlcpy(T* dst, const T* src, int count) {
+     ASSERT(dst != nullptr);
+diff --git a/src/core/file_sys/fsa/fs_i_directory.h b/src/core/file_sys/fsa/fs_i_directory.h
+new file mode 100644
+index 000000000000..fc0407d01356
+--- /dev/null
++++ b/src/core/file_sys/fsa/fs_i_directory.h
+@@ -0,0 +1,91 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++#include "core/file_sys/errors.h"
++#include "core/file_sys/fs_directory.h"
++#include "core/file_sys/fs_file.h"
++#include "core/file_sys/fs_filesystem.h"
++#include "core/file_sys/savedata_factory.h"
++#include "core/file_sys/vfs/vfs.h"
++#include "core/hle/result.h"
++
++namespace FileSys::Fsa {
++
++class IDirectory {
++public:
++    explicit IDirectory(VirtualDir backend_, OpenDirectoryMode mode)
++        : backend(std::move(backend_)) {
++        // TODO(DarkLordZach): Verify that this is the correct behavior.
++        // Build entry index now to save time later.
++        if (True(mode & OpenDirectoryMode::Directory)) {
++            BuildEntryIndex(backend->GetSubdirectories(), DirectoryEntryType::Directory);
++        }
++        if (True(mode & OpenDirectoryMode::File)) {
++            BuildEntryIndex(backend->GetFiles(), DirectoryEntryType::File);
++        }
++    }
++    virtual ~IDirectory() {}
++
++    Result Read(s64* out_count, DirectoryEntry* out_entries, s64 max_entries) {
++        R_UNLESS(out_count != nullptr, ResultNullptrArgument);
++        if (max_entries == 0) {
++            *out_count = 0;
++            R_SUCCEED();
++        }
++        R_UNLESS(out_entries != nullptr, ResultNullptrArgument);
++        R_UNLESS(max_entries > 0, ResultInvalidArgument);
++        R_RETURN(this->DoRead(out_count, out_entries, max_entries));
++    }
++
++    Result GetEntryCount(s64* out) {
++        R_UNLESS(out != nullptr, ResultNullptrArgument);
++        R_RETURN(this->DoGetEntryCount(out));
++    }
++
++private:
++    Result DoRead(s64* out_count, DirectoryEntry* out_entries, s64 max_entries) {
++        const u64 actual_entries =
++            std::min(static_cast<u64>(max_entries), entries.size() - next_entry_index);
++        const auto* begin = reinterpret_cast<u8*>(entries.data() + next_entry_index);
++        const auto* end = reinterpret_cast<u8*>(entries.data() + next_entry_index + actual_entries);
++        const auto range_size = static_cast<std::size_t>(std::distance(begin, end));
++
++        next_entry_index += actual_entries;
++        *out_count = actual_entries;
++
++        std::memcpy(out_entries, entries.data(), range_size);
++
++        R_SUCCEED();
++    }
++
++    Result DoGetEntryCount(s64* out) {
++        *out = entries.size() - next_entry_index;
++        R_SUCCEED();
++    }
++
++    // TODO: Remove this when VFS is gone
++    template <typename T>
++    void BuildEntryIndex(const std::vector<T>& new_data, DirectoryEntryType type) {
++        entries.reserve(entries.size() + new_data.size());
++
++        for (const auto& new_entry : new_data) {
++            auto name = new_entry->GetName();
++
++            if (type == DirectoryEntryType::File && name == GetSaveDataSizeFileName()) {
++                continue;
++            }
++
++            entries.emplace_back(name, static_cast<s8>(type),
++                                 type == DirectoryEntryType::Directory ? 0 : new_entry->GetSize());
++        }
++    }
++
++    VirtualDir backend;
++    std::vector<DirectoryEntry> entries;
++    u64 next_entry_index = 0;
++};
++
++} // namespace FileSys::Fsa
+diff --git a/src/core/file_sys/fsa/fs_i_file.h b/src/core/file_sys/fsa/fs_i_file.h
+new file mode 100644
+index 000000000000..8fdd71c80fc4
+--- /dev/null
++++ b/src/core/file_sys/fsa/fs_i_file.h
+@@ -0,0 +1,169 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "common/overflow.h"
++#include "core/file_sys/errors.h"
++#include "core/file_sys/fs_file.h"
++#include "core/file_sys/fs_filesystem.h"
++#include "core/file_sys/fs_operate_range.h"
++#include "core/file_sys/vfs/vfs.h"
++#include "core/file_sys/vfs/vfs_types.h"
++#include "core/hle/result.h"
++
++namespace FileSys::Fsa {
++
++class IFile {
++public:
++    explicit IFile(VirtualFile backend_) : backend(std::move(backend_)) {}
++    virtual ~IFile() {}
++
++    Result Read(size_t* out, s64 offset, void* buffer, size_t size, const ReadOption& option) {
++        // Check that we have an output pointer
++        R_UNLESS(out != nullptr, ResultNullptrArgument);
++
++        // If we have nothing to read, just succeed
++        if (size == 0) {
++            *out = 0;
++            R_SUCCEED();
++        }
++
++        // Check that the read is valid
++        R_UNLESS(buffer != nullptr, ResultNullptrArgument);
++        R_UNLESS(offset >= 0, ResultOutOfRange);
++        R_UNLESS(Common::CanAddWithoutOverflow<s64>(offset, size), ResultOutOfRange);
++
++        // Do the read
++        R_RETURN(this->DoRead(out, offset, buffer, size, option));
++    }
++
++    Result Read(size_t* out, s64 offset, void* buffer, size_t size) {
++        R_RETURN(this->Read(out, offset, buffer, size, ReadOption::None));
++    }
++
++    Result GetSize(s64* out) {
++        R_UNLESS(out != nullptr, ResultNullptrArgument);
++        R_RETURN(this->DoGetSize(out));
++    }
++
++    Result Flush() {
++        R_RETURN(this->DoFlush());
++    }
++
++    Result Write(s64 offset, const void* buffer, size_t size, const WriteOption& option) {
++        // Handle the zero-size case
++        if (size == 0) {
++            if (option.HasFlushFlag()) {
++                R_TRY(this->Flush());
++            }
++            R_SUCCEED();
++        }
++
++        // Check the write is valid
++        R_UNLESS(buffer != nullptr, ResultNullptrArgument);
++        R_UNLESS(offset >= 0, ResultOutOfRange);
++        R_UNLESS(Common::CanAddWithoutOverflow<s64>(offset, size), ResultOutOfRange);
++
++        R_RETURN(this->DoWrite(offset, buffer, size, option));
++    }
++
++    Result SetSize(s64 size) {
++        R_UNLESS(size >= 0, ResultOutOfRange);
++        R_RETURN(this->DoSetSize(size));
++    }
++
++    Result OperateRange(void* dst, size_t dst_size, OperationId op_id, s64 offset, s64 size,
++                        const void* src, size_t src_size) {
++        R_RETURN(this->DoOperateRange(dst, dst_size, op_id, offset, size, src, src_size));
++    }
++
++    Result OperateRange(OperationId op_id, s64 offset, s64 size) {
++        R_RETURN(this->DoOperateRange(nullptr, 0, op_id, offset, size, nullptr, 0));
++    }
++
++protected:
++    Result DryRead(size_t* out, s64 offset, size_t size, const ReadOption& option,
++                   OpenMode open_mode) {
++        // Check that we can read
++        R_UNLESS(static_cast<u32>(open_mode & OpenMode::Read) != 0, ResultReadNotPermitted);
++
++        // Get the file size, and validate our offset
++        s64 file_size = 0;
++        R_TRY(this->DoGetSize(std::addressof(file_size)));
++        R_UNLESS(offset <= file_size, ResultOutOfRange);
++
++        *out = static_cast<size_t>(std::min(file_size - offset, static_cast<s64>(size)));
++        R_SUCCEED();
++    }
++
++    Result DrySetSize(s64 size, OpenMode open_mode) {
++        // Check that we can write
++        R_UNLESS(static_cast<u32>(open_mode & OpenMode::Write) != 0, ResultWriteNotPermitted);
++        R_SUCCEED();
++    }
++
++    Result DryWrite(bool* out_append, s64 offset, size_t size, const WriteOption& option,
++                    OpenMode open_mode) {
++        // Check that we can write
++        R_UNLESS(static_cast<u32>(open_mode & OpenMode::Write) != 0, ResultWriteNotPermitted);
++
++        // Get the file size
++        s64 file_size = 0;
++        R_TRY(this->DoGetSize(&file_size));
++
++        // Determine if we need to append
++        *out_append = false;
++        if (file_size < offset + static_cast<s64>(size)) {
++            R_UNLESS(static_cast<u32>(open_mode & OpenMode::AllowAppend) != 0,
++                     ResultFileExtensionWithoutOpenModeAllowAppend);
++            *out_append = true;
++        }
++
++        R_SUCCEED();
++    }
++
++private:
++    Result DoRead(size_t* out, s64 offset, void* buffer, size_t size, const ReadOption& option) {
++        std::vector<u8> output = backend->ReadBytes(size, offset);
++
++        *out = output.size();
++        std::memcpy(buffer, output.data(), size);
++
++        R_SUCCEED();
++    }
++
++    Result DoGetSize(s64* out) {
++        *out = backend->GetSize();
++        R_SUCCEED();
++    }
++
++    Result DoFlush() {
++        // Exists for SDK compatibiltity -- No need to flush file.
++        R_SUCCEED();
++    }
++
++    Result DoWrite(s64 offset, const void* buffer, size_t size, const WriteOption& option) {
++        const std::size_t written = backend->Write(static_cast<const u8*>(buffer), size, offset);
++
++        ASSERT_MSG(written == size,
++                   "Could not write all bytes to file (requested={:016X}, actual={:016X}).", size,
++                   written);
++
++        R_SUCCEED();
++    }
++
++    Result DoSetSize(s64 size) {
++        backend->Resize(size);
++        R_SUCCEED();
++    }
++
++    Result DoOperateRange(void* dst, size_t dst_size, OperationId op_id, s64 offset, s64 size,
++                          const void* src, size_t src_size) {
++        R_THROW(ResultNotImplemented);
++    }
++
++    VirtualFile backend;
++};
++
++} // namespace FileSys::Fsa
+diff --git a/src/core/file_sys/fsa/fs_i_filesystem.h b/src/core/file_sys/fsa/fs_i_filesystem.h
+new file mode 100644
+index 000000000000..8172190f494f
+--- /dev/null
++++ b/src/core/file_sys/fsa/fs_i_filesystem.h
+@@ -0,0 +1,206 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/file_sys/errors.h"
++#include "core/file_sys/fs_filesystem.h"
++#include "core/file_sys/fs_path.h"
++#include "core/file_sys/vfs/vfs_types.h"
++#include "core/hle/result.h"
++#include "core/hle/service/filesystem/filesystem.h"
++
++namespace FileSys::Fsa {
++
++class IFile;
++class IDirectory;
++
++enum class QueryId : u32 {
++    SetConcatenationFileAttribute = 0,
++    UpdateMac = 1,
++    IsSignedSystemPartitionOnSdCardValid = 2,
++    QueryUnpreparedFileInformation = 3,
++};
++
++class IFileSystem {
++public:
++    explicit IFileSystem(VirtualDir backend_) : backend{std::move(backend_)} {}
++    virtual ~IFileSystem() {}
++
++    Result CreateFile(const Path& path, s64 size, CreateOption option) {
++        R_UNLESS(size >= 0, ResultOutOfRange);
++        R_RETURN(this->DoCreateFile(path, size, static_cast<int>(option)));
++    }
++
++    Result CreateFile(const Path& path, s64 size) {
++        R_RETURN(this->CreateFile(path, size, CreateOption::None));
++    }
++
++    Result DeleteFile(const Path& path) {
++        R_RETURN(this->DoDeleteFile(path));
++    }
++
++    Result CreateDirectory(const Path& path) {
++        R_RETURN(this->DoCreateDirectory(path));
++    }
++
++    Result DeleteDirectory(const Path& path) {
++        R_RETURN(this->DoDeleteDirectory(path));
++    }
++
++    Result DeleteDirectoryRecursively(const Path& path) {
++        R_RETURN(this->DoDeleteDirectoryRecursively(path));
++    }
++
++    Result RenameFile(const Path& old_path, const Path& new_path) {
++        R_RETURN(this->DoRenameFile(old_path, new_path));
++    }
++
++    Result RenameDirectory(const Path& old_path, const Path& new_path) {
++        R_RETURN(this->DoRenameDirectory(old_path, new_path));
++    }
++
++    Result GetEntryType(DirectoryEntryType* out, const Path& path) {
++        R_RETURN(this->DoGetEntryType(out, path));
++    }
++
++    Result OpenFile(VirtualFile* out_file, const Path& path, OpenMode mode) {
++        R_UNLESS(out_file != nullptr, ResultNullptrArgument);
++        R_UNLESS(static_cast<u32>(mode & OpenMode::ReadWrite) != 0, ResultInvalidOpenMode);
++        R_UNLESS(static_cast<u32>(mode & ~OpenMode::All) == 0, ResultInvalidOpenMode);
++        R_RETURN(this->DoOpenFile(out_file, path, mode));
++    }
++
++    Result OpenDirectory(VirtualDir* out_dir, const Path& path, OpenDirectoryMode mode) {
++        R_UNLESS(out_dir != nullptr, ResultNullptrArgument);
++        R_UNLESS(static_cast<u64>(mode & OpenDirectoryMode::All) != 0, ResultInvalidOpenMode);
++        R_UNLESS(static_cast<u64>(
++                     mode & ~(OpenDirectoryMode::All | OpenDirectoryMode::NotRequireFileSize)) == 0,
++                 ResultInvalidOpenMode);
++        R_RETURN(this->DoOpenDirectory(out_dir, path, mode));
++    }
++
++    Result Commit() {
++        R_RETURN(this->DoCommit());
++    }
++
++    Result GetFreeSpaceSize(s64* out, const Path& path) {
++        R_UNLESS(out != nullptr, ResultNullptrArgument);
++        R_RETURN(this->DoGetFreeSpaceSize(out, path));
++    }
++
++    Result GetTotalSpaceSize(s64* out, const Path& path) {
++        R_UNLESS(out != nullptr, ResultNullptrArgument);
++        R_RETURN(this->DoGetTotalSpaceSize(out, path));
++    }
++
++    Result CleanDirectoryRecursively(const Path& path) {
++        R_RETURN(this->DoCleanDirectoryRecursively(path));
++    }
++
++    Result GetFileTimeStampRaw(FileTimeStampRaw* out, const Path& path) {
++        R_UNLESS(out != nullptr, ResultNullptrArgument);
++        R_RETURN(this->DoGetFileTimeStampRaw(out, path));
++    }
++
++    Result QueryEntry(char* dst, size_t dst_size, const char* src, size_t src_size, QueryId query,
++                      const Path& path) {
++        R_RETURN(this->DoQueryEntry(dst, dst_size, src, src_size, query, path));
++    }
++
++    // These aren't accessible as commands
++    Result CommitProvisionally(s64 counter) {
++        R_RETURN(this->DoCommitProvisionally(counter));
++    }
++
++    Result Rollback() {
++        R_RETURN(this->DoRollback());
++    }
++
++    Result Flush() {
++        R_RETURN(this->DoFlush());
++    }
++
++private:
++    Result DoCreateFile(const Path& path, s64 size, int flags) {
++        R_RETURN(backend.CreateFile(path.GetString(), size));
++    }
++
++    Result DoDeleteFile(const Path& path) {
++        R_RETURN(backend.DeleteFile(path.GetString()));
++    }
++
++    Result DoCreateDirectory(const Path& path) {
++        R_RETURN(backend.CreateDirectory(path.GetString()));
++    }
++
++    Result DoDeleteDirectory(const Path& path) {
++        R_RETURN(backend.DeleteDirectory(path.GetString()));
++    }
++
++    Result DoDeleteDirectoryRecursively(const Path& path) {
++        R_RETURN(backend.DeleteDirectoryRecursively(path.GetString()));
++    }
++
++    Result DoRenameFile(const Path& old_path, const Path& new_path) {
++        R_RETURN(backend.RenameFile(old_path.GetString(), new_path.GetString()));
++    }
++
++    Result DoRenameDirectory(const Path& old_path, const Path& new_path) {
++        R_RETURN(backend.RenameDirectory(old_path.GetString(), new_path.GetString()));
++    }
++
++    Result DoGetEntryType(DirectoryEntryType* out, const Path& path) {
++        R_RETURN(backend.GetEntryType(out, path.GetString()));
++    }
++
++    Result DoOpenFile(VirtualFile* out_file, const Path& path, OpenMode mode) {
++        R_RETURN(backend.OpenFile(out_file, path.GetString(), mode));
++    }
++
++    Result DoOpenDirectory(VirtualDir* out_directory, const Path& path, OpenDirectoryMode mode) {
++        R_RETURN(backend.OpenDirectory(out_directory, path.GetString()));
++    }
++
++    Result DoCommit() {
++        R_THROW(ResultNotImplemented);
++    }
++
++    Result DoGetFreeSpaceSize(s64* out, const Path& path) {
++        R_THROW(ResultNotImplemented);
++    }
++
++    Result DoGetTotalSpaceSize(s64* out, const Path& path) {
++        R_THROW(ResultNotImplemented);
++    }
++
++    Result DoCleanDirectoryRecursively(const Path& path) {
++        R_RETURN(backend.CleanDirectoryRecursively(path.GetString()));
++    }
++
++    Result DoGetFileTimeStampRaw(FileTimeStampRaw* out, const Path& path) {
++        R_RETURN(backend.GetFileTimeStampRaw(out, path.GetString()));
++    }
++
++    Result DoQueryEntry(char* dst, size_t dst_size, const char* src, size_t src_size, QueryId query,
++                        const Path& path) {
++        R_THROW(ResultNotImplemented);
++    }
++
++    // These aren't accessible as commands
++    Result DoCommitProvisionally(s64 counter) {
++        R_THROW(ResultNotImplemented);
++    }
++
++    Result DoRollback() {
++        R_THROW(ResultNotImplemented);
++    }
++
++    Result DoFlush() {
++        R_THROW(ResultNotImplemented);
++    }
++
++    Service::FileSystem::VfsDirectoryServiceWrapper backend;
++};
++
++} // namespace FileSys::Fsa
+diff --git a/src/core/file_sys/fssrv/fssrv_sf_path.h b/src/core/file_sys/fssrv/fssrv_sf_path.h
+new file mode 100644
+index 000000000000..a0c0b2dac838
+--- /dev/null
++++ b/src/core/file_sys/fssrv/fssrv_sf_path.h
+@@ -0,0 +1,36 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/file_sys/fs_directory.h"
++
++namespace FileSys::Sf {
++
++struct Path {
++    char str[EntryNameLengthMax + 1];
++
++    static constexpr Path Encode(const char* p) {
++        Path path = {};
++        for (size_t i = 0; i < sizeof(path) - 1; i++) {
++            path.str[i] = p[i];
++            if (p[i] == '\x00') {
++                break;
++            }
++        }
++        return path;
++    }
++
++    static constexpr size_t GetPathLength(const Path& path) {
++        size_t len = 0;
++        for (size_t i = 0; i < sizeof(path) - 1 && path.str[i] != '\x00'; i++) {
++            len++;
++        }
++        return len;
++    }
++};
++static_assert(std::is_trivially_copyable_v<Path>, "Path must be trivially copyable.");
++
++using FspPath = Path;
++
++} // namespace FileSys::Sf
+diff --git a/src/core/file_sys/fssystem/fssystem_hierarchical_sha256_storage.cpp b/src/core/file_sys/fssystem/fssystem_hierarchical_sha256_storage.cpp
+index caea0b8f8b8e..a68fd973c9d4 100644
+--- a/src/core/file_sys/fssystem/fssystem_hierarchical_sha256_storage.cpp
++++ b/src/core/file_sys/fssystem/fssystem_hierarchical_sha256_storage.cpp
+@@ -36,7 +36,9 @@ Result HierarchicalSha256Storage::Initialize(VirtualFile* base_storages, s32 lay
+     // Get the base storage size.
+     m_base_storage_size = base_storages[2]->GetSize();
+     {
+-        auto size_guard = SCOPE_GUARD({ m_base_storage_size = 0; });
++        auto size_guard = SCOPE_GUARD {
++            m_base_storage_size = 0;
++        };
+         R_UNLESS(m_base_storage_size <= static_cast<s64>(HashSize)
+                                             << m_log_size_ratio << m_log_size_ratio,
+                  ResultHierarchicalSha256BaseStorageTooLarge);
+diff --git a/src/core/file_sys/program_metadata.cpp b/src/core/file_sys/program_metadata.cpp
+index ae4e441c9e8e..289969cc4ca6 100644
+--- a/src/core/file_sys/program_metadata.cpp
++++ b/src/core/file_sys/program_metadata.cpp
+@@ -98,7 +98,9 @@ Loader::ResultStatus ProgramMetadata::Load(VirtualFile file) {
+ 
+ Loader::ResultStatus ProgramMetadata::Reload(VirtualFile file) {
+     const u64 original_program_id = aci_header.title_id;
+-    SCOPE_EXIT({ aci_header.title_id = original_program_id; });
++    SCOPE_EXIT {
++        aci_header.title_id = original_program_id;
++    };
+ 
+     return this->Load(file);
+ }
+diff --git a/src/core/hle/kernel/k_client_session.cpp b/src/core/hle/kernel/k_client_session.cpp
+index 472e8571c5aa..3e01e3b67fc5 100644
+--- a/src/core/hle/kernel/k_client_session.cpp
++++ b/src/core/hle/kernel/k_client_session.cpp
+@@ -24,7 +24,9 @@ Result KClientSession::SendSyncRequest(uintptr_t address, size_t size) {
+     // Create a session request.
+     KSessionRequest* request = KSessionRequest::Create(m_kernel);
+     R_UNLESS(request != nullptr, ResultOutOfResource);
+-    SCOPE_EXIT({ request->Close(); });
++    SCOPE_EXIT {
++        request->Close();
++    };
+ 
+     // Initialize the request.
+     request->Initialize(nullptr, address, size);
+@@ -37,7 +39,9 @@ Result KClientSession::SendAsyncRequest(KEvent* event, uintptr_t address, size_t
+     // Create a session request.
+     KSessionRequest* request = KSessionRequest::Create(m_kernel);
+     R_UNLESS(request != nullptr, ResultOutOfResource);
+-    SCOPE_EXIT({ request->Close(); });
++    SCOPE_EXIT {
++        request->Close();
++    };
+ 
+     // Initialize the request.
+     request->Initialize(event, address, size);
+diff --git a/src/core/hle/kernel/k_page_table_base.cpp b/src/core/hle/kernel/k_page_table_base.cpp
+index 1dd86fb3ca5f..19cdf4f3ac69 100644
+--- a/src/core/hle/kernel/k_page_table_base.cpp
++++ b/src/core/hle/kernel/k_page_table_base.cpp
+@@ -1305,11 +1305,11 @@ Result KPageTableBase::UnmapCodeMemory(KProcessAddress dst_address, KProcessAddr
+ 
+     // Ensure that we maintain the instruction cache.
+     bool reprotected_pages = false;
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         if (reprotected_pages && any_code_pages) {
+             InvalidateInstructionCache(m_kernel, this, dst_address, size);
+         }
+-    });
++    };
+ 
+     // Unmap.
+     {
+@@ -1397,7 +1397,9 @@ Result KPageTableBase::MapInsecureMemory(KProcessAddress address, size_t size) {
+     // Close the opened pages when we're done with them.
+     // If the mapping succeeds, each page will gain an extra reference, otherwise they will be freed
+     // automatically.
+-    SCOPE_EXIT({ pg.Close(); });
++    SCOPE_EXIT {
++        pg.Close();
++    };
+ 
+     // Clear all the newly allocated pages.
+     for (const auto& it : pg) {
+@@ -1603,7 +1605,9 @@ Result KPageTableBase::AllocateAndMapPagesImpl(PageLinkedList* page_list, KProce
+         m_kernel.MemoryManager().AllocateAndOpen(std::addressof(pg), num_pages, m_allocate_option));
+ 
+     // Ensure that the page group is closed when we're done working with it.
+-    SCOPE_EXIT({ pg.Close(); });
++    SCOPE_EXIT {
++        pg.Close();
++    };
+ 
+     // Clear all pages.
+     for (const auto& it : pg) {
+@@ -2191,7 +2195,9 @@ Result KPageTableBase::SetHeapSize(KProcessAddress* out, size_t size) {
+     // Close the opened pages when we're done with them.
+     // If the mapping succeeds, each page will gain an extra reference, otherwise they will be freed
+     // automatically.
+-    SCOPE_EXIT({ pg.Close(); });
++    SCOPE_EXIT {
++        pg.Close();
++    };
+ 
+     // Clear all the newly allocated pages.
+     for (const auto& it : pg) {
+@@ -2592,7 +2598,9 @@ Result KPageTableBase::UnmapIoRegion(KProcessAddress dst_address, KPhysicalAddre
+         // Temporarily unlock ourselves, so that other operations can occur while we flush the
+         // region.
+         m_general_lock.Unlock();
+-        SCOPE_EXIT({ m_general_lock.Lock(); });
++        SCOPE_EXIT {
++            m_general_lock.Lock();
++        };
+ 
+         // Flush the region.
+         R_ASSERT(FlushDataCache(dst_address, size));
+@@ -3311,10 +3319,10 @@ Result KPageTableBase::ReadIoMemoryImpl(KProcessAddress dst_addr, KPhysicalAddre
+     // Ensure we unmap the io memory when we're done with it.
+     const KPageProperties unmap_properties =
+         KPageProperties{KMemoryPermission::None, false, false, DisableMergeAttribute::None};
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         R_ASSERT(this->Operate(updater.GetPageList(), io_addr, map_size / PageSize, 0, false,
+                                unmap_properties, OperationType::Unmap, true));
+-    });
++    };
+ 
+     // Read the memory.
+     const KProcessAddress read_addr = io_addr + (GetInteger(phys_addr) & (PageSize - 1));
+@@ -3347,10 +3355,10 @@ Result KPageTableBase::WriteIoMemoryImpl(KPhysicalAddress phys_addr, KProcessAdd
+     // Ensure we unmap the io memory when we're done with it.
+     const KPageProperties unmap_properties =
+         KPageProperties{KMemoryPermission::None, false, false, DisableMergeAttribute::None};
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         R_ASSERT(this->Operate(updater.GetPageList(), io_addr, map_size / PageSize, 0, false,
+                                unmap_properties, OperationType::Unmap, true));
+-    });
++    };
+ 
+     // Write the memory.
+     const KProcessAddress write_addr = io_addr + (GetInteger(phys_addr) & (PageSize - 1));
+@@ -4491,14 +4499,14 @@ Result KPageTableBase::SetupForIpcServer(KProcessAddress* out_addr, size_t size,
+ 
+     // If the partial pages are mapped, an extra reference will have been opened. Otherwise, they'll
+     // free on scope exit.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         if (start_partial_page != 0) {
+             m_kernel.MemoryManager().Close(start_partial_page, 1);
+         }
+         if (end_partial_page != 0) {
+             m_kernel.MemoryManager().Close(end_partial_page, 1);
+         }
+-    });
++    };
+ 
+     ON_RESULT_FAILURE {
+         if (cur_mapped_addr != dst_addr) {
+@@ -5166,10 +5174,10 @@ Result KPageTableBase::MapPhysicalMemory(KProcessAddress address, size_t size) {
+                 GetCurrentProcess(m_kernel).GetId(), m_heap_fill_value));
+ 
+             // If we fail in the next bit (or retry), we need to cleanup the pages.
+-            auto pg_guard = SCOPE_GUARD({
++            auto pg_guard = SCOPE_GUARD {
+                 pg.OpenFirst();
+                 pg.Close();
+-            });
++            };
+ 
+             // Map the memory.
+             {
+@@ -5694,7 +5702,9 @@ Result KPageTableBase::Operate(PageLinkedList* page_list, KProcessAddress virt_a
+ 
+         // Ensure that any pages we track are closed on exit.
+         KPageGroup pages_to_close(m_kernel, this->GetBlockInfoManager());
+-        SCOPE_EXIT({ pages_to_close.CloseAndReset(); });
++        SCOPE_EXIT {
++            pages_to_close.CloseAndReset();
++        };
+ 
+         // Make a page group representing the region to unmap.
+         this->MakePageGroup(pages_to_close, virt_addr, num_pages);
+diff --git a/src/core/hle/kernel/k_process.cpp b/src/core/hle/kernel/k_process.cpp
+index 1bcc428907a8..cb9a11a63179 100644
+--- a/src/core/hle/kernel/k_process.cpp
++++ b/src/core/hle/kernel/k_process.cpp
+@@ -77,7 +77,9 @@ Result TerminateChildren(KernelCore& kernel, KProcess* process,
+         }
+ 
+         // Terminate and close the thread.
+-        SCOPE_EXIT({ cur_child->Close(); });
++        SCOPE_EXIT {
++            cur_child->Close();
++        };
+ 
+         if (const Result terminate_result = cur_child->Terminate();
+             ResultTerminationRequested == terminate_result) {
+@@ -466,11 +468,11 @@ void KProcess::DoWorkerTaskImpl() {
+ 
+ Result KProcess::StartTermination() {
+     // Finalize the handle table when we're done, if the process isn't immortal.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         if (!m_is_immortal) {
+             this->FinalizeHandleTable();
+         }
+-    });
++    };
+ 
+     // Terminate child threads other than the current one.
+     R_RETURN(TerminateChildren(m_kernel, this, GetCurrentThreadPointer(m_kernel)));
+@@ -964,7 +966,9 @@ Result KProcess::Run(s32 priority, size_t stack_size) {
+     // Create a new thread for the process.
+     KThread* main_thread = KThread::Create(m_kernel);
+     R_UNLESS(main_thread != nullptr, ResultOutOfResource);
+-    SCOPE_EXIT({ main_thread->Close(); });
++    SCOPE_EXIT {
++        main_thread->Close();
++    };
+ 
+     // Initialize the thread.
+     R_TRY(KThread::InitializeUserThread(m_kernel.System(), main_thread, this->GetEntryPoint(), 0,
+@@ -1155,7 +1159,9 @@ Result KProcess::LoadFromMetadata(const FileSys::ProgramMetadata& metadata, std:
+         Kernel::CreateResourceLimitForProcess(m_kernel.System(), physical_memory_size);
+ 
+     // Ensure we maintain a clean state on exit.
+-    SCOPE_EXIT({ res_limit->Close(); });
++    SCOPE_EXIT {
++        res_limit->Close();
++    };
+ 
+     // Declare flags and code address.
+     Svc::CreateProcessFlag flag{};
+diff --git a/src/core/hle/kernel/k_server_session.cpp b/src/core/hle/kernel/k_server_session.cpp
+index adaabdd6d641..40c3323ef347 100644
+--- a/src/core/hle/kernel/k_server_session.cpp
++++ b/src/core/hle/kernel/k_server_session.cpp
+@@ -651,11 +651,11 @@ Result ReceiveMessage(KernelCore& kernel, bool& recv_list_broken, uint64_t dst_m
+     // Process any special data.
+     if (src_header.GetHasSpecialHeader()) {
+         // After we process, make sure we track whether the receive list is broken.
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (offset > dst_recv_list_idx) {
+                 recv_list_broken = true;
+             }
+-        });
++        };
+ 
+         // Process special data.
+         R_TRY(ProcessMessageSpecialData<false>(offset, dst_process, src_process, src_thread,
+@@ -665,11 +665,11 @@ Result ReceiveMessage(KernelCore& kernel, bool& recv_list_broken, uint64_t dst_m
+     // Process any pointer buffers.
+     for (auto i = 0; i < src_header.GetPointerCount(); ++i) {
+         // After we process, make sure we track whether the receive list is broken.
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (offset > dst_recv_list_idx) {
+                 recv_list_broken = true;
+             }
+-        });
++        };
+ 
+         R_TRY(ProcessReceiveMessagePointerDescriptors(
+             offset, pointer_key, dst_page_table, src_page_table, dst_msg, src_msg, dst_recv_list,
+@@ -680,11 +680,11 @@ Result ReceiveMessage(KernelCore& kernel, bool& recv_list_broken, uint64_t dst_m
+     // Process any map alias buffers.
+     for (auto i = 0; i < src_header.GetMapAliasCount(); ++i) {
+         // After we process, make sure we track whether the receive list is broken.
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (offset > dst_recv_list_idx) {
+                 recv_list_broken = true;
+             }
+-        });
++        };
+ 
+         // We process in order send, recv, exch. Buffers after send (recv/exch) are ReadWrite.
+         const KMemoryPermission perm = (i >= src_header.GetSendCount())
+@@ -702,11 +702,11 @@ Result ReceiveMessage(KernelCore& kernel, bool& recv_list_broken, uint64_t dst_m
+     // Process any raw data.
+     if (const auto raw_count = src_header.GetRawCount(); raw_count != 0) {
+         // After we process, make sure we track whether the receive list is broken.
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (offset + raw_count > dst_recv_list_idx) {
+                 recv_list_broken = true;
+             }
+-        });
++        };
+ 
+         // Get the offset and size.
+         const size_t offset_words = offset * sizeof(u32);
+@@ -1124,7 +1124,9 @@ Result KServerSession::ReceiveRequest(uintptr_t server_message, uintptr_t server
+         client_thread->Open();
+     }
+ 
+-    SCOPE_EXIT({ client_thread->Close(); });
++    SCOPE_EXIT {
++        client_thread->Close();
++    };
+ 
+     // Set the request as our current.
+     m_current_request = request;
+@@ -1174,7 +1176,9 @@ Result KServerSession::ReceiveRequest(uintptr_t server_message, uintptr_t server
+         // Reply to the client.
+         {
+             // After we reply, close our reference to the request.
+-            SCOPE_EXIT({ request->Close(); });
++            SCOPE_EXIT {
++                request->Close();
++            };
+ 
+             // Get the event to check whether the request is async.
+             if (KEvent* event = request->GetEvent(); event != nullptr) {
+@@ -1236,7 +1240,9 @@ Result KServerSession::SendReply(uintptr_t server_message, uintptr_t server_buff
+     }
+ 
+     // Close reference to the request once we're done processing it.
+-    SCOPE_EXIT({ request->Close(); });
++    SCOPE_EXIT {
++        request->Close();
++    };
+ 
+     // Extract relevant information from the request.
+     const uint64_t client_message = request->GetAddress();
+@@ -1394,7 +1400,9 @@ void KServerSession::CleanupRequests() {
+         }
+ 
+         // Close a reference to the request once it's cleaned up.
+-        SCOPE_EXIT({ request->Close(); });
++        SCOPE_EXIT {
++            request->Close();
++        };
+ 
+         // Extract relevant information from the request.
+         const uint64_t client_message = request->GetAddress();
+@@ -1491,7 +1499,9 @@ void KServerSession::OnClientClosed() {
+         ASSERT(thread != nullptr);
+ 
+         // Ensure that we close the request when done.
+-        SCOPE_EXIT({ request->Close(); });
++        SCOPE_EXIT {
++            request->Close();
++        };
+ 
+         // If we're terminating, close a reference to the thread and event.
+         if (terminate) {
+diff --git a/src/core/hle/kernel/k_thread_local_page.cpp b/src/core/hle/kernel/k_thread_local_page.cpp
+index a632d16349ec..1952c00831c5 100644
+--- a/src/core/hle/kernel/k_thread_local_page.cpp
++++ b/src/core/hle/kernel/k_thread_local_page.cpp
+@@ -21,7 +21,9 @@ Result KThreadLocalPage::Initialize(KernelCore& kernel, KProcess* process) {
+     // Allocate a new page.
+     KPageBuffer* page_buf = KPageBuffer::Allocate(kernel);
+     R_UNLESS(page_buf != nullptr, ResultOutOfMemory);
+-    auto page_buf_guard = SCOPE_GUARD({ KPageBuffer::Free(kernel, page_buf); });
++    auto page_buf_guard = SCOPE_GUARD {
++        KPageBuffer::Free(kernel, page_buf);
++    };
+ 
+     // Map the address in.
+     const auto phys_addr = kernel.System().DeviceMemory().GetPhysicalAddr(page_buf);
+diff --git a/src/core/hle/kernel/k_transfer_memory.cpp b/src/core/hle/kernel/k_transfer_memory.cpp
+index cbb1b02bb26a..09295e8ad8ef 100644
+--- a/src/core/hle/kernel/k_transfer_memory.cpp
++++ b/src/core/hle/kernel/k_transfer_memory.cpp
+@@ -24,7 +24,9 @@ Result KTransferMemory::Initialize(KProcessAddress addr, std::size_t size,
+ 
+     // Construct the page group, guarding to make sure our state is valid on exit.
+     m_page_group.emplace(m_kernel, page_table.GetBlockInfoManager());
+-    auto pg_guard = SCOPE_GUARD({ m_page_group.reset(); });
++    auto pg_guard = SCOPE_GUARD {
++        m_page_group.reset();
++    };
+ 
+     // Lock the memory.
+     R_TRY(page_table.LockForTransferMemory(std::addressof(*m_page_group), addr, size,
+diff --git a/src/core/hle/kernel/kernel.cpp b/src/core/hle/kernel/kernel.cpp
+index 34b25be66557..8288381d679e 100644
+--- a/src/core/hle/kernel/kernel.cpp
++++ b/src/core/hle/kernel/kernel.cpp
+@@ -109,7 +109,9 @@ struct KernelCore::Impl {
+ 
+     void Shutdown() {
+         is_shutting_down.store(true, std::memory_order_relaxed);
+-        SCOPE_EXIT({ is_shutting_down.store(false, std::memory_order_relaxed); });
++        SCOPE_EXIT {
++            is_shutting_down.store(false, std::memory_order_relaxed);
++        };
+ 
+         CloseServices();
+ 
+@@ -1080,7 +1082,9 @@ std::jthread KernelCore::RunOnHostCoreProcess(std::string&& process_name,
+         process->Initialize(Svc::CreateProcessParameter{}, GetSystemResourceLimit(), false)));
+ 
+     // Ensure that we don't hold onto any extra references.
+-    SCOPE_EXIT({ process->Close(); });
++    SCOPE_EXIT {
++        process->Close();
++    };
+ 
+     // Register the new process.
+     KProcess::Register(*this, process);
+@@ -1108,7 +1112,9 @@ void KernelCore::RunOnGuestCoreProcess(std::string&& process_name, std::function
+         process->Initialize(Svc::CreateProcessParameter{}, GetSystemResourceLimit(), false)));
+ 
+     // Ensure that we don't hold onto any extra references.
+-    SCOPE_EXIT({ process->Close(); });
++    SCOPE_EXIT {
++        process->Close();
++    };
+ 
+     // Register the new process.
+     KProcess::Register(*this, process);
+diff --git a/src/core/hle/kernel/svc/svc_code_memory.cpp b/src/core/hle/kernel/svc/svc_code_memory.cpp
+index bae4cb0cd0b4..7be2802f0768 100644
+--- a/src/core/hle/kernel/svc/svc_code_memory.cpp
++++ b/src/core/hle/kernel/svc/svc_code_memory.cpp
+@@ -45,7 +45,9 @@ Result CreateCodeMemory(Core::System& system, Handle* out, u64 address, uint64_t
+ 
+     KCodeMemory* code_mem = KCodeMemory::Create(kernel);
+     R_UNLESS(code_mem != nullptr, ResultOutOfResource);
+-    SCOPE_EXIT({ code_mem->Close(); });
++    SCOPE_EXIT {
++        code_mem->Close();
++    };
+ 
+     // Verify that the region is in range.
+     R_UNLESS(GetCurrentProcess(system.Kernel()).GetPageTable().Contains(address, size),
+diff --git a/src/core/hle/kernel/svc/svc_device_address_space.cpp b/src/core/hle/kernel/svc/svc_device_address_space.cpp
+index 42add9473a0c..ac828320f493 100644
+--- a/src/core/hle/kernel/svc/svc_device_address_space.cpp
++++ b/src/core/hle/kernel/svc/svc_device_address_space.cpp
+@@ -28,7 +28,9 @@ Result CreateDeviceAddressSpace(Core::System& system, Handle* out, uint64_t das_
+     // Create the device address space.
+     KDeviceAddressSpace* das = KDeviceAddressSpace::Create(system.Kernel());
+     R_UNLESS(das != nullptr, ResultOutOfResource);
+-    SCOPE_EXIT({ das->Close(); });
++    SCOPE_EXIT {
++        das->Close();
++    };
+ 
+     // Initialize the device address space.
+     R_TRY(das->Initialize(das_address, das_size));
+diff --git a/src/core/hle/kernel/svc/svc_event.cpp b/src/core/hle/kernel/svc/svc_event.cpp
+index 901202e6a414..8e4beb3965f1 100644
+--- a/src/core/hle/kernel/svc/svc_event.cpp
++++ b/src/core/hle/kernel/svc/svc_event.cpp
+@@ -72,10 +72,10 @@ Result CreateEvent(Core::System& system, Handle* out_write, Handle* out_read) {
+     event_reservation.Commit();
+ 
+     // Ensure that we clean up the event (and its only references are handle table) on function end.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         event->GetReadableEvent().Close();
+         event->Close();
+-    });
++    };
+ 
+     // Register the event.
+     KEvent::Register(kernel, event);
+diff --git a/src/core/hle/kernel/svc/svc_ipc.cpp b/src/core/hle/kernel/svc/svc_ipc.cpp
+index 85cc4f561ea2..b619bd70ab32 100644
+--- a/src/core/hle/kernel/svc/svc_ipc.cpp
++++ b/src/core/hle/kernel/svc/svc_ipc.cpp
+@@ -129,11 +129,11 @@ Result ReplyAndReceiveImpl(KernelCore& kernel, int32_t* out_index, uintptr_t mes
+     }
+ 
+     // Ensure handles are closed when we're done.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         for (auto i = 0; i < num_handles; ++i) {
+             objs[i]->Close();
+         }
+-    });
++    };
+ 
+     R_RETURN(ReplyAndReceiveImpl(kernel, out_index, message, buffer_size, message_paddr, objs,
+                                  num_handles, reply_target, timeout_ns));
+@@ -208,10 +208,10 @@ Result SendAsyncRequestWithUserBuffer(Core::System& system, Handle* out_event_ha
+     event_reservation.Commit();
+ 
+     // At end of scope, kill the standing references to the sub events.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         event->GetReadableEvent().Close();
+         event->Close();
+-    });
++    };
+ 
+     // Register the event.
+     KEvent::Register(system.Kernel(), event);
+diff --git a/src/core/hle/kernel/svc/svc_port.cpp b/src/core/hle/kernel/svc/svc_port.cpp
+index 737749f7dd5c..9a22dadaf750 100644
+--- a/src/core/hle/kernel/svc/svc_port.cpp
++++ b/src/core/hle/kernel/svc/svc_port.cpp
+@@ -68,10 +68,10 @@ Result CreatePort(Core::System& system, Handle* out_server, Handle* out_client,
+     port->Initialize(max_sessions, is_light, name);
+ 
+     // Ensure that we clean up the port (and its only references are handle table) on function end.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         port->GetServerPort().Close();
+         port->GetClientPort().Close();
+-    });
++    };
+ 
+     // Register the port.
+     KPort::Register(kernel, port);
+@@ -150,10 +150,10 @@ Result ManageNamedPort(Core::System& system, Handle* out_server_handle, uint64_t
+         KPort::Register(system.Kernel(), port);
+ 
+         // Ensure that our only reference to the port is in the handle table when we're done.
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             port->GetClientPort().Close();
+             port->GetServerPort().Close();
+-        });
++        };
+ 
+         // Register the handle in the table.
+         R_TRY(handle_table.Add(out_server_handle, std::addressof(port->GetServerPort())));
+diff --git a/src/core/hle/kernel/svc/svc_resource_limit.cpp b/src/core/hle/kernel/svc/svc_resource_limit.cpp
+index c8e820b6a832..6f3972482fc7 100644
+--- a/src/core/hle/kernel/svc/svc_resource_limit.cpp
++++ b/src/core/hle/kernel/svc/svc_resource_limit.cpp
+@@ -18,7 +18,9 @@ Result CreateResourceLimit(Core::System& system, Handle* out_handle) {
+     R_UNLESS(resource_limit != nullptr, ResultOutOfResource);
+ 
+     // Ensure we don't leak a reference to the limit.
+-    SCOPE_EXIT({ resource_limit->Close(); });
++    SCOPE_EXIT {
++        resource_limit->Close();
++    };
+ 
+     // Initialize the resource limit.
+     resource_limit->Initialize();
+diff --git a/src/core/hle/kernel/svc/svc_session.cpp b/src/core/hle/kernel/svc/svc_session.cpp
+index 2f5905f32919..b034d21d1571 100644
+--- a/src/core/hle/kernel/svc/svc_session.cpp
++++ b/src/core/hle/kernel/svc/svc_session.cpp
+@@ -69,10 +69,10 @@ Result CreateSession(Core::System& system, Handle* out_server, Handle* out_clien
+ 
+     // Ensure that we clean up the session (and its only references are handle table) on function
+     // end.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         session->GetClientSession().Close();
+         session->GetServerSession().Close();
+-    });
++    };
+ 
+     // Register the session.
+     T::Register(system.Kernel(), session);
+diff --git a/src/core/hle/kernel/svc/svc_synchronization.cpp b/src/core/hle/kernel/svc/svc_synchronization.cpp
+index 6c79cfd8dd5f..fb03908d7356 100644
+--- a/src/core/hle/kernel/svc/svc_synchronization.cpp
++++ b/src/core/hle/kernel/svc/svc_synchronization.cpp
+@@ -78,11 +78,11 @@ Result WaitSynchronization(Core::System& system, int32_t* out_index, u64 user_ha
+     }
+ 
+     // Ensure handles are closed when we're done.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         for (auto i = 0; i < num_handles; ++i) {
+             objs[i]->Close();
+         }
+-    });
++    };
+ 
+     // Convert the timeout from nanoseconds to ticks.
+     s64 timeout;
+diff --git a/src/core/hle/kernel/svc/svc_thread.cpp b/src/core/hle/kernel/svc/svc_thread.cpp
+index 7681afa33d11..7517bb9d391e 100644
+--- a/src/core/hle/kernel/svc/svc_thread.cpp
++++ b/src/core/hle/kernel/svc/svc_thread.cpp
+@@ -51,7 +51,9 @@ Result CreateThread(Core::System& system, Handle* out_handle, u64 entry_point, u
+     // Create the thread.
+     KThread* thread = KThread::Create(kernel);
+     R_UNLESS(thread != nullptr, ResultOutOfResource)
+-    SCOPE_EXIT({ thread->Close(); });
++    SCOPE_EXIT {
++        thread->Close();
++    };
+ 
+     // Initialize the thread.
+     {
+diff --git a/src/core/hle/kernel/svc/svc_transfer_memory.cpp b/src/core/hle/kernel/svc/svc_transfer_memory.cpp
+index 671bca23f03e..2ea0d4421574 100644
+--- a/src/core/hle/kernel/svc/svc_transfer_memory.cpp
++++ b/src/core/hle/kernel/svc/svc_transfer_memory.cpp
+@@ -52,7 +52,9 @@ Result CreateTransferMemory(Core::System& system, Handle* out, u64 address, u64
+     R_UNLESS(trmem != nullptr, ResultOutOfResource);
+ 
+     // Ensure the only reference is in the handle table when we're done.
+-    SCOPE_EXIT({ trmem->Close(); });
++    SCOPE_EXIT {
++        trmem->Close();
++    };
+ 
+     // Ensure that the region is in range.
+     R_UNLESS(process.GetPageTable().Contains(address, size), ResultInvalidCurrentMemory);
+diff --git a/src/core/hle/service/am/applet_data_broker.cpp b/src/core/hle/service/am/applet_data_broker.cpp
+index 4d58c4db500f..9057244a9244 100644
+--- a/src/core/hle/service/am/applet_data_broker.cpp
++++ b/src/core/hle/service/am/applet_data_broker.cpp
+@@ -24,11 +24,11 @@ void AppletStorageChannel::Push(std::shared_ptr<IStorage> storage) {
+ Result AppletStorageChannel::Pop(std::shared_ptr<IStorage>* out_storage) {
+     std::scoped_lock lk{m_lock};
+ 
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         if (m_data.empty()) {
+             m_event.Clear();
+         }
+-    });
++    };
+ 
+     R_UNLESS(!m_data.empty(), AM::ResultNoDataInChannel);
+ 
+diff --git a/src/core/hle/service/am/process.cpp b/src/core/hle/service/am/process.cpp
+index 992c507136c3..388d2045c828 100644
+--- a/src/core/hle/service/am/process.cpp
++++ b/src/core/hle/service/am/process.cpp
+@@ -68,7 +68,9 @@ bool Process::Initialize(u64 program_id, u8 minimum_key_generation, u8 maximum_k
+     Kernel::KProcess::Register(m_system.Kernel(), process);
+ 
+     // On exit, ensure we free the additional reference to the process.
+-    SCOPE_EXIT({ process->Close(); });
++    SCOPE_EXIT {
++        process->Close();
++    };
+ 
+     // Insert process modules into memory.
+     const auto [load_result, load_parameters] = app_loader->Load(*process, m_system);
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_directory.cpp b/src/core/hle/service/filesystem/fsp/fs_i_directory.cpp
+index 39690018baa3..8483394d0c7f 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_directory.cpp
++++ b/src/core/hle/service/filesystem/fsp/fs_i_directory.cpp
+@@ -3,82 +3,34 @@
+ 
+ #include "core/file_sys/fs_filesystem.h"
+ #include "core/file_sys/savedata_factory.h"
++#include "core/hle/service/cmif_serialization.h"
+ #include "core/hle/service/filesystem/fsp/fs_i_directory.h"
+-#include "core/hle/service/ipc_helpers.h"
+ 
+ namespace Service::FileSystem {
+ 
+-template <typename T>
+-static void BuildEntryIndex(std::vector<FileSys::DirectoryEntry>& entries,
+-                            const std::vector<T>& new_data, FileSys::DirectoryEntryType type) {
+-    entries.reserve(entries.size() + new_data.size());
+-
+-    for (const auto& new_entry : new_data) {
+-        auto name = new_entry->GetName();
+-
+-        if (type == FileSys::DirectoryEntryType::File &&
+-            name == FileSys::GetSaveDataSizeFileName()) {
+-            continue;
+-        }
+-
+-        entries.emplace_back(name, static_cast<s8>(type),
+-                             type == FileSys::DirectoryEntryType::Directory ? 0
+-                                                                            : new_entry->GetSize());
+-    }
+-}
+-
+-IDirectory::IDirectory(Core::System& system_, FileSys::VirtualDir backend_,
++IDirectory::IDirectory(Core::System& system_, FileSys::VirtualDir directory_,
+                        FileSys::OpenDirectoryMode mode)
+-    : ServiceFramework{system_, "IDirectory"}, backend(std::move(backend_)) {
++    : ServiceFramework{system_, "IDirectory"},
++      backend(std::make_unique<FileSys::Fsa::IDirectory>(directory_, mode)) {
+     static const FunctionInfo functions[] = {
+-        {0, &IDirectory::Read, "Read"},
+-        {1, &IDirectory::GetEntryCount, "GetEntryCount"},
++        {0, D<&IDirectory::Read>, "Read"},
++        {1, D<&IDirectory::GetEntryCount>, "GetEntryCount"},
+     };
+     RegisterHandlers(functions);
+-
+-    // TODO(DarkLordZach): Verify that this is the correct behavior.
+-    // Build entry index now to save time later.
+-    if (True(mode & FileSys::OpenDirectoryMode::Directory)) {
+-        BuildEntryIndex(entries, backend->GetSubdirectories(),
+-                        FileSys::DirectoryEntryType::Directory);
+-    }
+-    if (True(mode & FileSys::OpenDirectoryMode::File)) {
+-        BuildEntryIndex(entries, backend->GetFiles(), FileSys::DirectoryEntryType::File);
+-    }
+ }
+ 
+-void IDirectory::Read(HLERequestContext& ctx) {
++Result IDirectory::Read(
++    Out<s64> out_count,
++    const OutArray<FileSys::DirectoryEntry, BufferAttr_HipcMapAlias> out_entries) {
+     LOG_DEBUG(Service_FS, "called.");
+ 
+-    // Calculate how many entries we can fit in the output buffer
+-    const u64 count_entries = ctx.GetWriteBufferNumElements<FileSys::DirectoryEntry>();
+-
+-    // Cap at total number of entries.
+-    const u64 actual_entries = std::min(count_entries, entries.size() - next_entry_index);
+-
+-    // Determine data start and end
+-    const auto* begin = reinterpret_cast<u8*>(entries.data() + next_entry_index);
+-    const auto* end = reinterpret_cast<u8*>(entries.data() + next_entry_index + actual_entries);
+-    const auto range_size = static_cast<std::size_t>(std::distance(begin, end));
+-
+-    next_entry_index += actual_entries;
+-
+-    // Write the data to memory
+-    ctx.WriteBuffer(begin, range_size);
+-
+-    IPC::ResponseBuilder rb{ctx, 4};
+-    rb.Push(ResultSuccess);
+-    rb.Push(actual_entries);
++    R_RETURN(backend->Read(out_count, out_entries.data(), out_entries.size()));
+ }
+ 
+-void IDirectory::GetEntryCount(HLERequestContext& ctx) {
++Result IDirectory::GetEntryCount(Out<s64> out_count) {
+     LOG_DEBUG(Service_FS, "called");
+ 
+-    u64 count = entries.size() - next_entry_index;
+-
+-    IPC::ResponseBuilder rb{ctx, 4};
+-    rb.Push(ResultSuccess);
+-    rb.Push(count);
++    R_RETURN(backend->GetEntryCount(out_count));
+ }
+ 
+ } // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_directory.h b/src/core/hle/service/filesystem/fsp/fs_i_directory.h
+index 793ecfcd7f39..b6251f7fdbf1 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_directory.h
++++ b/src/core/hle/service/filesystem/fsp/fs_i_directory.h
+@@ -3,7 +3,9 @@
+ 
+ #pragma once
+ 
++#include "core/file_sys/fsa/fs_i_directory.h"
+ #include "core/file_sys/vfs/vfs.h"
++#include "core/hle/service/cmif_types.h"
+ #include "core/hle/service/filesystem/filesystem.h"
+ #include "core/hle/service/service.h"
+ 
+@@ -15,16 +17,15 @@ namespace Service::FileSystem {
+ 
+ class IDirectory final : public ServiceFramework<IDirectory> {
+ public:
+-    explicit IDirectory(Core::System& system_, FileSys::VirtualDir backend_,
++    explicit IDirectory(Core::System& system_, FileSys::VirtualDir directory_,
+                         FileSys::OpenDirectoryMode mode);
+ 
+ private:
+-    FileSys::VirtualDir backend;
+-    std::vector<FileSys::DirectoryEntry> entries;
+-    u64 next_entry_index = 0;
++    std::unique_ptr<FileSys::Fsa::IDirectory> backend;
+ 
+-    void Read(HLERequestContext& ctx);
+-    void GetEntryCount(HLERequestContext& ctx);
++    Result Read(Out<s64> out_count,
++                const OutArray<FileSys::DirectoryEntry, BufferAttr_HipcMapAlias> out_entries);
++    Result GetEntryCount(Out<s64> out_count);
+ };
+ 
+ } // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_file.cpp b/src/core/hle/service/filesystem/fsp/fs_i_file.cpp
+index 9a18f6ec52be..a355d46ae1ee 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_file.cpp
++++ b/src/core/hle/service/filesystem/fsp/fs_i_file.cpp
+@@ -2,126 +2,64 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "core/file_sys/errors.h"
++#include "core/hle/service/cmif_serialization.h"
+ #include "core/hle/service/filesystem/fsp/fs_i_file.h"
+-#include "core/hle/service/ipc_helpers.h"
+ 
+ namespace Service::FileSystem {
+ 
+-IFile::IFile(Core::System& system_, FileSys::VirtualFile backend_)
+-    : ServiceFramework{system_, "IFile"}, backend(std::move(backend_)) {
++IFile::IFile(Core::System& system_, FileSys::VirtualFile file_)
++    : ServiceFramework{system_, "IFile"}, backend{std::make_unique<FileSys::Fsa::IFile>(file_)} {
++    // clang-format off
+     static const FunctionInfo functions[] = {
+-        {0, &IFile::Read, "Read"},
+-        {1, &IFile::Write, "Write"},
+-        {2, &IFile::Flush, "Flush"},
+-        {3, &IFile::SetSize, "SetSize"},
+-        {4, &IFile::GetSize, "GetSize"},
++        {0, D<&IFile::Read>, "Read"},
++        {1, D<&IFile::Write>, "Write"},
++        {2, D<&IFile::Flush>, "Flush"},
++        {3, D<&IFile::SetSize>, "SetSize"},
++        {4, D<&IFile::GetSize>, "GetSize"},
+         {5, nullptr, "OperateRange"},
+         {6, nullptr, "OperateRangeWithBuffer"},
+     };
++    // clang-format on
+     RegisterHandlers(functions);
+ }
+ 
+-void IFile::Read(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const u64 option = rp.Pop<u64>();
+-    const s64 offset = rp.Pop<s64>();
+-    const s64 length = rp.Pop<s64>();
+-
+-    LOG_DEBUG(Service_FS, "called, option={}, offset=0x{:X}, length={}", option, offset, length);
+-
+-    // Error checking
+-    if (length < 0) {
+-        LOG_ERROR(Service_FS, "Length is less than 0, length={}", length);
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(FileSys::ResultInvalidSize);
+-        return;
+-    }
+-    if (offset < 0) {
+-        LOG_ERROR(Service_FS, "Offset is less than 0, offset={}", offset);
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(FileSys::ResultInvalidOffset);
+-        return;
+-    }
++Result IFile::Read(
++    FileSys::ReadOption option, Out<s64> out_size, s64 offset,
++    const OutBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure> out_buffer,
++    s64 size) {
++    LOG_DEBUG(Service_FS, "called, option={}, offset=0x{:X}, length={}", option.value, offset,
++              size);
+ 
+     // Read the data from the Storage backend
+-    std::vector<u8> output = backend->ReadBytes(length, offset);
+-
+-    // Write the data to memory
+-    ctx.WriteBuffer(output);
+-
+-    IPC::ResponseBuilder rb{ctx, 4};
+-    rb.Push(ResultSuccess);
+-    rb.Push(static_cast<u64>(output.size()));
++    R_RETURN(
++        backend->Read(reinterpret_cast<size_t*>(out_size.Get()), offset, out_buffer.data(), size));
+ }
+ 
+-void IFile::Write(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const u64 option = rp.Pop<u64>();
+-    const s64 offset = rp.Pop<s64>();
+-    const s64 length = rp.Pop<s64>();
+-
+-    LOG_DEBUG(Service_FS, "called, option={}, offset=0x{:X}, length={}", option, offset, length);
+-
+-    // Error checking
+-    if (length < 0) {
+-        LOG_ERROR(Service_FS, "Length is less than 0, length={}", length);
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(FileSys::ResultInvalidSize);
+-        return;
+-    }
+-    if (offset < 0) {
+-        LOG_ERROR(Service_FS, "Offset is less than 0, offset={}", offset);
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(FileSys::ResultInvalidOffset);
+-        return;
+-    }
+-
+-    const auto data = ctx.ReadBuffer();
++Result IFile::Write(
++    const InBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure> buffer,
++    FileSys::WriteOption option, s64 offset, s64 size) {
++    LOG_DEBUG(Service_FS, "called, option={}, offset=0x{:X}, length={}", option.value, offset,
++              size);
+ 
+-    ASSERT_MSG(static_cast<s64>(data.size()) <= length,
+-               "Attempting to write more data than requested (requested={:016X}, actual={:016X}).",
+-               length, data.size());
+-
+-    // Write the data to the Storage backend
+-    const auto write_size =
+-        static_cast<std::size_t>(std::distance(data.begin(), data.begin() + length));
+-    const std::size_t written = backend->Write(data.data(), write_size, offset);
+-
+-    ASSERT_MSG(static_cast<s64>(written) == length,
+-               "Could not write all bytes to file (requested={:016X}, actual={:016X}).", length,
+-               written);
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(ResultSuccess);
++    R_RETURN(backend->Write(offset, buffer.data(), size, option));
+ }
+ 
+-void IFile::Flush(HLERequestContext& ctx) {
++Result IFile::Flush() {
+     LOG_DEBUG(Service_FS, "called");
+ 
+-    // Exists for SDK compatibiltity -- No need to flush file.
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(ResultSuccess);
++    R_RETURN(backend->Flush());
+ }
+ 
+-void IFile::SetSize(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-    const u64 size = rp.Pop<u64>();
++Result IFile::SetSize(s64 size) {
+     LOG_DEBUG(Service_FS, "called, size={}", size);
+ 
+-    backend->Resize(size);
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(ResultSuccess);
++    R_RETURN(backend->SetSize(size));
+ }
+ 
+-void IFile::GetSize(HLERequestContext& ctx) {
+-    const u64 size = backend->GetSize();
+-    LOG_DEBUG(Service_FS, "called, size={}", size);
++Result IFile::GetSize(Out<s64> out_size) {
++    LOG_DEBUG(Service_FS, "called");
+ 
+-    IPC::ResponseBuilder rb{ctx, 4};
+-    rb.Push(ResultSuccess);
+-    rb.Push<u64>(size);
++    R_RETURN(backend->GetSize(out_size));
+ }
+ 
+ } // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_file.h b/src/core/hle/service/filesystem/fsp/fs_i_file.h
+index 5e5430c676be..e8599ee2f840 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_file.h
++++ b/src/core/hle/service/filesystem/fsp/fs_i_file.h
+@@ -3,6 +3,8 @@
+ 
+ #pragma once
+ 
++#include "core/file_sys/fsa/fs_i_file.h"
++#include "core/hle/service/cmif_types.h"
+ #include "core/hle/service/filesystem/filesystem.h"
+ #include "core/hle/service/service.h"
+ 
+@@ -10,16 +12,21 @@ namespace Service::FileSystem {
+ 
+ class IFile final : public ServiceFramework<IFile> {
+ public:
+-    explicit IFile(Core::System& system_, FileSys::VirtualFile backend_);
++    explicit IFile(Core::System& system_, FileSys::VirtualFile file_);
+ 
+ private:
+-    FileSys::VirtualFile backend;
++    std::unique_ptr<FileSys::Fsa::IFile> backend;
+ 
+-    void Read(HLERequestContext& ctx);
+-    void Write(HLERequestContext& ctx);
+-    void Flush(HLERequestContext& ctx);
+-    void SetSize(HLERequestContext& ctx);
+-    void GetSize(HLERequestContext& ctx);
++    Result Read(FileSys::ReadOption option, Out<s64> out_size, s64 offset,
++                const OutBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure>
++                    out_buffer,
++                s64 size);
++    Result Write(
++        const InBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure> buffer,
++        FileSys::WriteOption option, s64 offset, s64 size);
++    Result Flush();
++    Result SetSize(s64 size);
++    Result GetSize(Out<s64> out_size);
+ };
+ 
+ } // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_filesystem.cpp b/src/core/hle/service/filesystem/fsp/fs_i_filesystem.cpp
+index efa394dd1e96..86dd5b7e97a2 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_filesystem.cpp
++++ b/src/core/hle/service/filesystem/fsp/fs_i_filesystem.cpp
+@@ -2,261 +2,172 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "common/string_util.h"
++#include "core/file_sys/fssrv/fssrv_sf_path.h"
++#include "core/hle/service/cmif_serialization.h"
+ #include "core/hle/service/filesystem/fsp/fs_i_directory.h"
+ #include "core/hle/service/filesystem/fsp/fs_i_file.h"
+ #include "core/hle/service/filesystem/fsp/fs_i_filesystem.h"
+-#include "core/hle/service/ipc_helpers.h"
+ 
+ namespace Service::FileSystem {
+ 
+-IFileSystem::IFileSystem(Core::System& system_, FileSys::VirtualDir backend_, SizeGetter size_)
+-    : ServiceFramework{system_, "IFileSystem"}, backend{std::move(backend_)}, size{std::move(
+-                                                                                  size_)} {
++IFileSystem::IFileSystem(Core::System& system_, FileSys::VirtualDir dir_, SizeGetter size_getter_)
++    : ServiceFramework{system_, "IFileSystem"}, backend{std::make_unique<FileSys::Fsa::IFileSystem>(
++                                                    dir_)},
++      size_getter{std::move(size_getter_)} {
+     static const FunctionInfo functions[] = {
+-        {0, &IFileSystem::CreateFile, "CreateFile"},
+-        {1, &IFileSystem::DeleteFile, "DeleteFile"},
+-        {2, &IFileSystem::CreateDirectory, "CreateDirectory"},
+-        {3, &IFileSystem::DeleteDirectory, "DeleteDirectory"},
+-        {4, &IFileSystem::DeleteDirectoryRecursively, "DeleteDirectoryRecursively"},
+-        {5, &IFileSystem::RenameFile, "RenameFile"},
++        {0, D<&IFileSystem::CreateFile>, "CreateFile"},
++        {1, D<&IFileSystem::DeleteFile>, "DeleteFile"},
++        {2, D<&IFileSystem::CreateDirectory>, "CreateDirectory"},
++        {3, D<&IFileSystem::DeleteDirectory>, "DeleteDirectory"},
++        {4, D<&IFileSystem::DeleteDirectoryRecursively>, "DeleteDirectoryRecursively"},
++        {5, D<&IFileSystem::RenameFile>, "RenameFile"},
+         {6, nullptr, "RenameDirectory"},
+-        {7, &IFileSystem::GetEntryType, "GetEntryType"},
+-        {8, &IFileSystem::OpenFile, "OpenFile"},
+-        {9, &IFileSystem::OpenDirectory, "OpenDirectory"},
+-        {10, &IFileSystem::Commit, "Commit"},
+-        {11, &IFileSystem::GetFreeSpaceSize, "GetFreeSpaceSize"},
+-        {12, &IFileSystem::GetTotalSpaceSize, "GetTotalSpaceSize"},
+-        {13, &IFileSystem::CleanDirectoryRecursively, "CleanDirectoryRecursively"},
+-        {14, &IFileSystem::GetFileTimeStampRaw, "GetFileTimeStampRaw"},
++        {7, D<&IFileSystem::GetEntryType>, "GetEntryType"},
++        {8, D<&IFileSystem::OpenFile>, "OpenFile"},
++        {9, D<&IFileSystem::OpenDirectory>, "OpenDirectory"},
++        {10, D<&IFileSystem::Commit>, "Commit"},
++        {11, D<&IFileSystem::GetFreeSpaceSize>, "GetFreeSpaceSize"},
++        {12, D<&IFileSystem::GetTotalSpaceSize>, "GetTotalSpaceSize"},
++        {13, D<&IFileSystem::CleanDirectoryRecursively>, "CleanDirectoryRecursively"},
++        {14, D<&IFileSystem::GetFileTimeStampRaw>, "GetFileTimeStampRaw"},
+         {15, nullptr, "QueryEntry"},
+-        {16, &IFileSystem::GetFileSystemAttribute, "GetFileSystemAttribute"},
++        {16, D<&IFileSystem::GetFileSystemAttribute>, "GetFileSystemAttribute"},
+     };
+     RegisterHandlers(functions);
+ }
+ 
+-void IFileSystem::CreateFile(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
++Result IFileSystem::CreateFile(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path,
++                               s32 option, s64 size) {
++    LOG_DEBUG(Service_FS, "called. file={}, option=0x{:X}, size=0x{:08X}", path->str, option, size);
+ 
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
+-
+-    const u64 file_mode = rp.Pop<u64>();
+-    const u32 file_size = rp.Pop<u32>();
+-
+-    LOG_DEBUG(Service_FS, "called. file={}, mode=0x{:X}, size=0x{:08X}", name, file_mode,
+-              file_size);
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(backend.CreateFile(name, file_size));
++    R_RETURN(backend->CreateFile(FileSys::Path(path->str), size));
+ }
+ 
+-void IFileSystem::DeleteFile(HLERequestContext& ctx) {
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
++Result IFileSystem::DeleteFile(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
++    LOG_DEBUG(Service_FS, "called. file={}", path->str);
+ 
+-    LOG_DEBUG(Service_FS, "called. file={}", name);
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(backend.DeleteFile(name));
++    R_RETURN(backend->DeleteFile(FileSys::Path(path->str)));
+ }
+ 
+-void IFileSystem::CreateDirectory(HLERequestContext& ctx) {
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
+-
+-    LOG_DEBUG(Service_FS, "called. directory={}", name);
++Result IFileSystem::CreateDirectory(
++    const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
++    LOG_DEBUG(Service_FS, "called. directory={}", path->str);
+ 
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(backend.CreateDirectory(name));
++    R_RETURN(backend->CreateDirectory(FileSys::Path(path->str)));
+ }
+ 
+-void IFileSystem::DeleteDirectory(HLERequestContext& ctx) {
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
+-
+-    LOG_DEBUG(Service_FS, "called. directory={}", name);
++Result IFileSystem::DeleteDirectory(
++    const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
++    LOG_DEBUG(Service_FS, "called. directory={}", path->str);
+ 
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(backend.DeleteDirectory(name));
++    R_RETURN(backend->DeleteDirectory(FileSys::Path(path->str)));
+ }
+ 
+-void IFileSystem::DeleteDirectoryRecursively(HLERequestContext& ctx) {
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
++Result IFileSystem::DeleteDirectoryRecursively(
++    const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
++    LOG_DEBUG(Service_FS, "called. directory={}", path->str);
+ 
+-    LOG_DEBUG(Service_FS, "called. directory={}", name);
+-
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(backend.DeleteDirectoryRecursively(name));
++    R_RETURN(backend->DeleteDirectoryRecursively(FileSys::Path(path->str)));
+ }
+ 
+-void IFileSystem::CleanDirectoryRecursively(HLERequestContext& ctx) {
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
+-
+-    LOG_DEBUG(Service_FS, "called. Directory: {}", name);
++Result IFileSystem::CleanDirectoryRecursively(
++    const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
++    LOG_DEBUG(Service_FS, "called. Directory: {}", path->str);
+ 
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(backend.CleanDirectoryRecursively(name));
++    R_RETURN(backend->CleanDirectoryRecursively(FileSys::Path(path->str)));
+ }
+ 
+-void IFileSystem::RenameFile(HLERequestContext& ctx) {
+-    const std::string src_name = Common::StringFromBuffer(ctx.ReadBuffer(0));
+-    const std::string dst_name = Common::StringFromBuffer(ctx.ReadBuffer(1));
+-
+-    LOG_DEBUG(Service_FS, "called. file '{}' to file '{}'", src_name, dst_name);
++Result IFileSystem::RenameFile(
++    const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> old_path,
++    const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> new_path) {
++    LOG_DEBUG(Service_FS, "called. file '{}' to file '{}'", old_path->str, new_path->str);
+ 
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(backend.RenameFile(src_name, dst_name));
++    R_RETURN(backend->RenameFile(FileSys::Path(old_path->str), FileSys::Path(new_path->str)));
+ }
+ 
+-void IFileSystem::OpenFile(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
+-
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
+-
+-    const auto mode = static_cast<FileSys::OpenMode>(rp.Pop<u32>());
+-
+-    LOG_DEBUG(Service_FS, "called. file={}, mode={}", name, mode);
++Result IFileSystem::OpenFile(OutInterface<IFile> out_interface,
++                             const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path,
++                             u32 mode) {
++    LOG_DEBUG(Service_FS, "called. file={}, mode={}", path->str, mode);
+ 
+     FileSys::VirtualFile vfs_file{};
+-    auto result = backend.OpenFile(&vfs_file, name, mode);
+-    if (result != ResultSuccess) {
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(result);
+-        return;
+-    }
+-
+-    auto file = std::make_shared<IFile>(system, vfs_file);
+-
+-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-    rb.Push(ResultSuccess);
+-    rb.PushIpcInterface<IFile>(std::move(file));
+-}
+-
+-void IFileSystem::OpenDirectory(HLERequestContext& ctx) {
+-    IPC::RequestParser rp{ctx};
++    R_TRY(backend->OpenFile(&vfs_file, FileSys::Path(path->str),
++                            static_cast<FileSys::OpenMode>(mode)));
+ 
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
+-    const auto mode = rp.PopRaw<FileSys::OpenDirectoryMode>();
++    *out_interface = std::make_shared<IFile>(system, vfs_file);
++    R_SUCCEED();
++}
+ 
+-    LOG_DEBUG(Service_FS, "called. directory={}, mode={}", name, mode);
++Result IFileSystem::OpenDirectory(OutInterface<IDirectory> out_interface,
++                                  const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path,
++                                  u32 mode) {
++    LOG_DEBUG(Service_FS, "called. directory={}, mode={}", path->str, mode);
+ 
+     FileSys::VirtualDir vfs_dir{};
+-    auto result = backend.OpenDirectory(&vfs_dir, name);
+-    if (result != ResultSuccess) {
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(result);
+-        return;
+-    }
+-
+-    auto directory = std::make_shared<IDirectory>(system, vfs_dir, mode);
+-
+-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-    rb.Push(ResultSuccess);
+-    rb.PushIpcInterface<IDirectory>(std::move(directory));
+-}
++    R_TRY(backend->OpenDirectory(&vfs_dir, FileSys::Path(path->str),
++                                 static_cast<FileSys::OpenDirectoryMode>(mode)));
+ 
+-void IFileSystem::GetEntryType(HLERequestContext& ctx) {
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
++    *out_interface = std::make_shared<IDirectory>(system, vfs_dir,
++                                                  static_cast<FileSys::OpenDirectoryMode>(mode));
++    R_SUCCEED();
++}
+ 
+-    LOG_DEBUG(Service_FS, "called. file={}", name);
++Result IFileSystem::GetEntryType(
++    Out<u32> out_type, const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
++    LOG_DEBUG(Service_FS, "called. file={}", path->str);
+ 
+     FileSys::DirectoryEntryType vfs_entry_type{};
+-    auto result = backend.GetEntryType(&vfs_entry_type, name);
+-    if (result != ResultSuccess) {
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(result);
+-        return;
+-    }
+-
+-    IPC::ResponseBuilder rb{ctx, 3};
+-    rb.Push(ResultSuccess);
+-    rb.Push<u32>(static_cast<u32>(vfs_entry_type));
++    R_TRY(backend->GetEntryType(&vfs_entry_type, FileSys::Path(path->str)));
++
++    *out_type = static_cast<u32>(vfs_entry_type);
++    R_SUCCEED();
+ }
+ 
+-void IFileSystem::Commit(HLERequestContext& ctx) {
++Result IFileSystem::Commit() {
+     LOG_WARNING(Service_FS, "(STUBBED) called");
+ 
+-    IPC::ResponseBuilder rb{ctx, 2};
+-    rb.Push(ResultSuccess);
++    R_SUCCEED();
+ }
+ 
+-void IFileSystem::GetFreeSpaceSize(HLERequestContext& ctx) {
++Result IFileSystem::GetFreeSpaceSize(
++    Out<s64> out_size, const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
+     LOG_DEBUG(Service_FS, "called");
+ 
+-    IPC::ResponseBuilder rb{ctx, 4};
+-    rb.Push(ResultSuccess);
+-    rb.Push(size.get_free_size());
++    *out_size = size_getter.get_free_size();
++    R_SUCCEED();
+ }
+ 
+-void IFileSystem::GetTotalSpaceSize(HLERequestContext& ctx) {
++Result IFileSystem::GetTotalSpaceSize(
++    Out<s64> out_size, const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
+     LOG_DEBUG(Service_FS, "called");
+ 
+-    IPC::ResponseBuilder rb{ctx, 4};
+-    rb.Push(ResultSuccess);
+-    rb.Push(size.get_total_size());
++    *out_size = size_getter.get_total_size();
++    R_SUCCEED();
+ }
+ 
+-void IFileSystem::GetFileTimeStampRaw(HLERequestContext& ctx) {
+-    const auto file_buffer = ctx.ReadBuffer();
+-    const std::string name = Common::StringFromBuffer(file_buffer);
+-
+-    LOG_WARNING(Service_FS, "(Partial Implementation) called. file={}", name);
++Result IFileSystem::GetFileTimeStampRaw(
++    Out<FileSys::FileTimeStampRaw> out_timestamp,
++    const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path) {
++    LOG_WARNING(Service_FS, "(Partial Implementation) called. file={}", path->str);
+ 
+     FileSys::FileTimeStampRaw vfs_timestamp{};
+-    auto result = backend.GetFileTimeStampRaw(&vfs_timestamp, name);
+-    if (result != ResultSuccess) {
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(result);
+-        return;
+-    }
+-
+-    IPC::ResponseBuilder rb{ctx, 10};
+-    rb.Push(ResultSuccess);
+-    rb.PushRaw(vfs_timestamp);
++    R_TRY(backend->GetFileTimeStampRaw(&vfs_timestamp, FileSys::Path(path->str)));
++
++    *out_timestamp = vfs_timestamp;
++    R_SUCCEED();
+ }
+ 
+-void IFileSystem::GetFileSystemAttribute(HLERequestContext& ctx) {
++Result IFileSystem::GetFileSystemAttribute(Out<FileSystemAttribute> out_attribute) {
+     LOG_WARNING(Service_FS, "(STUBBED) called");
+ 
+-    struct FileSystemAttribute {
+-        u8 dir_entry_name_length_max_defined;
+-        u8 file_entry_name_length_max_defined;
+-        u8 dir_path_name_length_max_defined;
+-        u8 file_path_name_length_max_defined;
+-        INSERT_PADDING_BYTES_NOINIT(0x5);
+-        u8 utf16_dir_entry_name_length_max_defined;
+-        u8 utf16_file_entry_name_length_max_defined;
+-        u8 utf16_dir_path_name_length_max_defined;
+-        u8 utf16_file_path_name_length_max_defined;
+-        INSERT_PADDING_BYTES_NOINIT(0x18);
+-        s32 dir_entry_name_length_max;
+-        s32 file_entry_name_length_max;
+-        s32 dir_path_name_length_max;
+-        s32 file_path_name_length_max;
+-        INSERT_PADDING_WORDS_NOINIT(0x5);
+-        s32 utf16_dir_entry_name_length_max;
+-        s32 utf16_file_entry_name_length_max;
+-        s32 utf16_dir_path_name_length_max;
+-        s32 utf16_file_path_name_length_max;
+-        INSERT_PADDING_WORDS_NOINIT(0x18);
+-        INSERT_PADDING_WORDS_NOINIT(0x1);
+-    };
+-    static_assert(sizeof(FileSystemAttribute) == 0xc0, "FileSystemAttribute has incorrect size");
+-
+     FileSystemAttribute savedata_attribute{};
+     savedata_attribute.dir_entry_name_length_max_defined = true;
+     savedata_attribute.file_entry_name_length_max_defined = true;
+     savedata_attribute.dir_entry_name_length_max = 0x40;
+     savedata_attribute.file_entry_name_length_max = 0x40;
+ 
+-    IPC::ResponseBuilder rb{ctx, 50};
+-    rb.Push(ResultSuccess);
+-    rb.PushRaw(savedata_attribute);
++    *out_attribute = savedata_attribute;
++    R_SUCCEED();
+ }
+ 
+ } // namespace Service::FileSystem
+diff --git a/src/core/hle/service/filesystem/fsp/fs_i_filesystem.h b/src/core/hle/service/filesystem/fsp/fs_i_filesystem.h
+index b06b3ef0eb46..230ab8d71d9d 100644
+--- a/src/core/hle/service/filesystem/fsp/fs_i_filesystem.h
++++ b/src/core/hle/service/filesystem/fsp/fs_i_filesystem.h
+@@ -3,36 +3,82 @@
+ 
+ #pragma once
+ 
++#include "common/common_funcs.h"
++#include "core/file_sys/fsa/fs_i_filesystem.h"
+ #include "core/file_sys/vfs/vfs.h"
++#include "core/hle/service/cmif_types.h"
+ #include "core/hle/service/filesystem/filesystem.h"
+ #include "core/hle/service/filesystem/fsp/fsp_util.h"
+ #include "core/hle/service/service.h"
+ 
++namespace FileSys::Sf {
++struct Path;
++}
++
+ namespace Service::FileSystem {
+ 
++class IFile;
++class IDirectory;
++
+ class IFileSystem final : public ServiceFramework<IFileSystem> {
+ public:
+-    explicit IFileSystem(Core::System& system_, FileSys::VirtualDir backend_, SizeGetter size_);
+-
+-    void CreateFile(HLERequestContext& ctx);
+-    void DeleteFile(HLERequestContext& ctx);
+-    void CreateDirectory(HLERequestContext& ctx);
+-    void DeleteDirectory(HLERequestContext& ctx);
+-    void DeleteDirectoryRecursively(HLERequestContext& ctx);
+-    void CleanDirectoryRecursively(HLERequestContext& ctx);
+-    void RenameFile(HLERequestContext& ctx);
+-    void OpenFile(HLERequestContext& ctx);
+-    void OpenDirectory(HLERequestContext& ctx);
+-    void GetEntryType(HLERequestContext& ctx);
+-    void Commit(HLERequestContext& ctx);
+-    void GetFreeSpaceSize(HLERequestContext& ctx);
+-    void GetTotalSpaceSize(HLERequestContext& ctx);
+-    void GetFileTimeStampRaw(HLERequestContext& ctx);
+-    void GetFileSystemAttribute(HLERequestContext& ctx);
++    explicit IFileSystem(Core::System& system_, FileSys::VirtualDir dir_, SizeGetter size_getter_);
++
++    struct FileSystemAttribute {
++        u8 dir_entry_name_length_max_defined;
++        u8 file_entry_name_length_max_defined;
++        u8 dir_path_name_length_max_defined;
++        u8 file_path_name_length_max_defined;
++        INSERT_PADDING_BYTES_NOINIT(0x5);
++        u8 utf16_dir_entry_name_length_max_defined;
++        u8 utf16_file_entry_name_length_max_defined;
++        u8 utf16_dir_path_name_length_max_defined;
++        u8 utf16_file_path_name_length_max_defined;
++        INSERT_PADDING_BYTES_NOINIT(0x18);
++        s32 dir_entry_name_length_max;
++        s32 file_entry_name_length_max;
++        s32 dir_path_name_length_max;
++        s32 file_path_name_length_max;
++        INSERT_PADDING_WORDS_NOINIT(0x5);
++        s32 utf16_dir_entry_name_length_max;
++        s32 utf16_file_entry_name_length_max;
++        s32 utf16_dir_path_name_length_max;
++        s32 utf16_file_path_name_length_max;
++        INSERT_PADDING_WORDS_NOINIT(0x18);
++        INSERT_PADDING_WORDS_NOINIT(0x1);
++    };
++    static_assert(sizeof(FileSystemAttribute) == 0xC0, "FileSystemAttribute has incorrect size");
++
++    Result CreateFile(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path, s32 option,
++                      s64 size);
++    Result DeleteFile(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result CreateDirectory(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result DeleteDirectory(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result DeleteDirectoryRecursively(
++        const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result CleanDirectoryRecursively(
++        const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result RenameFile(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> old_path,
++                      const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> new_path);
++    Result OpenFile(OutInterface<IFile> out_interface,
++                    const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path, u32 mode);
++    Result OpenDirectory(OutInterface<IDirectory> out_interface,
++                         const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path,
++                         u32 mode);
++    Result GetEntryType(Out<u32> out_type,
++                        const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result Commit();
++    Result GetFreeSpaceSize(Out<s64> out_size,
++                            const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result GetTotalSpaceSize(Out<s64> out_size,
++                             const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result GetFileTimeStampRaw(Out<FileSys::FileTimeStampRaw> out_timestamp,
++                               const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path);
++    Result GetFileSystemAttribute(Out<FileSystemAttribute> out_attribute);
+ 
+ private:
+-    VfsDirectoryServiceWrapper backend;
+-    SizeGetter size;
++    std::unique_ptr<FileSys::Fsa::IFileSystem> backend;
++    SizeGetter size_getter;
+ };
+ 
+ } // namespace Service::FileSystem
+diff --git a/src/core/hle/service/glue/time/static.cpp b/src/core/hle/service/glue/time/static.cpp
+index ec9b0efb1603..b801faef2951 100644
+--- a/src/core/hle/service/glue/time/static.cpp
++++ b/src/core/hle/service/glue/time/static.cpp
+@@ -142,16 +142,18 @@ Result StaticService::SetStandardSteadyClockInternalOffset(s64 offset_ns) {
+ }
+ 
+ Result StaticService::GetStandardSteadyClockRtcValue(Out<s64> out_rtc_value) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_rtc_value={}", *out_rtc_value); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_rtc_value={}", *out_rtc_value);
++    };
+ 
+     R_RETURN(m_standard_steady_clock_resource.GetRtcTimeInSeconds(*out_rtc_value));
+ }
+ 
+ Result StaticService::IsStandardUserSystemClockAutomaticCorrectionEnabled(
+     Out<bool> out_automatic_correction) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. out_automatic_correction={}", *out_automatic_correction);
+-    });
++    };
+ 
+     R_RETURN(m_wrapped_service->IsStandardUserSystemClockAutomaticCorrectionEnabled(
+         out_automatic_correction));
+@@ -166,21 +168,27 @@ Result StaticService::SetStandardUserSystemClockAutomaticCorrectionEnabled(
+ }
+ 
+ Result StaticService::GetStandardUserSystemClockInitialYear(Out<s32> out_year) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_year={}", *out_year); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_year={}", *out_year);
++    };
+ 
+     R_RETURN(m_set_sys->GetSettingsItemValueImpl<s32>(*out_year, "time",
+                                                       "standard_user_clock_initial_year"));
+ }
+ 
+ Result StaticService::IsStandardNetworkSystemClockAccuracySufficient(Out<bool> out_is_sufficient) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_is_sufficient={}", *out_is_sufficient); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_is_sufficient={}", *out_is_sufficient);
++    };
+ 
+     R_RETURN(m_wrapped_service->IsStandardNetworkSystemClockAccuracySufficient(out_is_sufficient));
+ }
+ 
+ Result StaticService::GetStandardUserSystemClockAutomaticCorrectionUpdatedTime(
+     Out<Service::PSC::Time::SteadyClockTimePoint> out_time_point) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_time_point={}", *out_time_point); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_time_point={}", *out_time_point);
++    };
+ 
+     R_RETURN(m_wrapped_service->GetStandardUserSystemClockAutomaticCorrectionUpdatedTime(
+         out_time_point));
+@@ -188,15 +196,18 @@ Result StaticService::GetStandardUserSystemClockAutomaticCorrectionUpdatedTime(
+ 
+ Result StaticService::CalculateMonotonicSystemClockBaseTimePoint(
+     Out<s64> out_time, const Service::PSC::Time::SystemClockContext& context) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. context={} out_time={}", context, *out_time); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. context={} out_time={}", context, *out_time);
++    };
+ 
+     R_RETURN(m_wrapped_service->CalculateMonotonicSystemClockBaseTimePoint(out_time, context));
+ }
+ 
+ Result StaticService::GetClockSnapshot(OutClockSnapshot out_snapshot,
+                                        Service::PSC::Time::TimeType type) {
+-    SCOPE_EXIT(
+-        { LOG_DEBUG(Service_Time, "called. type={} out_snapshot={}", type, *out_snapshot); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. type={} out_snapshot={}", type, *out_snapshot);
++    };
+ 
+     R_RETURN(m_wrapped_service->GetClockSnapshot(out_snapshot, type));
+ }
+@@ -205,11 +216,11 @@ Result StaticService::GetClockSnapshotFromSystemClockContext(
+     Service::PSC::Time::TimeType type, OutClockSnapshot out_snapshot,
+     const Service::PSC::Time::SystemClockContext& user_context,
+     const Service::PSC::Time::SystemClockContext& network_context) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time,
+                   "called. type={} out_snapshot={} user_context={} network_context={}", type,
+                   *out_snapshot, user_context, network_context);
+-    });
++    };
+ 
+     R_RETURN(m_wrapped_service->GetClockSnapshotFromSystemClockContext(
+         type, out_snapshot, user_context, network_context));
+@@ -218,14 +229,18 @@ Result StaticService::GetClockSnapshotFromSystemClockContext(
+ Result StaticService::CalculateStandardUserSystemClockDifferenceByUser(Out<s64> out_time,
+                                                                        InClockSnapshot a,
+                                                                        InClockSnapshot b) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. a={} b={} out_time={}", *a, *b, *out_time); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. a={} b={} out_time={}", *a, *b, *out_time);
++    };
+ 
+     R_RETURN(m_wrapped_service->CalculateStandardUserSystemClockDifferenceByUser(out_time, a, b));
+ }
+ 
+ Result StaticService::CalculateSpanBetween(Out<s64> out_time, InClockSnapshot a,
+                                            InClockSnapshot b) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. a={} b={} out_time={}", *a, *b, *out_time); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. a={} b={} out_time={}", *a, *b, *out_time);
++    };
+ 
+     R_RETURN(m_wrapped_service->CalculateSpanBetween(out_time, a, b));
+ }
+diff --git a/src/core/hle/service/glue/time/time_zone.cpp b/src/core/hle/service/glue/time/time_zone.cpp
+index 36f1634193c2..f4d0c87d5f00 100644
+--- a/src/core/hle/service/glue/time/time_zone.cpp
++++ b/src/core/hle/service/glue/time/time_zone.cpp
+@@ -57,7 +57,9 @@ TimeZoneService::~TimeZoneService() = default;
+ 
+ Result TimeZoneService::GetDeviceLocationName(
+     Out<Service::PSC::Time::LocationName> out_location_name) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_location_name={}", *out_location_name); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_location_name={}", *out_location_name);
++    };
+ 
+     R_RETURN(m_wrapped_service->GetDeviceLocationName(out_location_name));
+ }
+@@ -94,7 +96,9 @@ Result TimeZoneService::SetDeviceLocationName(
+ }
+ 
+ Result TimeZoneService::GetTotalLocationNameCount(Out<u32> out_count) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_count={}", *out_count); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_count={}", *out_count);
++    };
+ 
+     R_RETURN(m_wrapped_service->GetTotalLocationNameCount(out_count));
+ }
+@@ -102,10 +106,10 @@ Result TimeZoneService::GetTotalLocationNameCount(Out<u32> out_count) {
+ Result TimeZoneService::LoadLocationNameList(
+     Out<u32> out_count,
+     OutArray<Service::PSC::Time::LocationName, BufferAttr_HipcMapAlias> out_names, u32 index) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. index={} out_count={} out_names[0]={} out_names[1]={}",
+                   index, *out_count, out_names[0], out_names[1]);
+-    });
++    };
+ 
+     std::scoped_lock l{m_mutex};
+     R_RETURN(GetTimeZoneLocationList(*out_count, out_names, out_names.size(), index));
+@@ -124,7 +128,9 @@ Result TimeZoneService::LoadTimeZoneRule(OutRule out_rule,
+ 
+ Result TimeZoneService::GetTimeZoneRuleVersion(
+     Out<Service::PSC::Time::RuleVersion> out_rule_version) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_rule_version={}", *out_rule_version); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_rule_version={}", *out_rule_version);
++    };
+ 
+     R_RETURN(m_wrapped_service->GetTimeZoneRuleVersion(out_rule_version));
+ }
+@@ -132,10 +138,10 @@ Result TimeZoneService::GetTimeZoneRuleVersion(
+ Result TimeZoneService::GetDeviceLocationNameAndUpdatedTime(
+     Out<Service::PSC::Time::LocationName> location_name,
+     Out<Service::PSC::Time::SteadyClockTimePoint> out_time_point) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. location_name={} out_time_point={}", *location_name,
+                   *out_time_point);
+-    });
++    };
+ 
+     R_RETURN(m_wrapped_service->GetDeviceLocationNameAndUpdatedTime(location_name, out_time_point));
+ }
+@@ -178,10 +184,10 @@ Result TimeZoneService::GetDeviceLocationNameOperationEventReadableHandle(
+ Result TimeZoneService::ToCalendarTime(
+     Out<Service::PSC::Time::CalendarTime> out_calendar_time,
+     Out<Service::PSC::Time::CalendarAdditionalInfo> out_additional_info, s64 time, InRule rule) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. time={} out_calendar_time={} out_additional_info={}", time,
+                   *out_calendar_time, *out_additional_info);
+-    });
++    };
+ 
+     R_RETURN(m_wrapped_service->ToCalendarTime(out_calendar_time, out_additional_info, time, rule));
+ }
+@@ -189,10 +195,10 @@ Result TimeZoneService::ToCalendarTime(
+ Result TimeZoneService::ToCalendarTimeWithMyRule(
+     Out<Service::PSC::Time::CalendarTime> out_calendar_time,
+     Out<Service::PSC::Time::CalendarAdditionalInfo> out_additional_info, s64 time) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. time={} out_calendar_time={} out_additional_info={}", time,
+                   *out_calendar_time, *out_additional_info);
+-    });
++    };
+ 
+     R_RETURN(
+         m_wrapped_service->ToCalendarTimeWithMyRule(out_calendar_time, out_additional_info, time));
+@@ -202,11 +208,11 @@ Result TimeZoneService::ToPosixTime(Out<u32> out_count,
+                                     OutArray<s64, BufferAttr_HipcPointer> out_times,
+                                     const Service::PSC::Time::CalendarTime& calendar_time,
+                                     InRule rule) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time,
+                   "called. calendar_time={} out_count={} out_times[0]={} out_times[1]={}",
+                   calendar_time, *out_count, out_times[0], out_times[1]);
+-    });
++    };
+ 
+     R_RETURN(m_wrapped_service->ToPosixTime(out_count, out_times, calendar_time, rule));
+ }
+@@ -214,11 +220,11 @@ Result TimeZoneService::ToPosixTime(Out<u32> out_count,
+ Result TimeZoneService::ToPosixTimeWithMyRule(
+     Out<u32> out_count, OutArray<s64, BufferAttr_HipcPointer> out_times,
+     const Service::PSC::Time::CalendarTime& calendar_time) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time,
+                   "called. calendar_time={} out_count={} out_times[0]={} out_times[1]={}",
+                   calendar_time, *out_count, out_times[0], out_times[1]);
+-    });
++    };
+ 
+     R_RETURN(m_wrapped_service->ToPosixTimeWithMyRule(out_count, out_times, calendar_time));
+ }
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp b/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp
+index 250d01de3bcc..0265d55f27cd 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_ctrl.cpp
+@@ -92,11 +92,11 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
+ 
+     bool must_unmark_fail = !is_allocation;
+     const u32 event_id = params.value.raw;
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         if (must_unmark_fail) {
+             events[event_id].fails = 0;
+         }
+-    });
++    };
+ 
+     const u32 fence_id = static_cast<u32>(params.fence.id);
+ 
+diff --git a/src/core/hle/service/nvdrv/nvdrv_interface.cpp b/src/core/hle/service/nvdrv/nvdrv_interface.cpp
+index ffe72f2817c5..6304afdf9e77 100644
+--- a/src/core/hle/service/nvdrv/nvdrv_interface.cpp
++++ b/src/core/hle/service/nvdrv/nvdrv_interface.cpp
+@@ -154,10 +154,10 @@ void NVDRV::Close(HLERequestContext& ctx) {
+ void NVDRV::Initialize(HLERequestContext& ctx) {
+     LOG_WARNING(Service_NVDRV, "(STUBBED) called");
+     IPC::ResponseBuilder rb{ctx, 3};
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         rb.Push(ResultSuccess);
+         rb.PushEnum(NvResult::Success);
+-    });
++    };
+ 
+     if (is_initialized) {
+         // No need to initialize again
+diff --git a/src/core/hle/service/nvnflinger/nvnflinger.cpp b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+index 687ccc9f9e0f..489ded9ea80d 100644
+--- a/src/core/hle/service/nvnflinger/nvnflinger.cpp
++++ b/src/core/hle/service/nvnflinger/nvnflinger.cpp
+@@ -39,7 +39,9 @@ void Nvnflinger::SplitVSync(std::stop_token stop_token) {
+     MicroProfileOnThreadCreate(name.c_str());
+ 
+     // Cleanup
+-    SCOPE_EXIT({ MicroProfileOnThreadExit(); });
++    SCOPE_EXIT {
++        MicroProfileOnThreadExit();
++    };
+ 
+     Common::SetCurrentThreadName(name.c_str());
+     Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+@@ -278,7 +280,9 @@ VI::Layer* Nvnflinger::FindLayer(u64 display_id, u64 layer_id) {
+ void Nvnflinger::Compose() {
+     for (auto& display : displays) {
+         // Trigger vsync for this display at the end of drawing
+-        SCOPE_EXIT({ display.SignalVSyncEvent(); });
++        SCOPE_EXIT {
++            display.SignalVSyncEvent();
++        };
+ 
+         // Don't do anything for displays without layers.
+         if (!display.HasLayers()) {
+diff --git a/src/core/hle/service/psc/time/static.cpp b/src/core/hle/service/psc/time/static.cpp
+index 24b85cc61834..9a0adb2955fa 100644
+--- a/src/core/hle/service/psc/time/static.cpp
++++ b/src/core/hle/service/psc/time/static.cpp
+@@ -144,7 +144,9 @@ Result StaticService::GetStandardSteadyClockRtcValue(Out<s64> out_rtc_value) {
+ 
+ Result StaticService::IsStandardUserSystemClockAutomaticCorrectionEnabled(
+     Out<bool> out_is_enabled) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_is_enabled={}", *out_is_enabled); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_is_enabled={}", *out_is_enabled);
++    };
+ 
+     R_UNLESS(m_user_system_clock.IsInitialized(), ResultClockUninitialized);
+ 
+@@ -180,7 +182,9 @@ Result StaticService::GetStandardUserSystemClockInitialYear(Out<s32> out_year) {
+ }
+ 
+ Result StaticService::IsStandardNetworkSystemClockAccuracySufficient(Out<bool> out_is_sufficient) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_is_sufficient={}", *out_is_sufficient); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_is_sufficient={}", *out_is_sufficient);
++    };
+ 
+     *out_is_sufficient = m_network_system_clock.IsAccuracySufficient();
+ 
+@@ -189,7 +193,9 @@ Result StaticService::IsStandardNetworkSystemClockAccuracySufficient(Out<bool> o
+ 
+ Result StaticService::GetStandardUserSystemClockAutomaticCorrectionUpdatedTime(
+     Out<SteadyClockTimePoint> out_time_point) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_time_point={}", *out_time_point); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_time_point={}", *out_time_point);
++    };
+ 
+     R_UNLESS(m_user_system_clock.IsInitialized(), ResultClockUninitialized);
+ 
+@@ -200,7 +206,9 @@ Result StaticService::GetStandardUserSystemClockAutomaticCorrectionUpdatedTime(
+ 
+ Result StaticService::CalculateMonotonicSystemClockBaseTimePoint(
+     Out<s64> out_time, const SystemClockContext& context) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. context={} out_time={}", context, *out_time); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. context={} out_time={}", context, *out_time);
++    };
+ 
+     R_UNLESS(m_time->m_standard_steady_clock.IsInitialized(), ResultClockUninitialized);
+ 
+@@ -219,8 +227,9 @@ Result StaticService::CalculateMonotonicSystemClockBaseTimePoint(
+ }
+ 
+ Result StaticService::GetClockSnapshot(OutClockSnapshot out_snapshot, TimeType type) {
+-    SCOPE_EXIT(
+-        { LOG_DEBUG(Service_Time, "called. type={} out_snapshot={}", type, *out_snapshot); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. type={} out_snapshot={}", type, *out_snapshot);
++    };
+ 
+     SystemClockContext user_context{};
+     R_TRY(m_user_system_clock.GetContext(user_context));
+@@ -234,11 +243,11 @@ Result StaticService::GetClockSnapshot(OutClockSnapshot out_snapshot, TimeType t
+ Result StaticService::GetClockSnapshotFromSystemClockContext(
+     TimeType type, OutClockSnapshot out_snapshot, const SystemClockContext& user_context,
+     const SystemClockContext& network_context) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time,
+                   "called. type={} user_context={} network_context={} out_snapshot={}", type,
+                   user_context, network_context, *out_snapshot);
+-    });
++    };
+ 
+     R_RETURN(GetClockSnapshotImpl(out_snapshot, user_context, network_context, type));
+ }
+@@ -246,9 +255,9 @@ Result StaticService::GetClockSnapshotFromSystemClockContext(
+ Result StaticService::CalculateStandardUserSystemClockDifferenceByUser(Out<s64> out_difference,
+                                                                        InClockSnapshot a,
+                                                                        InClockSnapshot b) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. a={} b={} out_difference={}", *a, *b, *out_difference);
+-    });
++    };
+ 
+     auto diff_s =
+         std::chrono::seconds(b->user_context.offset) - std::chrono::seconds(a->user_context.offset);
+@@ -276,7 +285,9 @@ Result StaticService::CalculateStandardUserSystemClockDifferenceByUser(Out<s64>
+ 
+ Result StaticService::CalculateSpanBetween(Out<s64> out_time, InClockSnapshot a,
+                                            InClockSnapshot b) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. a={} b={} out_time={}", *a, *b, *out_time); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. a={} b={} out_time={}", *a, *b, *out_time);
++    };
+ 
+     s64 time_s{};
+     auto res =
+diff --git a/src/core/hle/service/psc/time/steady_clock.cpp b/src/core/hle/service/psc/time/steady_clock.cpp
+index 948610a2b0cf..78dcf532cec6 100644
+--- a/src/core/hle/service/psc/time/steady_clock.cpp
++++ b/src/core/hle/service/psc/time/steady_clock.cpp
+@@ -29,7 +29,9 @@ SteadyClock::SteadyClock(Core::System& system_, std::shared_ptr<TimeManager> man
+ }
+ 
+ Result SteadyClock::GetCurrentTimePoint(Out<SteadyClockTimePoint> out_time_point) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_time_point={}", *out_time_point); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_time_point={}", *out_time_point);
++    };
+ 
+     R_UNLESS(m_can_write_uninitialized_clock || m_clock_core.IsInitialized(),
+              ResultClockUninitialized);
+@@ -38,7 +40,9 @@ Result SteadyClock::GetCurrentTimePoint(Out<SteadyClockTimePoint> out_time_point
+ }
+ 
+ Result SteadyClock::GetTestOffset(Out<s64> out_test_offset) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_test_offset={}", *out_test_offset); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_test_offset={}", *out_test_offset);
++    };
+ 
+     R_UNLESS(m_can_write_uninitialized_clock || m_clock_core.IsInitialized(),
+              ResultClockUninitialized);
+@@ -59,7 +63,9 @@ Result SteadyClock::SetTestOffset(s64 test_offset) {
+ }
+ 
+ Result SteadyClock::GetRtcValue(Out<s64> out_rtc_value) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_rtc_value={}", *out_rtc_value); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_rtc_value={}", *out_rtc_value);
++    };
+ 
+     R_UNLESS(m_can_write_uninitialized_clock || m_clock_core.IsInitialized(),
+              ResultClockUninitialized);
+@@ -68,7 +74,9 @@ Result SteadyClock::GetRtcValue(Out<s64> out_rtc_value) {
+ }
+ 
+ Result SteadyClock::IsRtcResetDetected(Out<bool> out_is_detected) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_is_detected={}", *out_is_detected); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_is_detected={}", *out_is_detected);
++    };
+ 
+     R_UNLESS(m_can_write_uninitialized_clock || m_clock_core.IsInitialized(),
+              ResultClockUninitialized);
+@@ -78,7 +86,9 @@ Result SteadyClock::IsRtcResetDetected(Out<bool> out_is_detected) {
+ }
+ 
+ Result SteadyClock::GetSetupResultValue(Out<Result> out_result) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_result=0x{:X}", out_result->raw); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_result=0x{:X}", out_result->raw);
++    };
+ 
+     R_UNLESS(m_can_write_uninitialized_clock || m_clock_core.IsInitialized(),
+              ResultClockUninitialized);
+@@ -88,8 +98,9 @@ Result SteadyClock::GetSetupResultValue(Out<Result> out_result) {
+ }
+ 
+ Result SteadyClock::GetInternalOffset(Out<s64> out_internal_offset) {
+-    SCOPE_EXIT(
+-        { LOG_DEBUG(Service_Time, "called. out_internal_offset={}", *out_internal_offset); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_internal_offset={}", *out_internal_offset);
++    };
+ 
+     R_UNLESS(m_can_write_uninitialized_clock || m_clock_core.IsInitialized(),
+              ResultClockUninitialized);
+diff --git a/src/core/hle/service/psc/time/system_clock.cpp b/src/core/hle/service/psc/time/system_clock.cpp
+index b4e9264d88dc..9f841d8e0437 100644
+--- a/src/core/hle/service/psc/time/system_clock.cpp
++++ b/src/core/hle/service/psc/time/system_clock.cpp
+@@ -26,7 +26,9 @@ SystemClock::SystemClock(Core::System& system_, SystemClockCore& clock_core, boo
+ }
+ 
+ Result SystemClock::GetCurrentTime(Out<s64> out_time) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_time={}", *out_time); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_time={}", *out_time);
++    };
+ 
+     R_UNLESS(m_can_write_uninitialized_clock || m_clock_core.IsInitialized(),
+              ResultClockUninitialized);
+@@ -45,7 +47,9 @@ Result SystemClock::SetCurrentTime(s64 time) {
+ }
+ 
+ Result SystemClock::GetSystemClockContext(Out<SystemClockContext> out_context) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_context={}", *out_context); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_context={}", *out_context);
++    };
+ 
+     R_UNLESS(m_can_write_uninitialized_clock || m_clock_core.IsInitialized(),
+              ResultClockUninitialized);
+diff --git a/src/core/hle/service/psc/time/time_zone_service.cpp b/src/core/hle/service/psc/time/time_zone_service.cpp
+index 2f80030a4339..9e0674f27563 100644
+--- a/src/core/hle/service/psc/time/time_zone_service.cpp
++++ b/src/core/hle/service/psc/time/time_zone_service.cpp
+@@ -37,7 +37,9 @@ TimeZoneService::TimeZoneService(Core::System& system_, StandardSteadyClockCore&
+ }
+ 
+ Result TimeZoneService::GetDeviceLocationName(Out<LocationName> out_location_name) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_location_name={}", *out_location_name); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_location_name={}", *out_location_name);
++    };
+ 
+     R_RETURN(m_time_zone.GetLocationName(*out_location_name));
+ }
+@@ -50,7 +52,9 @@ Result TimeZoneService::SetDeviceLocationName(const LocationName& location_name)
+ }
+ 
+ Result TimeZoneService::GetTotalLocationNameCount(Out<u32> out_count) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_count={}", *out_count); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_count={}", *out_count);
++    };
+ 
+     R_RETURN(m_time_zone.GetTotalLocationCount(*out_count));
+ }
+@@ -69,17 +73,19 @@ Result TimeZoneService::LoadTimeZoneRule(OutRule out_rule, const LocationName& l
+ }
+ 
+ Result TimeZoneService::GetTimeZoneRuleVersion(Out<RuleVersion> out_rule_version) {
+-    SCOPE_EXIT({ LOG_DEBUG(Service_Time, "called. out_rule_version={}", *out_rule_version); });
++    SCOPE_EXIT {
++        LOG_DEBUG(Service_Time, "called. out_rule_version={}", *out_rule_version);
++    };
+ 
+     R_RETURN(m_time_zone.GetRuleVersion(*out_rule_version));
+ }
+ 
+ Result TimeZoneService::GetDeviceLocationNameAndUpdatedTime(
+     Out<LocationName> out_location_name, Out<SteadyClockTimePoint> out_time_point) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. out_location_name={} out_time_point={}",
+                   *out_location_name, *out_time_point);
+-    });
++    };
+ 
+     R_TRY(m_time_zone.GetLocationName(*out_location_name));
+     R_RETURN(m_time_zone.GetTimePoint(*out_time_point));
+@@ -116,10 +122,10 @@ Result TimeZoneService::GetDeviceLocationNameOperationEventReadableHandle(
+ Result TimeZoneService::ToCalendarTime(Out<CalendarTime> out_calendar_time,
+                                        Out<CalendarAdditionalInfo> out_additional_info, s64 time,
+                                        InRule rule) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. time={} out_calendar_time={} out_additional_info={}", time,
+                   *out_calendar_time, *out_additional_info);
+-    });
++    };
+ 
+     R_RETURN(
+         m_time_zone.ToCalendarTime(*out_calendar_time, *out_additional_info, time, *rule.Get()));
+@@ -128,10 +134,10 @@ Result TimeZoneService::ToCalendarTime(Out<CalendarTime> out_calendar_time,
+ Result TimeZoneService::ToCalendarTimeWithMyRule(Out<CalendarTime> out_calendar_time,
+                                                  Out<CalendarAdditionalInfo> out_additional_info,
+                                                  s64 time) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time, "called. time={} out_calendar_time={} out_additional_info={}", time,
+                   *out_calendar_time, *out_additional_info);
+-    });
++    };
+ 
+     R_RETURN(m_time_zone.ToCalendarTimeWithMyRule(*out_calendar_time, *out_additional_info, time));
+ }
+@@ -139,11 +145,11 @@ Result TimeZoneService::ToCalendarTimeWithMyRule(Out<CalendarTime> out_calendar_
+ Result TimeZoneService::ToPosixTime(Out<u32> out_count,
+                                     OutArray<s64, BufferAttr_HipcPointer> out_times,
+                                     const CalendarTime& calendar_time, InRule rule) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time,
+                   "called. calendar_time={} out_count={} out_times[0]={} out_times[1]={} ",
+                   calendar_time, *out_count, out_times[0], out_times[1]);
+-    });
++    };
+ 
+     R_RETURN(
+         m_time_zone.ToPosixTime(*out_count, out_times, out_times.size(), calendar_time, *rule));
+@@ -152,11 +158,11 @@ Result TimeZoneService::ToPosixTime(Out<u32> out_count,
+ Result TimeZoneService::ToPosixTimeWithMyRule(Out<u32> out_count,
+                                               OutArray<s64, BufferAttr_HipcPointer> out_times,
+                                               const CalendarTime& calendar_time) {
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         LOG_DEBUG(Service_Time,
+                   "called. calendar_time={} out_count={} out_times[0]={} out_times[1]={} ",
+                   calendar_time, *out_count, out_times[0], out_times[1]);
+-    });
++    };
+ 
+     R_RETURN(
+         m_time_zone.ToPosixTimeWithMyRule(*out_count, out_times, out_times.size(), calendar_time));
+diff --git a/src/core/hle/service/server_manager.cpp b/src/core/hle/service/server_manager.cpp
+index 8c7f94c8cf38..0b41bbcb9b01 100644
+--- a/src/core/hle/service/server_manager.cpp
++++ b/src/core/hle/service/server_manager.cpp
+@@ -177,10 +177,10 @@ Result ServerManager::ManageNamedPort(const std::string& service_name,
+     Kernel::KPort::Register(m_system.Kernel(), port);
+ 
+     // Ensure that our reference to the port is closed if we fail to register it.
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         port->GetClientPort().Close();
+         port->GetServerPort().Close();
+-    });
++    };
+ 
+     // Register the object name with the kernel.
+     R_TRY(Kernel::KObjectName::NewFromName(m_system.Kernel(), std::addressof(port->GetClientPort()),
+@@ -237,7 +237,9 @@ void ServerManager::StartAdditionalHostThreads(const char* name, size_t num_thre
+ }
+ 
+ Result ServerManager::LoopProcess() {
+-    SCOPE_EXIT({ m_stopped.Set(); });
++    SCOPE_EXIT {
++        m_stopped.Set();
++    };
+ 
+     R_RETURN(this->LoopProcessImpl());
+ }
+diff --git a/src/core/loader/nca.cpp b/src/core/loader/nca.cpp
+index 2a32b1276b3c..de27ec49e253 100644
+--- a/src/core/loader/nca.cpp
++++ b/src/core/loader/nca.cpp
+@@ -118,7 +118,9 @@ ResultStatus AppLoader_NCA::VerifyIntegrity(std::function<bool(size_t, size_t)>
+     mbedtls_sha256_starts_ret(&ctx, 0);
+ 
+     // Ensure we maintain a clean state on exit.
+-    SCOPE_EXIT({ mbedtls_sha256_free(&ctx); });
++    SCOPE_EXIT {
++        mbedtls_sha256_free(&ctx);
++    };
+ 
+     // Declare counters.
+     const size_t total_size = file->GetSize();
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index e10a4601ef42..8775369a417b 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -831,11 +831,11 @@ struct Memory::Impl {
+         if (core == sys_core) [[unlikely]] {
+             sys_core_guard.lock();
+         }
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (core == sys_core) [[unlikely]] {
+                 sys_core_guard.unlock();
+             }
+-        });
++        };
+         gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+             auto& current_area = rasterizer_write_areas[core];
+             PAddr subaddress = address >> YUZU_PAGEBITS;
+@@ -866,11 +866,11 @@ struct Memory::Impl {
+         if (core == sys_core) [[unlikely]] {
+             sys_core_guard.lock();
+         }
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (core == sys_core) [[unlikely]] {
+                 sys_core_guard.unlock();
+             }
+-        });
++        };
+         auto& gpu = system.GPU();
+         gpu_device_memory->ApplyOpOnPointer(
+             p, scratch_buffers[core], [&](DAddr address) { gpu.InvalidateRegion(address, size); });
+diff --git a/src/core/memory/dmnt_cheat_vm.cpp b/src/core/memory/dmnt_cheat_vm.cpp
+index f7097d01db57..caceeec4fc46 100644
+--- a/src/core/memory/dmnt_cheat_vm.cpp
++++ b/src/core/memory/dmnt_cheat_vm.cpp
+@@ -224,12 +224,12 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
+     // If we've ever seen a decode failure, return false.
+     bool valid = decode_success;
+     CheatVmOpcode opcode = {};
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         decode_success &= valid;
+         if (valid) {
+             out = opcode;
+         }
+-    });
++    };
+ 
+     // Helper function for getting instruction dwords.
+     const auto GetNextDword = [&] {
+diff --git a/src/hid_core/frontend/emulated_controller.cpp b/src/hid_core/frontend/emulated_controller.cpp
+index 819460eb57ac..c50db621be24 100644
+--- a/src/hid_core/frontend/emulated_controller.cpp
++++ b/src/hid_core/frontend/emulated_controller.cpp
+@@ -923,8 +923,9 @@ void EmulatedController::SetStick(const Common::Input::CallbackStatus& callback,
+     if (index >= controller.stick_values.size()) {
+         return;
+     }
+-    auto trigger_guard =
+-        SCOPE_GUARD({ TriggerOnChange(ControllerTriggerType::Stick, !is_configuring); });
++    auto trigger_guard = SCOPE_GUARD {
++        TriggerOnChange(ControllerTriggerType::Stick, !is_configuring);
++    };
+     std::scoped_lock lock{mutex};
+     const auto stick_value = TransformToStick(callback);
+ 
+@@ -979,8 +980,9 @@ void EmulatedController::SetTrigger(const Common::Input::CallbackStatus& callbac
+     if (index >= controller.trigger_values.size()) {
+         return;
+     }
+-    auto trigger_guard =
+-        SCOPE_GUARD({ TriggerOnChange(ControllerTriggerType::Trigger, !is_configuring); });
++    auto trigger_guard = SCOPE_GUARD {
++        TriggerOnChange(ControllerTriggerType::Trigger, !is_configuring);
++    };
+     std::scoped_lock lock{mutex};
+     const auto trigger_value = TransformToTrigger(callback);
+ 
+@@ -1026,7 +1028,9 @@ void EmulatedController::SetMotion(const Common::Input::CallbackStatus& callback
+     if (index >= controller.motion_values.size()) {
+         return;
+     }
+-    SCOPE_EXIT({ TriggerOnChange(ControllerTriggerType::Motion, !is_configuring); });
++    SCOPE_EXIT {
++        TriggerOnChange(ControllerTriggerType::Motion, !is_configuring);
++    };
+     std::scoped_lock lock{mutex};
+     auto& raw_status = controller.motion_values[index].raw_status;
+     auto& emulated = controller.motion_values[index].emulated;
+@@ -1060,8 +1064,9 @@ void EmulatedController::SetColors(const Common::Input::CallbackStatus& callback
+     if (index >= controller.color_values.size()) {
+         return;
+     }
+-    auto trigger_guard =
+-        SCOPE_GUARD({ TriggerOnChange(ControllerTriggerType::Color, !is_configuring); });
++    auto trigger_guard = SCOPE_GUARD {
++        TriggerOnChange(ControllerTriggerType::Color, !is_configuring);
++    };
+     std::scoped_lock lock{mutex};
+     controller.color_values[index] = TransformToColor(callback);
+ 
+@@ -1110,7 +1115,9 @@ void EmulatedController::SetBattery(const Common::Input::CallbackStatus& callbac
+     if (index >= controller.battery_values.size()) {
+         return;
+     }
+-    SCOPE_EXIT({ TriggerOnChange(ControllerTriggerType::Battery, !is_configuring); });
++    SCOPE_EXIT {
++        TriggerOnChange(ControllerTriggerType::Battery, !is_configuring);
++    };
+     std::scoped_lock lock{mutex};
+     controller.battery_values[index] = TransformToBattery(callback);
+ 
+@@ -1173,7 +1180,9 @@ void EmulatedController::SetBattery(const Common::Input::CallbackStatus& callbac
+ }
+ 
+ void EmulatedController::SetCamera(const Common::Input::CallbackStatus& callback) {
+-    SCOPE_EXIT({ TriggerOnChange(ControllerTriggerType::IrSensor, !is_configuring); });
++    SCOPE_EXIT {
++        TriggerOnChange(ControllerTriggerType::IrSensor, !is_configuring);
++    };
+     std::scoped_lock lock{mutex};
+     controller.camera_values = TransformToCamera(callback);
+ 
+@@ -1188,7 +1197,9 @@ void EmulatedController::SetCamera(const Common::Input::CallbackStatus& callback
+ }
+ 
+ void EmulatedController::SetRingAnalog(const Common::Input::CallbackStatus& callback) {
+-    SCOPE_EXIT({ TriggerOnChange(ControllerTriggerType::RingController, !is_configuring); });
++    SCOPE_EXIT {
++        TriggerOnChange(ControllerTriggerType::RingController, !is_configuring);
++    };
+     std::scoped_lock lock{mutex};
+     const auto force_value = TransformToStick(callback);
+ 
+@@ -1202,7 +1213,9 @@ void EmulatedController::SetRingAnalog(const Common::Input::CallbackStatus& call
+ }
+ 
+ void EmulatedController::SetNfc(const Common::Input::CallbackStatus& callback) {
+-    SCOPE_EXIT({ TriggerOnChange(ControllerTriggerType::Nfc, !is_configuring); });
++    SCOPE_EXIT {
++        TriggerOnChange(ControllerTriggerType::Nfc, !is_configuring);
++    };
+     std::scoped_lock lock{mutex};
+     controller.nfc_values = TransformToNfc(callback);
+ 
+@@ -1671,8 +1684,9 @@ void EmulatedController::Connect(bool use_temporary_value) {
+         return;
+     }
+ 
+-    auto trigger_guard =
+-        SCOPE_GUARD({ TriggerOnChange(ControllerTriggerType::Connected, !is_configuring); });
++    auto trigger_guard = SCOPE_GUARD {
++        TriggerOnChange(ControllerTriggerType::Connected, !is_configuring);
++    };
+     std::scoped_lock lock{connect_mutex, mutex};
+     if (is_configuring) {
+         tmp_is_connected = true;
+@@ -1687,8 +1701,9 @@ void EmulatedController::Connect(bool use_temporary_value) {
+ }
+ 
+ void EmulatedController::Disconnect() {
+-    auto trigger_guard =
+-        SCOPE_GUARD({ TriggerOnChange(ControllerTriggerType::Disconnected, !is_configuring); });
++    auto trigger_guard = SCOPE_GUARD {
++        TriggerOnChange(ControllerTriggerType::Disconnected, !is_configuring);
++    };
+     std::scoped_lock lock{connect_mutex, mutex};
+     if (is_configuring) {
+         tmp_is_connected = false;
+@@ -1724,8 +1739,9 @@ NpadStyleIndex EmulatedController::GetNpadStyleIndex(bool get_temporary_value) c
+ }
+ 
+ void EmulatedController::SetNpadStyleIndex(NpadStyleIndex npad_type_) {
+-    auto trigger_guard =
+-        SCOPE_GUARD({ TriggerOnChange(ControllerTriggerType::Type, !is_configuring); });
++    auto trigger_guard = SCOPE_GUARD {
++        TriggerOnChange(ControllerTriggerType::Type, !is_configuring);
++    };
+     std::scoped_lock lock{mutex, npad_mutex};
+ 
+     if (is_configuring) {
+diff --git a/src/input_common/helpers/joycon_driver.cpp b/src/input_common/helpers/joycon_driver.cpp
+index c9f903213eb7..0dd1c958a212 100644
+--- a/src/input_common/helpers/joycon_driver.cpp
++++ b/src/input_common/helpers/joycon_driver.cpp
+@@ -268,7 +268,9 @@ void JoyconDriver::OnNewData(std::span<u8> buffer) {
+ }
+ 
+ Common::Input::DriverResult JoyconDriver::SetPollingMode() {
+-    SCOPE_EXIT({ disable_input_thread = false; });
++    SCOPE_EXIT {
++        disable_input_thread = false;
++    };
+     disable_input_thread = true;
+ 
+     rumble_protocol->EnableRumble(vibration_enabled && supported_features.vibration);
+diff --git a/src/video_core/engines/maxwell_3d.cpp b/src/video_core/engines/maxwell_3d.cpp
+index a94e1f04370b..0d47b032c84a 100644
+--- a/src/video_core/engines/maxwell_3d.cpp
++++ b/src/video_core/engines/maxwell_3d.cpp
+@@ -291,7 +291,9 @@ u32 Maxwell3D::ProcessShadowRam(u32 method, u32 argument) {
+ }
+ 
+ void Maxwell3D::ConsumeSinkImpl() {
+-    SCOPE_EXIT({ method_sink.clear(); });
++    SCOPE_EXIT {
++        method_sink.clear();
++    };
+     const auto control = shadow_state.shadow_ram_control;
+     if (control == Regs::ShadowRamControl::Track ||
+         control == Regs::ShadowRamControl::TrackWithFilter) {
+diff --git a/src/video_core/fence_manager.h b/src/video_core/fence_manager.h
+index c3eda68933b7..2135f1f2daa2 100644
+--- a/src/video_core/fence_manager.h
++++ b/src/video_core/fence_manager.h
+@@ -197,7 +197,9 @@ class FenceManager {
+         MicroProfileOnThreadCreate(name.c_str());
+ 
+         // Cleanup
+-        SCOPE_EXIT({ MicroProfileOnThreadExit(); });
++        SCOPE_EXIT {
++            MicroProfileOnThreadExit();
++        };
+ 
+         Common::SetCurrentThreadName(name.c_str());
+         Common::SetCurrentThreadPriority(Common::ThreadPriority::High);
+diff --git a/src/video_core/gpu_thread.cpp b/src/video_core/gpu_thread.cpp
+index 58d8110b8646..477e11457c08 100644
+--- a/src/video_core/gpu_thread.cpp
++++ b/src/video_core/gpu_thread.cpp
+@@ -22,7 +22,9 @@ static void RunThread(std::stop_token stop_token, Core::System& system,
+                       Tegra::Control::Scheduler& scheduler, SynchState& state) {
+     std::string name = "GPU";
+     MicroProfileOnThreadCreate(name.c_str());
+-    SCOPE_EXIT({ MicroProfileOnThreadExit(); });
++    SCOPE_EXIT {
++        MicroProfileOnThreadExit();
++    };
+ 
+     Common::SetCurrentThreadName(name.c_str());
+     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+diff --git a/src/video_core/host1x/ffmpeg/ffmpeg.cpp b/src/video_core/host1x/ffmpeg/ffmpeg.cpp
+index 96686da59d4a..1003cd38dfd1 100644
+--- a/src/video_core/host1x/ffmpeg/ffmpeg.cpp
++++ b/src/video_core/host1x/ffmpeg/ffmpeg.cpp
+@@ -273,10 +273,10 @@ DeinterlaceFilter::DeinterlaceFilter(const Frame& frame) {
+     const AVFilter* buffer_sink = avfilter_get_by_name("buffersink");
+     AVFilterInOut* inputs = avfilter_inout_alloc();
+     AVFilterInOut* outputs = avfilter_inout_alloc();
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         avfilter_inout_free(&inputs);
+         avfilter_inout_free(&outputs);
+-    });
++    };
+ 
+     // Don't know how to get the accurate time_base but it doesn't matter for yadif filter
+     // so just use 1/1 to make buffer filter happy
+diff --git a/src/video_core/macro/macro_hle.cpp b/src/video_core/macro/macro_hle.cpp
+index 46e853e0409c..fb529f88b763 100644
+--- a/src/video_core/macro/macro_hle.cpp
++++ b/src/video_core/macro/macro_hle.cpp
+@@ -92,12 +92,12 @@ class HLE_DrawArraysIndirect final : public HLEMacroImpl {
+ 
+ private:
+     void Fallback(const std::vector<u32>& parameters) {
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             if (extended) {
+                 maxwell3d.engine_state = Maxwell3D::EngineHint::None;
+                 maxwell3d.replace_table.clear();
+             }
+-        });
++        };
+         maxwell3d.RefreshParameters();
+         const u32 instance_count = (maxwell3d.GetRegisterValue(0xD1B) & parameters[2]);
+ 
+@@ -281,12 +281,12 @@ class HLE_MultiDrawIndexedIndirectCount final : public HLEMacroImpl {
+ 
+ private:
+     void Fallback(const std::vector<u32>& parameters) {
+-        SCOPE_EXIT({
++        SCOPE_EXIT {
+             // Clean everything.
+             maxwell3d.regs.vertex_id_base = 0x0;
+             maxwell3d.engine_state = Maxwell3D::EngineHint::None;
+             maxwell3d.replace_table.clear();
+-        });
++        };
+         maxwell3d.RefreshParameters();
+         const u32 start_indirect = parameters[0];
+         const u32 end_indirect = parameters[1];
+diff --git a/src/video_core/renderer_opengl/gl_rasterizer.cpp b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+index b42fb110c717..16af8e6bdc46 100644
+--- a/src/video_core/renderer_opengl/gl_rasterizer.cpp
++++ b/src/video_core/renderer_opengl/gl_rasterizer.cpp
+@@ -230,7 +230,9 @@ template <typename Func>
+ void RasterizerOpenGL::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     MICROPROFILE_SCOPE(OpenGL_Drawing);
+ 
+-    SCOPE_EXIT({ gpu.TickWork(); });
++    SCOPE_EXIT {
++        gpu.TickWork();
++    };
+     gpu_memory->FlushCaching();
+ 
+     GraphicsPipeline* const pipeline{shader_cache.CurrentGraphicsPipeline()};
+@@ -355,7 +357,9 @@ void RasterizerOpenGL::DrawIndirect() {
+ void RasterizerOpenGL::DrawTexture() {
+     MICROPROFILE_SCOPE(OpenGL_Drawing);
+ 
+-    SCOPE_EXIT({ gpu.TickWork(); });
++    SCOPE_EXIT {
++        gpu.TickWork();
++    };
+ 
+     texture_cache.SynchronizeGraphicsDescriptors();
+     texture_cache.UpdateRenderTargets(false);
+diff --git a/src/video_core/renderer_vulkan/present/layer.cpp b/src/video_core/renderer_vulkan/present/layer.cpp
+index 3847a9a130e0..4e41afe5b41f 100644
+--- a/src/video_core/renderer_vulkan/present/layer.cpp
++++ b/src/video_core/renderer_vulkan/present/layer.cpp
+@@ -82,7 +82,9 @@ void Layer::ConfigureDraw(PresentPushConstants* out_push_constants,
+     // Finish any pending renderpass
+     scheduler.RequestOutsideRenderPassOperationContext();
+     scheduler.Wait(resource_ticks[image_index]);
+-    SCOPE_EXIT({ resource_ticks[image_index] = scheduler.CurrentTick(); });
++    SCOPE_EXIT {
++        resource_ticks[image_index] = scheduler.CurrentTick();
++    };
+ 
+     if (!use_accelerated) {
+         UpdateRawImage(framebuffer, image_index);
+diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+index d504171162f8..c553f5b3d9d8 100644
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
+@@ -144,7 +144,9 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
+         return;
+     }
+ 
+-    SCOPE_EXIT({ render_window.OnFrameDisplayed(); });
++    SCOPE_EXIT {
++        render_window.OnFrameDisplayed();
++    };
+ 
+     RenderAppletCaptureLayer(framebuffers);
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index aa0a027bbd26..74f9f099e9f2 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -196,7 +196,9 @@ template <typename Func>
+ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+     MICROPROFILE_SCOPE(Vulkan_Drawing);
+ 
+-    SCOPE_EXIT({ gpu.TickWork(); });
++    SCOPE_EXIT {
++        gpu.TickWork();
++    };
+     FlushWork();
+     gpu_memory->FlushCaching();
+ 
+@@ -288,7 +290,9 @@ void RasterizerVulkan::DrawIndirect() {
+ void RasterizerVulkan::DrawTexture() {
+     MICROPROFILE_SCOPE(Vulkan_Drawing);
+ 
+-    SCOPE_EXIT({ gpu.TickWork(); });
++    SCOPE_EXIT {
++        gpu.TickWork();
++    };
+     FlushWork();
+ 
+     query_cache.NotifySegment(true);
+diff --git a/src/video_core/vulkan_common/nsight_aftermath_tracker.cpp b/src/video_core/vulkan_common/nsight_aftermath_tracker.cpp
+index 5fa0d9620176..f41c3e506745 100644
+--- a/src/video_core/vulkan_common/nsight_aftermath_tracker.cpp
++++ b/src/video_core/vulkan_common/nsight_aftermath_tracker.cpp
+@@ -116,7 +116,9 @@ void NsightAftermathTracker::OnGpuCrashDumpCallback(const void* gpu_crash_dump,
+         LOG_ERROR(Render_Vulkan, "Failed to create decoder");
+         return;
+     }
+-    SCOPE_EXIT({ GFSDK_Aftermath_GpuCrashDump_DestroyDecoder(decoder); });
++    SCOPE_EXIT {
++        GFSDK_Aftermath_GpuCrashDump_DestroyDecoder(decoder);
++    };
+ 
+     u32 json_size = 0;
+     if (!GFSDK_Aftermath_SUCCEED(GFSDK_Aftermath_GpuCrashDump_GenerateJSON(
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index dfa50006ab1f..0670b95d40d5 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -646,10 +646,10 @@ void GMainWindow::AmiiboSettingsShowDialog(const Core::Frontend::CabinetParamete
+                                            std::shared_ptr<Service::NFC::NfcDevice> nfp_device) {
+     cabinet_applet =
+         new QtAmiiboSettingsDialog(this, parameters, input_subsystem.get(), nfp_device);
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         cabinet_applet->deleteLater();
+         cabinet_applet = nullptr;
+-    });
++    };
+ 
+     cabinet_applet->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowStaysOnTopHint |
+                                    Qt::WindowTitleHint | Qt::WindowSystemMenuHint);
+@@ -673,10 +673,10 @@ void GMainWindow::ControllerSelectorReconfigureControllers(
+     const Core::Frontend::ControllerParameters& parameters) {
+     controller_applet =
+         new QtControllerSelectorDialog(this, parameters, input_subsystem.get(), *system);
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         controller_applet->deleteLater();
+         controller_applet = nullptr;
+-    });
++    };
+ 
+     controller_applet->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint |
+                                       Qt::WindowStaysOnTopHint | Qt::WindowTitleHint |
+@@ -703,10 +703,10 @@ void GMainWindow::ControllerSelectorRequestExit() {
+ void GMainWindow::ProfileSelectorSelectProfile(
+     const Core::Frontend::ProfileSelectParameters& parameters) {
+     profile_select_applet = new QtProfileSelectionDialog(*system, this, parameters);
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         profile_select_applet->deleteLater();
+         profile_select_applet = nullptr;
+-    });
++    };
+ 
+     profile_select_applet->setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint |
+                                           Qt::WindowStaysOnTopHint | Qt::WindowTitleHint |
+@@ -2882,17 +2882,19 @@ bool GMainWindow::CreateShortcutLink(const std::filesystem::path& shortcut_path,
+         LOG_ERROR(Frontend, "CoInitialize failed");
+         return false;
+     }
+-    SCOPE_EXIT({ CoUninitialize(); });
++    SCOPE_EXIT {
++        CoUninitialize();
++    };
+     IShellLinkW* ps1 = nullptr;
+     IPersistFile* persist_file = nullptr;
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         if (persist_file != nullptr) {
+             persist_file->Release();
+         }
+         if (ps1 != nullptr) {
+             ps1->Release();
+         }
+-    });
++    };
+     HRESULT hres = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW,
+                                     reinterpret_cast<void**>(&ps1));
+     if (FAILED(hres)) {
+@@ -3517,10 +3519,10 @@ void GMainWindow::OnSaveConfig() {
+ void GMainWindow::ErrorDisplayDisplayError(QString error_code, QString error_text) {
+     error_applet = new OverlayDialog(render_window, *system, error_code, error_text, QString{},
+                                      tr("OK"), Qt::AlignLeft | Qt::AlignVCenter);
+-    SCOPE_EXIT({
++    SCOPE_EXIT {
+         error_applet->deleteLater();
+         error_applet = nullptr;
+-    });
++    };
+     error_applet->exec();
+ 
+     emit ErrorDisplayFinished();
+@@ -5049,7 +5051,9 @@ int main(int argc, char* argv[]) {
+ 
+     Common::DetachedTasks detached_tasks;
+     MicroProfileOnThreadCreate("Frontend");
+-    SCOPE_EXIT({ MicroProfileShutdown(); });
++    SCOPE_EXIT {
++        MicroProfileShutdown();
++    };
+ 
+     Common::ConfigureNvidiaEnvironmentFlags();
+ 
+diff --git a/src/yuzu_cmd/yuzu.cpp b/src/yuzu_cmd/yuzu.cpp
+index 3b321dad14d5..8a8cdbc4424b 100644
+--- a/src/yuzu_cmd/yuzu.cpp
++++ b/src/yuzu_cmd/yuzu.cpp
+@@ -327,7 +327,9 @@ int main(int argc, char** argv) {
+ #endif
+ 
+     MicroProfileOnThreadCreate("EmuThread");
+-    SCOPE_EXIT({ MicroProfileShutdown(); });
++    SCOPE_EXIT {
++        MicroProfileShutdown();
++    };
+ 
+     Common::ConfigureNvidiaEnvironmentFlags();
+ 

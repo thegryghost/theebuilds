@@ -1,0 +1,297 @@
+diff --git a/src/common/settings.h b/src/common/settings.h
+index b2b071e7e81a..fa2d08da12f0 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -435,8 +435,6 @@ struct Values {
+         linkage, false, "disable_shader_loop_safety_checks", Category::RendererDebug};
+     Setting<bool> enable_renderdoc_hotkey{linkage, false, "renderdoc_hotkey",
+                                           Category::RendererDebug};
+-    // TODO: remove this once AMDVLK supports VK_EXT_depth_bias_control
+-    bool renderer_amdvlk_depth_bias_workaround{};
+     Setting<bool> disable_buffer_reorder{linkage, false, "disable_buffer_reorder",
+                                          Category::RendererDebug};
+ 
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 9e8936728a4c..dc515bc8245a 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -425,11 +425,6 @@ struct System::Impl {
+             room_member->SendGameInfo(game_info);
+         }
+ 
+-        // Workarounds:
+-        // Activate this in Super Smash Brothers Ultimate, it only affects AMD cards using AMDVLK
+-        Settings::values.renderer_amdvlk_depth_bias_workaround =
+-            params.program_id == 0x1006A800016E000ULL;
+-
+         status = SystemResultStatus::Success;
+         return status;
+     }
+@@ -489,9 +484,6 @@ struct System::Impl {
+             room_member->SendGameInfo(game_info);
+         }
+ 
+-        // Workarounds
+-        Settings::values.renderer_amdvlk_depth_bias_workaround = false;
+-
+         LOG_DEBUG(Core, "Shutdown OK");
+     }
+ 
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp b/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
+index bf12d69a5d68..efc9cca1cc6e 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
++++ b/src/core/hle/service/nvdrv/devices/nvhost_gpu.cpp
+@@ -5,6 +5,7 @@
+ #include "common/assert.h"
+ #include "common/logging/log.h"
+ #include "core/core.h"
++#include "core/hle/kernel/k_process.h"
+ #include "core/hle/service/nvdrv/core/container.h"
+ #include "core/hle/service/nvdrv/core/nvmap.h"
+ #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
+@@ -75,7 +76,7 @@ NvResult nvhost_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> inpu
+         case 0xd:
+             return WrapFixed(this, &nvhost_gpu::SetChannelPriority, input, output);
+         case 0x1a:
+-            return WrapFixed(this, &nvhost_gpu::AllocGPFIFOEx2, input, output);
++            return WrapFixed(this, &nvhost_gpu::AllocGPFIFOEx2, input, output, fd);
+         case 0x1b:
+             return WrapFixedVariable(this, &nvhost_gpu::SubmitGPFIFOBase1, input, output, true);
+         case 0x1d:
+@@ -120,8 +121,13 @@ NvResult nvhost_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> inpu
+     return NvResult::NotImplemented;
+ }
+ 
+-void nvhost_gpu::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {}
+-void nvhost_gpu::OnClose(DeviceFD fd) {}
++void nvhost_gpu::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {
++    sessions[fd] = session_id;
++}
++
++void nvhost_gpu::OnClose(DeviceFD fd) {
++    sessions.erase(fd);
++}
+ 
+ NvResult nvhost_gpu::SetNVMAPfd(IoctlSetNvmapFD& params) {
+     LOG_DEBUG(Service_NVDRV, "called, fd={}", params.nvmap_fd);
+@@ -161,7 +167,7 @@ NvResult nvhost_gpu::SetChannelPriority(IoctlChannelSetPriority& params) {
+     return NvResult::Success;
+ }
+ 
+-NvResult nvhost_gpu::AllocGPFIFOEx2(IoctlAllocGpfifoEx2& params) {
++NvResult nvhost_gpu::AllocGPFIFOEx2(IoctlAllocGpfifoEx2& params, DeviceFD fd) {
+     LOG_WARNING(Service_NVDRV,
+                 "(STUBBED) called, num_entries={:X}, flags={:X}, unk0={:X}, "
+                 "unk1={:X}, unk2={:X}, unk3={:X}",
+@@ -173,7 +179,12 @@ NvResult nvhost_gpu::AllocGPFIFOEx2(IoctlAllocGpfifoEx2& params) {
+         return NvResult::AlreadyAllocated;
+     }
+ 
+-    system.GPU().InitChannel(*channel_state);
++    u64 program_id{};
++    if (auto* const session = core.GetSession(sessions[fd]); session != nullptr) {
++        program_id = session->process->GetProgramId();
++    }
++
++    system.GPU().InitChannel(*channel_state, program_id);
+ 
+     params.fence_out = syncpoint_manager.GetSyncpointFence(channel_syncpoint);
+ 
+diff --git a/src/core/hle/service/nvdrv/devices/nvhost_gpu.h b/src/core/hle/service/nvdrv/devices/nvhost_gpu.h
+index e34a978db065..e0aeef95365b 100644
+--- a/src/core/hle/service/nvdrv/devices/nvhost_gpu.h
++++ b/src/core/hle/service/nvdrv/devices/nvhost_gpu.h
+@@ -192,7 +192,7 @@ class nvhost_gpu final : public nvdevice {
+     NvResult ZCullBind(IoctlZCullBind& params);
+     NvResult SetErrorNotifier(IoctlSetErrorNotifier& params);
+     NvResult SetChannelPriority(IoctlChannelSetPriority& params);
+-    NvResult AllocGPFIFOEx2(IoctlAllocGpfifoEx2& params);
++    NvResult AllocGPFIFOEx2(IoctlAllocGpfifoEx2& params, DeviceFD fd);
+     NvResult AllocateObjectContext(IoctlAllocObjCtx& params);
+ 
+     NvResult SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandList&& entries);
+@@ -210,6 +210,7 @@ class nvhost_gpu final : public nvdevice {
+     NvCore::SyncpointManager& syncpoint_manager;
+     NvCore::NvMap& nvmap;
+     std::shared_ptr<Tegra::Control::ChannelState> channel_state;
++    std::unordered_map<DeviceFD, NvCore::SessionId> sessions;
+     u32 channel_syncpoint;
+     std::mutex channel_mutex;
+ 
+diff --git a/src/video_core/control/channel_state.cpp b/src/video_core/control/channel_state.cpp
+index 832025d75374..2539997d5335 100644
+--- a/src/video_core/control/channel_state.cpp
++++ b/src/video_core/control/channel_state.cpp
+@@ -16,8 +16,9 @@ namespace Tegra::Control {
+ 
+ ChannelState::ChannelState(s32 bind_id_) : bind_id{bind_id_}, initialized{} {}
+ 
+-void ChannelState::Init(Core::System& system, GPU& gpu) {
++void ChannelState::Init(Core::System& system, GPU& gpu, u64 program_id_) {
+     ASSERT(memory_manager);
++    program_id = program_id_;
+     dma_pusher = std::make_unique<Tegra::DmaPusher>(system, gpu, *memory_manager, *this);
+     maxwell_3d = std::make_unique<Engines::Maxwell3D>(system, *memory_manager);
+     fermi_2d = std::make_unique<Engines::Fermi2D>(*memory_manager);
+diff --git a/src/video_core/control/channel_state.h b/src/video_core/control/channel_state.h
+index 3a7b9872c193..b385f4939fd9 100644
+--- a/src/video_core/control/channel_state.h
++++ b/src/video_core/control/channel_state.h
+@@ -40,11 +40,12 @@ struct ChannelState {
+     ChannelState(ChannelState&& other) noexcept = default;
+     ChannelState& operator=(ChannelState&& other) noexcept = default;
+ 
+-    void Init(Core::System& system, GPU& gpu);
++    void Init(Core::System& system, GPU& gpu, u64 program_id);
+ 
+     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
+ 
+     s32 bind_id = -1;
++    u64 program_id = 0;
+     /// 3D engine
+     std::unique_ptr<Engines::Maxwell3D> maxwell_3d;
+     /// 2D engine
+diff --git a/src/video_core/control/channel_state_cache.cpp b/src/video_core/control/channel_state_cache.cpp
+index 4ebeb6356b6f..f8c6a762d23c 100644
+--- a/src/video_core/control/channel_state_cache.cpp
++++ b/src/video_core/control/channel_state_cache.cpp
+@@ -7,7 +7,7 @@ namespace VideoCommon {
+ 
+ ChannelInfo::ChannelInfo(Tegra::Control::ChannelState& channel_state)
+     : maxwell3d{*channel_state.maxwell_3d}, kepler_compute{*channel_state.kepler_compute},
+-      gpu_memory{*channel_state.memory_manager} {}
++      gpu_memory{*channel_state.memory_manager}, program_id{channel_state.program_id} {}
+ 
+ template class VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo>;
+ 
+diff --git a/src/video_core/control/channel_state_cache.h b/src/video_core/control/channel_state_cache.h
+index 1dbfda2992cb..7480d60d1332 100644
+--- a/src/video_core/control/channel_state_cache.h
++++ b/src/video_core/control/channel_state_cache.h
+@@ -39,6 +39,7 @@ class ChannelInfo {
+     Tegra::Engines::Maxwell3D& maxwell3d;
+     Tegra::Engines::KeplerCompute& kepler_compute;
+     Tegra::MemoryManager& gpu_memory;
++    u64 program_id;
+ };
+ 
+ template <class P>
+@@ -77,9 +78,10 @@ class ChannelSetupCaches {
+     P* channel_state;
+     size_t current_channel_id{UNSET_CHANNEL};
+     size_t current_address_space{};
+-    Tegra::Engines::Maxwell3D* maxwell3d;
+-    Tegra::Engines::KeplerCompute* kepler_compute;
+-    Tegra::MemoryManager* gpu_memory;
++    Tegra::Engines::Maxwell3D* maxwell3d{};
++    Tegra::Engines::KeplerCompute* kepler_compute{};
++    Tegra::MemoryManager* gpu_memory{};
++    u64 program_id{};
+ 
+     std::deque<P> channel_storage;
+     std::deque<size_t> free_channel_ids;
+diff --git a/src/video_core/control/channel_state_cache.inc b/src/video_core/control/channel_state_cache.inc
+index 31f792dddaef..d882d8222f27 100644
+--- a/src/video_core/control/channel_state_cache.inc
++++ b/src/video_core/control/channel_state_cache.inc
+@@ -58,6 +58,7 @@ void ChannelSetupCaches<P>::BindToChannel(s32 id) {
+     maxwell3d = &channel_state->maxwell3d;
+     kepler_compute = &channel_state->kepler_compute;
+     gpu_memory = &channel_state->gpu_memory;
++    program_id = channel_state->program_id;
+     current_address_space = gpu_memory->GetID();
+ }
+ 
+@@ -76,6 +77,7 @@ void ChannelSetupCaches<P>::EraseChannel(s32 id) {
+         maxwell3d = nullptr;
+         kepler_compute = nullptr;
+         gpu_memory = nullptr;
++        program_id = 0;
+     } else if (current_channel_id != UNSET_CHANNEL) {
+         channel_state = &channel_storage[current_channel_id];
+     }
+diff --git a/src/video_core/gpu.cpp b/src/video_core/gpu.cpp
+index 8e663f2a8f63..6d0b3233951d 100644
+--- a/src/video_core/gpu.cpp
++++ b/src/video_core/gpu.cpp
+@@ -67,8 +67,8 @@ struct GPU::Impl {
+         return CreateChannel(new_channel_id++);
+     }
+ 
+-    void InitChannel(Control::ChannelState& to_init) {
+-        to_init.Init(system, gpu);
++    void InitChannel(Control::ChannelState& to_init, u64 program_id) {
++        to_init.Init(system, gpu, program_id);
+         to_init.BindRasterizer(rasterizer);
+         rasterizer->InitializeChannel(to_init);
+     }
+@@ -412,8 +412,8 @@ std::shared_ptr<Control::ChannelState> GPU::AllocateChannel() {
+     return impl->AllocateChannel();
+ }
+ 
+-void GPU::InitChannel(Control::ChannelState& to_init) {
+-    impl->InitChannel(to_init);
++void GPU::InitChannel(Control::ChannelState& to_init, u64 program_id) {
++    impl->InitChannel(to_init, program_id);
+ }
+ 
+ void GPU::BindChannel(s32 channel_id) {
+diff --git a/src/video_core/gpu.h b/src/video_core/gpu.h
+index ad535512c941..50014e51f6bc 100644
+--- a/src/video_core/gpu.h
++++ b/src/video_core/gpu.h
+@@ -149,7 +149,7 @@ class GPU final {
+ 
+     std::shared_ptr<Control::ChannelState> AllocateChannel();
+ 
+-    void InitChannel(Control::ChannelState& to_init);
++    void InitChannel(Control::ChannelState& to_init, u64 program_id);
+ 
+     void BindChannel(s32 channel_id);
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 74f9f099e9f2..84955bdc84c7 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -1054,37 +1054,16 @@ void RasterizerVulkan::UpdateDepthBias(Tegra::Engines::Maxwell3D::Regs& regs) {
+                         regs.zeta.format == Tegra::DepthFormat::X8Z24_UNORM ||
+                         regs.zeta.format == Tegra::DepthFormat::S8Z24_UNORM ||
+                         regs.zeta.format == Tegra::DepthFormat::V8Z24_UNORM;
+-    bool force_unorm = ([&] {
+-        if (!is_d24 || device.SupportsD24DepthBuffer()) {
+-            return false;
+-        }
+-        if (device.IsExtDepthBiasControlSupported()) {
+-            return true;
+-        }
+-        if (!Settings::values.renderer_amdvlk_depth_bias_workaround) {
+-            return false;
+-        }
++    if (is_d24 && !device.SupportsD24DepthBuffer() && program_id == 0x1006A800016E000ULL) {
++        // Only activate this in Super Smash Brothers Ultimate
+         // the base formulas can be obtained from here:
+         //   https://docs.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-output-merger-stage-depth-bias
+         const double rescale_factor =
+             static_cast<double>(1ULL << (32 - 24)) / (static_cast<double>(0x1.ep+127));
+         units = static_cast<float>(static_cast<double>(units) * rescale_factor);
+-        return false;
+-    })();
++    }
+     scheduler.Record([constant = units, clamp = regs.depth_bias_clamp,
+-                      factor = regs.slope_scale_depth_bias, force_unorm,
+-                      precise = device.HasExactDepthBiasControl()](vk::CommandBuffer cmdbuf) {
+-        if (force_unorm) {
+-            VkDepthBiasRepresentationInfoEXT info{
+-                .sType = VK_STRUCTURE_TYPE_DEPTH_BIAS_REPRESENTATION_INFO_EXT,
+-                .pNext = nullptr,
+-                .depthBiasRepresentation =
+-                    VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT,
+-                .depthBiasExact = precise ? VK_TRUE : VK_FALSE,
+-            };
+-            cmdbuf.SetDepthBias(constant, clamp, factor, &info);
+-            return;
+-        }
++                      factor = regs.slope_scale_depth_bias](vk::CommandBuffer cmdbuf) {
+         cmdbuf.SetDepthBias(constant, clamp, factor);
+     });
+ }

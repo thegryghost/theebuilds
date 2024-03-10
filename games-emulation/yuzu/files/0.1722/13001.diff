@@ -1,0 +1,90 @@
+diff --git a/src/common/settings.h b/src/common/settings.h
+index aa054dc24c18..b2b071e7e81a 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -384,6 +384,12 @@ struct Values {
+                                                                   AstcRecompression::Bc3,
+                                                                   "astc_recompression",
+                                                                   Category::RendererAdvanced};
++    SwitchableSetting<VramUsageMode, true> vram_usage_mode{linkage,
++                                                           VramUsageMode::Conservative,
++                                                           VramUsageMode::Conservative,
++                                                           VramUsageMode::Aggressive,
++                                                           "vram_usage_mode",
++                                                           Category::RendererAdvanced};
+     SwitchableSetting<bool> async_presentation{linkage,
+ #ifdef ANDROID
+                                                true,
+diff --git a/src/common/settings_enums.h b/src/common/settings_enums.h
+index f42367e67efd..6e247e930600 100644
+--- a/src/common/settings_enums.h
++++ b/src/common/settings_enums.h
+@@ -122,6 +122,8 @@ ENUM(AstcRecompression, Uncompressed, Bc1, Bc3);
+ 
+ ENUM(VSyncMode, Immediate, Mailbox, Fifo, FifoRelaxed);
+ 
++ENUM(VramUsageMode, Conservative, Aggressive);
++
+ ENUM(RendererBackend, OpenGL, Vulkan, Null);
+ 
+ ENUM(ShaderBackend, Glsl, Glasm, SpirV);
+diff --git a/src/video_core/vulkan_common/vulkan_device.cpp b/src/video_core/vulkan_common/vulkan_device.cpp
+index d7216d349aca..b94924a580c3 100644
+--- a/src/video_core/vulkan_common/vulkan_device.cpp
++++ b/src/video_core/vulkan_common/vulkan_device.cpp
+@@ -1297,10 +1297,6 @@ u64 Device::GetDeviceMemoryUsage() const {
+ }
+ 
+ void Device::CollectPhysicalMemoryInfo() {
+-    // Account for resolution scaling in memory limits
+-    const size_t normal_memory = 6_GiB;
+-    const size_t scaler_memory = 1_GiB * Settings::values.resolution_info.ScaleUp(1);
+-
+     // Calculate limits using memory budget
+     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+     budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+@@ -1331,7 +1327,15 @@ void Device::CollectPhysicalMemoryInfo() {
+     if (!is_integrated) {
+         const u64 reserve_memory = std::min<u64>(device_access_memory / 8, 1_GiB);
+         device_access_memory -= reserve_memory;
+-        device_access_memory = std::min<u64>(device_access_memory, normal_memory + scaler_memory);
++
++        if (Settings::values.vram_usage_mode.GetValue() != Settings::VramUsageMode::Aggressive) {
++            // Account for resolution scaling in memory limits
++            const size_t normal_memory = 6_GiB;
++            const size_t scaler_memory = 1_GiB * Settings::values.resolution_info.ScaleUp(1);
++            device_access_memory =
++                std::min<u64>(device_access_memory, normal_memory + scaler_memory);
++        }
++
+         return;
+     }
+     const s64 available_memory = static_cast<s64>(device_access_memory - device_initial_usage);
+diff --git a/src/yuzu/configuration/shared_translation.cpp b/src/yuzu/configuration/shared_translation.cpp
+index d138b53c8653..0549e8ae44ba 100644
+--- a/src/yuzu/configuration/shared_translation.cpp
++++ b/src/yuzu/configuration/shared_translation.cpp
+@@ -164,6 +164,11 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QWidget* parent) {
+            "the emulator to decompress to an intermediate format any card supports, RGBA8.\n"
+            "This option recompresses RGBA8 to either the BC1 or BC3 format, saving VRAM but "
+            "negatively affecting image quality."));
++    INSERT(Settings, vram_usage_mode, tr("VRAM Usage Mode:"),
++           tr("Selects whether the emulator should prefer to conserve memory or make maximum usage "
++              "of available video memory for performance. Has no effect on integrated graphics. "
++              "Aggressive mode may severely impact the performance of other applications such as "
++              "recording software."));
+     INSERT(
+         Settings, vsync_mode, tr("VSync Mode:"),
+         tr("FIFO (VSync) does not drop frames or exhibit tearing but is limited by the screen "
+@@ -315,6 +320,11 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QWidget* parent) {
+              PAIR(AstcRecompression, Bc1, tr("BC1 (Low quality)")),
+              PAIR(AstcRecompression, Bc3, tr("BC3 (Medium quality)")),
+          }});
++    translations->insert({Settings::EnumMetadata<Settings::VramUsageMode>::Index(),
++                          {
++                              PAIR(VramUsageMode, Conservative, tr("Conservative")),
++                              PAIR(VramUsageMode, Aggressive, tr("Aggressive")),
++                          }});
+     translations->insert({Settings::EnumMetadata<Settings::RendererBackend>::Index(),
+                           {
+ #ifdef HAS_OPENGL

@@ -1,0 +1,4089 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 63a6da12e682..501009ac7825 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -401,14 +401,16 @@ add_library(core STATIC
+     hle/service/am/am_types.h
+     hle/service/am/applet.cpp
+     hle/service/am/applet.h
++    hle/service/am/applet_manager.cpp
+     hle/service/am/applet_data_broker.cpp
+     hle/service/am/applet_data_broker.h
+-    hle/service/am/applet_manager.cpp
+     hle/service/am/applet_manager.h
+-    hle/service/am/applet_message_queue.cpp
+-    hle/service/am/applet_message_queue.h
++    hle/service/am/button_poller.cpp
++    hle/service/am/button_poller.h
+     hle/service/am/display_layer_manager.cpp
+     hle/service/am/display_layer_manager.h
++    hle/service/am/event_observer.cpp
++    hle/service/am/event_observer.h
+     hle/service/am/frontend/applet_cabinet.cpp
+     hle/service/am/frontend/applet_cabinet.h
+     hle/service/am/frontend/applet_controller.cpp
+@@ -434,8 +436,12 @@ add_library(core STATIC
+     hle/service/am/hid_registration.h
+     hle/service/am/library_applet_storage.cpp
+     hle/service/am/library_applet_storage.h
+-    hle/service/am/process.cpp
+-    hle/service/am/process.h
++    hle/service/am/lifecycle_manager.cpp
++    hle/service/am/lifecycle_manager.h
++    hle/service/am/process_creation.cpp
++    hle/service/am/process_creation.h
++    hle/service/am/process_holder.cpp
++    hle/service/am/process_holder.h
+     hle/service/am/service/all_system_applet_proxies_service.cpp
+     hle/service/am/service/all_system_applet_proxies_service.h
+     hle/service/am/service/applet_common_functions.cpp
+@@ -486,6 +492,8 @@ add_library(core STATIC
+     hle/service/am/service/system_applet_proxy.h
+     hle/service/am/service/window_controller.cpp
+     hle/service/am/service/window_controller.h
++    hle/service/am/window_system.cpp
++    hle/service/am/window_system.h
+     hle/service/aoc/addon_content_manager.cpp
+     hle/service/aoc/addon_content_manager.h
+     hle/service/aoc/purchase_event_manager.cpp
+@@ -914,6 +922,8 @@ add_library(core STATIC
+     hle/service/os/multi_wait_utils.h
+     hle/service/os/mutex.cpp
+     hle/service/os/mutex.h
++    hle/service/os/process.cpp
++    hle/service/os/process.h
+     hle/service/pcie/pcie.cpp
+     hle/service/pcie/pcie.h
+     hle/service/pctl/parental_control_service_factory.cpp
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index dc515bc8245a..e1c8b41ee5ce 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -3,7 +3,6 @@
+ 
+ #include <array>
+ #include <atomic>
+-#include <exception>
+ #include <memory>
+ #include <utility>
+ 
+@@ -20,7 +19,6 @@
+ #include "core/cpu_manager.h"
+ #include "core/debugger/debugger.h"
+ #include "core/device_memory.h"
+-#include "core/file_sys/bis_factory.h"
+ #include "core/file_sys/fs_filesystem.h"
+ #include "core/file_sys/patch_manager.h"
+ #include "core/file_sys/registered_cache.h"
+@@ -38,6 +36,7 @@
+ #include "core/hle/service/acc/profile_manager.h"
+ #include "core/hle/service/am/applet_manager.h"
+ #include "core/hle/service/am/frontend/applets.h"
++#include "core/hle/service/am/process_creation.h"
+ #include "core/hle/service/apm/apm_controller.h"
+ #include "core/hle/service/filesystem/filesystem.h"
+ #include "core/hle/service/glue/glue_manager.h"
+@@ -72,30 +71,6 @@ MICROPROFILE_DEFINE(ARM_CPU3, "ARM", "CPU 3", MP_RGB(255, 64, 64));
+ 
+ namespace Core {
+ 
+-namespace {
+-
+-FileSys::StorageId GetStorageIdForFrontendSlot(
+-    std::optional<FileSys::ContentProviderUnionSlot> slot) {
+-    if (!slot.has_value()) {
+-        return FileSys::StorageId::None;
+-    }
+-
+-    switch (*slot) {
+-    case FileSys::ContentProviderUnionSlot::UserNAND:
+-        return FileSys::StorageId::NandUser;
+-    case FileSys::ContentProviderUnionSlot::SysNAND:
+-        return FileSys::StorageId::NandSystem;
+-    case FileSys::ContentProviderUnionSlot::SDMC:
+-        return FileSys::StorageId::SdCard;
+-    case FileSys::ContentProviderUnionSlot::FrontendManual:
+-        return FileSys::StorageId::Host;
+-    default:
+-        return FileSys::StorageId::None;
+-    }
+-}
+-
+-} // Anonymous namespace
+-
+ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
+                                          const std::string& path) {
+     // To account for split 00+01+etc files.
+@@ -297,9 +272,6 @@ struct System::Impl {
+     }
+ 
+     SystemResultStatus SetupForApplicationProcess(System& system, Frontend::EmuWindow& emu_window) {
+-        /// Reset all glue registrations
+-        arp_manager.ResetAll();
+-
+         telemetry_session = std::make_unique<Core::TelemetrySession>();
+ 
+         host1x_core = std::make_unique<Tegra::Host1x::Host1x>(system);
+@@ -335,8 +307,24 @@ struct System::Impl {
+     SystemResultStatus Load(System& system, Frontend::EmuWindow& emu_window,
+                             const std::string& filepath,
+                             Service::AM::FrontendAppletParameters& params) {
+-        app_loader = Loader::GetLoader(system, GetGameFileFromPath(virtual_filesystem, filepath),
+-                                       params.program_id, params.program_index);
++        InitializeKernel(system);
++
++        const auto file = GetGameFileFromPath(virtual_filesystem, filepath);
++
++        // Create the application process
++        Loader::ResultStatus load_result{};
++        std::vector<u8> control;
++        auto process =
++            Service::AM::CreateApplicationProcess(control, app_loader, load_result, system, file,
++                                                  params.program_id, params.program_index);
++
++        if (load_result != Loader::ResultStatus::Success) {
++            LOG_CRITICAL(Core, "Failed to load ROM (Error {})!", load_result);
++            ShutdownMainProcess();
++
++            return static_cast<SystemResultStatus>(
++                static_cast<u32>(SystemResultStatus::ErrorLoader) + static_cast<u32>(load_result));
++        }
+ 
+         if (!app_loader) {
+             LOG_CRITICAL(Core, "Failed to obtain loader for {}!", filepath);
+@@ -344,7 +332,7 @@ struct System::Impl {
+         }
+ 
+         if (app_loader->ReadProgramId(params.program_id) != Loader::ResultStatus::Success) {
+-            LOG_ERROR(Core, "Failed to find title id for ROM!");
++            LOG_ERROR(Core, "Failed to find program id for ROM!");
+         }
+ 
+         std::string name = "Unknown program";
+@@ -352,23 +340,10 @@ struct System::Impl {
+             LOG_ERROR(Core, "Failed to read title for ROM!");
+         }
+ 
+-        LOG_INFO(Core, "Loading {} ({})", name, params.program_id);
++        LOG_INFO(Core, "Loading {} ({:016X}) ...", name, params.program_id);
+ 
+-        InitializeKernel(system);
+-
+-        // Create the application process.
+-        auto main_process = Kernel::KProcess::Create(system.Kernel());
+-        Kernel::KProcess::Register(system.Kernel(), main_process);
+-        kernel.AppendNewProcess(main_process);
+-        kernel.MakeApplicationProcess(main_process);
+-        const auto [load_result, load_parameters] = app_loader->Load(*main_process, system);
+-        if (load_result != Loader::ResultStatus::Success) {
+-            LOG_CRITICAL(Core, "Failed to load ROM (Error {})!", load_result);
+-            ShutdownMainProcess();
+-
+-            return static_cast<SystemResultStatus>(
+-                static_cast<u32>(SystemResultStatus::ErrorLoader) + static_cast<u32>(load_result));
+-        }
++        // Make the process created be the application
++        kernel.MakeApplicationProcess(process->GetHandle());
+ 
+         // Set up the rest of the system.
+         SystemResultStatus init_result{SetupForApplicationProcess(system, emu_window)};
+@@ -379,7 +354,6 @@ struct System::Impl {
+             return init_result;
+         }
+ 
+-        AddGlueRegistrationForProcess(*app_loader, *main_process);
+         telemetry_session->AddInitialInfo(*app_loader, fs_controller, *content_provider);
+ 
+         // Initialize cheat engine
+@@ -387,14 +361,9 @@ struct System::Impl {
+             cheat_engine->Initialize();
+         }
+ 
+-        // Register with applet manager.
+-        applet_manager.CreateAndInsertByFrontendAppletParameters(main_process->GetProcessId(),
+-                                                                 params);
+-
+-        // All threads are started, begin main process execution, now that we're in the clear.
+-        main_process->Run(load_parameters->main_thread_priority,
+-                          load_parameters->main_thread_stack_size);
+-        main_process->Close();
++        // Register with applet manager
++        // All threads are started, begin main process execution, now that we're in the clear
++        applet_manager.CreateAndInsertByFrontendAppletParameters(std::move(process), params);
+ 
+         if (Settings::values.gamecard_inserted) {
+             if (Settings::values.gamecard_current_game) {
+@@ -461,7 +430,6 @@ struct System::Impl {
+         kernel.SuspendEmulation(true);
+         kernel.CloseServices();
+         kernel.ShutdownCores();
+-        applet_manager.Reset();
+         services.reset();
+         service_manager.reset();
+         fs_controller.Reset();
+@@ -484,6 +452,9 @@ struct System::Impl {
+             room_member->SendGameInfo(game_info);
+         }
+ 
++        // Reset all glue registrations
++        arp_manager.ResetAll();
++
+         LOG_DEBUG(Core, "Shutdown OK");
+     }
+ 
+@@ -501,31 +472,6 @@ struct System::Impl {
+         return app_loader->ReadTitle(out);
+     }
+ 
+-    void AddGlueRegistrationForProcess(Loader::AppLoader& loader, Kernel::KProcess& process) {
+-        std::vector<u8> nacp_data;
+-        FileSys::NACP nacp;
+-        if (loader.ReadControlData(nacp) == Loader::ResultStatus::Success) {
+-            nacp_data = nacp.GetRawBytes();
+-        } else {
+-            nacp_data.resize(sizeof(FileSys::RawNACP));
+-        }
+-
+-        Service::Glue::ApplicationLaunchProperty launch{};
+-        launch.title_id = process.GetProgramId();
+-
+-        FileSys::PatchManager pm{launch.title_id, fs_controller, *content_provider};
+-        launch.version = pm.GetGameVersion().value_or(0);
+-
+-        // TODO(DarkLordZach): When FSController/Game Card Support is added, if
+-        // current_process_game_card use correct StorageId
+-        launch.base_game_storage_id = GetStorageIdForFrontendSlot(content_provider->GetSlotForEntry(
+-            launch.title_id, FileSys::ContentRecordType::Program));
+-        launch.update_storage_id = GetStorageIdForFrontendSlot(content_provider->GetSlotForEntry(
+-            FileSys::GetUpdateTitleID(launch.title_id), FileSys::ContentRecordType::Program));
+-
+-        arp_manager.Register(launch.title_id, launch, std::move(nacp_data));
+-    }
+-
+     void SetStatus(SystemResultStatus new_status, const char* details = nullptr) {
+         status = new_status;
+         if (details) {
+diff --git a/src/core/hle/kernel/k_process.cpp b/src/core/hle/kernel/k_process.cpp
+index cb9a11a63179..80566b7e7721 100644
+--- a/src/core/hle/kernel/k_process.cpp
++++ b/src/core/hle/kernel/k_process.cpp
+@@ -1170,6 +1170,7 @@ Result KProcess::LoadFromMetadata(const FileSys::ProgramMetadata& metadata, std:
+     // Determine if we are an application.
+     if (pool == KMemoryManager::Pool::Application) {
+         flag |= Svc::CreateProcessFlag::IsApplication;
++        m_is_application = true;
+     }
+ 
+     // If we are 64-bit, create as such.
+diff --git a/src/core/hle/service/am/am.cpp b/src/core/hle/service/am/am.cpp
+index 8c4e14f08ce0..2ef393439b09 100644
+--- a/src/core/hle/service/am/am.cpp
++++ b/src/core/hle/service/am/am.cpp
+@@ -2,19 +2,26 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "core/hle/service/am/am.h"
++#include "core/hle/service/am/button_poller.h"
++#include "core/hle/service/am/event_observer.h"
+ #include "core/hle/service/am/service/all_system_applet_proxies_service.h"
+ #include "core/hle/service/am/service/application_proxy_service.h"
++#include "core/hle/service/am/window_system.h"
+ #include "core/hle/service/server_manager.h"
+ 
+ namespace Service::AM {
+ 
+ void LoopProcess(Core::System& system) {
++    WindowSystem window_system(system);
++    ButtonPoller button_poller(system, window_system);
++    EventObserver event_observer(system, window_system);
++
+     auto server_manager = std::make_unique<ServerManager>(system);
+ 
+-    server_manager->RegisterNamedService("appletAE",
+-                                         std::make_shared<IAllSystemAppletProxiesService>(system));
+-    server_manager->RegisterNamedService("appletOE",
+-                                         std::make_shared<IApplicationProxyService>(system));
++    server_manager->RegisterNamedService(
++        "appletAE", std::make_shared<IAllSystemAppletProxiesService>(system, window_system));
++    server_manager->RegisterNamedService(
++        "appletOE", std::make_shared<IApplicationProxyService>(system, window_system));
+     ServerManager::RunServer(std::move(server_manager));
+ }
+ 
+diff --git a/src/core/hle/service/am/am_results.h b/src/core/hle/service/am/am_results.h
+index a2afc9eec2ce..44846aa2e526 100644
+--- a/src/core/hle/service/am/am_results.h
++++ b/src/core/hle/service/am/am_results.h
+@@ -9,6 +9,7 @@ namespace Service::AM {
+ 
+ constexpr Result ResultNoDataInChannel{ErrorModule::AM, 2};
+ constexpr Result ResultNoMessages{ErrorModule::AM, 3};
++constexpr Result ResultLibraryAppletTerminated{ErrorModule::AM, 22};
+ constexpr Result ResultInvalidOffset{ErrorModule::AM, 503};
+ constexpr Result ResultInvalidStorageType{ErrorModule::AM, 511};
+ constexpr Result ResultFatalSectionCountImbalance{ErrorModule::AM, 512};
+diff --git a/src/core/hle/service/am/am_types.h b/src/core/hle/service/am/am_types.h
+index a14defb40307..eb9ad0ac5ee4 100644
+--- a/src/core/hle/service/am/am_types.h
++++ b/src/core/hle/service/am/am_types.h
+@@ -61,12 +61,6 @@ enum class ScreenshotPermission : u32 {
+     Disable = 2,
+ };
+ 
+-struct FocusHandlingMode {
+-    bool notify;
+-    bool background;
+-    bool suspend;
+-};
+-
+ enum class IdleTimeDetectionExtension : u32 {
+     Disabled = 0,
+     Extended = 1,
+@@ -239,7 +233,6 @@ struct ApplicationPlayStatistics {
+ static_assert(sizeof(ApplicationPlayStatistics) == 0x18,
+               "ApplicationPlayStatistics has incorrect size.");
+ 
+-using AppletResourceUserId = u64;
+ using ProgramId = u64;
+ 
+ struct Applet;
+diff --git a/src/core/hle/service/am/applet.cpp b/src/core/hle/service/am/applet.cpp
+index 5b9056c12490..6847f250c22c 100644
+--- a/src/core/hle/service/am/applet.cpp
++++ b/src/core/hle/service/am/applet.cpp
+@@ -1,27 +1,71 @@
+ // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#include "common/scope_exit.h"
+-
+ #include "core/core.h"
+-#include "core/hle/service/am/am_results.h"
+ #include "core/hle/service/am/applet.h"
+ #include "core/hle/service/am/applet_manager.h"
+ 
+ namespace Service::AM {
+ 
+-Applet::Applet(Core::System& system, std::unique_ptr<Process> process_)
+-    : context(system, "Applet"), message_queue(system), process(std::move(process_)),
+-      hid_registration(system, *process), gpu_error_detected_event(context),
+-      friend_invitation_storage_channel_event(context), notification_storage_channel_event(context),
+-      health_warning_disappeared_system_event(context), acquired_sleep_lock_event(context),
+-      pop_from_general_channel_event(context), library_applet_launchable_event(context),
+-      accumulated_suspended_tick_changed_event(context), sleep_lock_event(context) {
++Applet::Applet(Core::System& system, std::unique_ptr<Process> process_, bool is_application)
++    : context(system, "Applet"), lifecycle_manager(system, context, is_application),
++      process(std::move(process_)), hid_registration(system, *process),
++      gpu_error_detected_event(context), friend_invitation_storage_channel_event(context),
++      notification_storage_channel_event(context), health_warning_disappeared_system_event(context),
++      acquired_sleep_lock_event(context), pop_from_general_channel_event(context),
++      library_applet_launchable_event(context), accumulated_suspended_tick_changed_event(context),
++      sleep_lock_event(context), state_changed_event(context) {
+ 
+-    aruid = process->GetProcessId();
++    aruid.pid = process->GetProcessId();
+     program_id = process->GetProgramId();
+ }
+ 
+ Applet::~Applet() = default;
+ 
++void Applet::UpdateSuspensionStateLocked(bool force_message) {
++    // Remove any forced resumption.
++    lifecycle_manager.RemoveForceResumeIfPossible();
++
++    // Check if we're runnable.
++    const bool curr_activity_runnable = lifecycle_manager.IsRunnable();
++    const bool prev_activity_runnable = is_activity_runnable;
++    const bool was_changed = curr_activity_runnable != prev_activity_runnable;
++
++    if (was_changed) {
++        if (curr_activity_runnable) {
++            process->Suspend(false);
++        } else {
++            process->Suspend(true);
++            lifecycle_manager.RequestResumeNotification();
++        }
++
++        is_activity_runnable = curr_activity_runnable;
++    }
++
++    if (lifecycle_manager.GetForcedSuspend()) {
++        // TODO: why is this allowed?
++        return;
++    }
++
++    // Signal if the focus state was changed or the process state was changed.
++    if (lifecycle_manager.UpdateRequestedFocusState() || was_changed || force_message) {
++        lifecycle_manager.SignalSystemEventIfNeeded();
++    }
++}
++
++void Applet::SetInteractibleLocked(bool interactible) {
++    if (is_interactible == interactible) {
++        return;
++    }
++
++    is_interactible = interactible;
++
++    hid_registration.EnableAppletToGetInput(interactible && !lifecycle_manager.GetExitRequested());
++}
++
++void Applet::OnProcessTerminatedLocked() {
++    is_completed = true;
++    state_changed_event.Signal();
++}
++
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/applet.h b/src/core/hle/service/am/applet.h
+index ad602153e552..571904fab40b 100644
+--- a/src/core/hle/service/am/applet.h
++++ b/src/core/hle/service/am/applet.h
+@@ -3,25 +3,28 @@
+ 
+ #pragma once
+ 
++#include <deque>
+ #include <mutex>
+ 
+ #include "common/math_util.h"
+ #include "core/hle/service/apm/apm_controller.h"
+ #include "core/hle/service/caps/caps_types.h"
++#include "core/hle/service/cmif_types.h"
+ #include "core/hle/service/kernel_helpers.h"
+ #include "core/hle/service/os/event.h"
++#include "core/hle/service/os/process.h"
+ #include "core/hle/service/service.h"
+ 
+ #include "core/hle/service/am/am_types.h"
+-#include "core/hle/service/am/applet_message_queue.h"
+ #include "core/hle/service/am/display_layer_manager.h"
+ #include "core/hle/service/am/hid_registration.h"
+-#include "core/hle/service/am/process.h"
++#include "core/hle/service/am/lifecycle_manager.h"
++#include "core/hle/service/am/process_holder.h"
+ 
+ namespace Service::AM {
+ 
+ struct Applet {
+-    explicit Applet(Core::System& system, std::unique_ptr<Process> process_);
++    explicit Applet(Core::System& system, std::unique_ptr<Process> process_, bool is_application);
+     ~Applet();
+ 
+     // Lock
+@@ -30,11 +33,13 @@ struct Applet {
+     // Event creation helper
+     KernelHelpers::ServiceContext context;
+ 
+-    // Applet message queue
+-    AppletMessageQueue message_queue;
++    // Lifecycle manager
++    LifecycleManager lifecycle_manager;
+ 
+     // Process
+     std::unique_ptr<Process> process;
++    std::optional<ProcessHolder> process_holder;
++    bool is_process_running{};
+ 
+     // Creation state
+     AppletId applet_id{};
+@@ -75,11 +80,9 @@ struct Applet {
+     bool game_play_recording_supported{};
+     GamePlayRecordingState game_play_recording_state{GamePlayRecordingState::Disabled};
+     bool jit_service_launched{};
+-    bool is_running{};
+     bool application_crash_report_enabled{};
+ 
+     // Common state
+-    FocusState focus_state{};
+     bool sleep_lock_enabled{};
+     bool vr_mode_enabled{};
+     bool lcd_backlight_off_enabled{};
+@@ -93,15 +96,12 @@ struct Applet {
+     // Caller applet
+     std::weak_ptr<Applet> caller_applet{};
+     std::shared_ptr<AppletDataBroker> caller_applet_broker{};
++    std::list<std::shared_ptr<Applet>> child_applets{};
++    bool is_completed{};
+ 
+     // Self state
+     bool exit_locked{};
+     s32 fatal_section_count{};
+-    bool operation_mode_changed_notification_enabled{true};
+-    bool performance_mode_changed_notification_enabled{true};
+-    FocusHandlingMode focus_handling_mode{};
+-    bool restart_message_enabled{};
+-    bool out_of_focus_suspension_enabled{true};
+     Capture::AlbumImageOrientation album_image_orientation{};
+     bool handles_request_to_display{};
+     ScreenshotPermission screenshot_permission{};
+@@ -110,6 +110,9 @@ struct Applet {
+     u64 suspended_ticks{};
+     bool album_image_taken_notification_enabled{};
+     bool record_volume_muted{};
++    bool is_activity_runnable{};
++    bool is_interactible{true};
++    bool window_visible{true};
+ 
+     // Events
+     Event gpu_error_detected_event;
+@@ -121,9 +124,15 @@ struct Applet {
+     Event library_applet_launchable_event;
+     Event accumulated_suspended_tick_changed_event;
+     Event sleep_lock_event;
++    Event state_changed_event;
+ 
+     // Frontend state
+     std::shared_ptr<Frontend::FrontendApplet> frontend{};
++
++    // Process state management
++    void UpdateSuspensionStateLocked(bool force_message);
++    void SetInteractibleLocked(bool interactible);
++    void OnProcessTerminatedLocked();
+ };
+ 
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/applet_data_broker.cpp b/src/core/hle/service/am/applet_data_broker.cpp
+index 9057244a9244..fff78c5afbdf 100644
+--- a/src/core/hle/service/am/applet_data_broker.cpp
++++ b/src/core/hle/service/am/applet_data_broker.cpp
+@@ -44,24 +44,8 @@ Kernel::KReadableEvent* AppletStorageChannel::GetEvent() {
+ 
+ AppletDataBroker::AppletDataBroker(Core::System& system_)
+     : system(system_), context(system_, "AppletDataBroker"), in_data(context),
+-      interactive_in_data(context), out_data(context), interactive_out_data(context),
+-      state_changed_event(context), is_completed(false) {}
++      interactive_in_data(context), out_data(context), interactive_out_data(context) {}
+ 
+ AppletDataBroker::~AppletDataBroker() = default;
+ 
+-void AppletDataBroker::SignalCompletion() {
+-    {
+-        std::scoped_lock lk{lock};
+-
+-        if (is_completed) {
+-            return;
+-        }
+-
+-        is_completed = true;
+-        state_changed_event.Signal();
+-    }
+-
+-    system.GetAppletManager().FocusStateChanged();
+-}
+-
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/applet_data_broker.h b/src/core/hle/service/am/applet_data_broker.h
+index 5a1d43c11a0c..2718f608ad57 100644
+--- a/src/core/hle/service/am/applet_data_broker.h
++++ b/src/core/hle/service/am/applet_data_broker.h
+@@ -53,16 +53,6 @@ class AppletDataBroker {
+         return interactive_out_data;
+     }
+ 
+-    Event& GetStateChangedEvent() {
+-        return state_changed_event;
+-    }
+-
+-    bool IsCompleted() const {
+-        return is_completed;
+-    }
+-
+-    void SignalCompletion();
+-
+ private:
+     Core::System& system;
+     KernelHelpers::ServiceContext context;
+@@ -71,10 +61,6 @@ class AppletDataBroker {
+     AppletStorageChannel interactive_in_data;
+     AppletStorageChannel out_data;
+     AppletStorageChannel interactive_out_data;
+-    Event state_changed_event;
+-
+-    std::mutex lock;
+-    bool is_completed;
+ };
+ 
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/applet_manager.cpp b/src/core/hle/service/am/applet_manager.cpp
+index 2e109181d150..c6b7ec8bb592 100644
+--- a/src/core/hle/service/am/applet_manager.cpp
++++ b/src/core/hle/service/am/applet_manager.cpp
+@@ -13,6 +13,7 @@
+ #include "core/hle/service/am/frontend/applet_mii_edit_types.h"
+ #include "core/hle/service/am/frontend/applet_software_keyboard_types.h"
+ #include "core/hle/service/am/service/storage.h"
++#include "core/hle/service/am/window_system.h"
+ #include "hid_core/hid_types.h"
+ 
+ namespace Service::AM {
+@@ -225,49 +226,46 @@ void PushInShowSoftwareKeyboard(Core::System& system, AppletStorageChannel& chan
+ } // namespace
+ 
+ AppletManager::AppletManager(Core::System& system) : m_system(system) {}
+-AppletManager::~AppletManager() {
+-    this->Reset();
+-}
+-
+-void AppletManager::InsertApplet(std::shared_ptr<Applet> applet) {
+-    std::scoped_lock lk{m_lock};
++AppletManager::~AppletManager() = default;
+ 
+-    m_applets.emplace(applet->aruid, std::move(applet));
+-}
+-
+-void AppletManager::TerminateAndRemoveApplet(AppletResourceUserId aruid) {
+-    std::shared_ptr<Applet> applet;
+-    bool should_stop = false;
++void AppletManager::CreateAndInsertByFrontendAppletParameters(
++    std::unique_ptr<Process> process, const FrontendAppletParameters& params) {
+     {
+         std::scoped_lock lk{m_lock};
++        m_pending_process = std::move(process);
++        m_pending_parameters = params;
++    }
++    m_cv.notify_all();
++}
+ 
+-        const auto it = m_applets.find(aruid);
+-        if (it == m_applets.end()) {
+-            return;
+-        }
+-
+-        applet = it->second;
+-        m_applets.erase(it);
++void AppletManager::RequestExit() {
++    std::scoped_lock lk{m_lock};
++    if (m_window_system) {
++        m_window_system->OnExitRequested();
++    }
++}
+ 
+-        should_stop = m_applets.empty();
++void AppletManager::OperationModeChanged() {
++    std::scoped_lock lk{m_lock};
++    if (m_window_system) {
++        m_window_system->OnOperationModeChanged();
+     }
++}
+ 
+-    // Terminate process.
+-    applet->process->Terminate();
++void AppletManager::SetWindowSystem(WindowSystem* window_system) {
++    std::unique_lock lk{m_lock};
+ 
+-    // If there were no applets left, stop emulation.
+-    if (should_stop) {
+-        m_system.Exit();
++    m_window_system = window_system;
++    if (!m_window_system) {
++        return;
+     }
+-}
+ 
+-void AppletManager::CreateAndInsertByFrontendAppletParameters(
+-    AppletResourceUserId aruid, const FrontendAppletParameters& params) {
+-    // TODO: this should be run inside AM so that the events will have a parent process
+-    // TODO: have am create the guest process
+-    auto applet = std::make_shared<Applet>(m_system, std::make_unique<Process>(m_system));
++    m_cv.wait(lk, [&] { return m_pending_process != nullptr; });
++
++    const auto& params = m_pending_parameters;
++    auto applet = std::make_shared<Applet>(m_system, std::move(m_pending_process),
++                                           params.applet_id == AppletId::Application);
+ 
+-    applet->aruid = aruid;
+     applet->program_id = params.program_id;
+     applet->applet_id = params.applet_id;
+     applet->type = params.applet_type;
+@@ -322,59 +320,19 @@ void AppletManager::CreateAndInsertByFrontendAppletParameters(
+     }
+ 
+     // Applet was started by frontend, so it is foreground.
+-    applet->message_queue.PushMessage(AppletMessage::ChangeIntoForeground);
+-    applet->message_queue.PushMessage(AppletMessage::FocusStateChanged);
+-    applet->focus_state = FocusState::InFocus;
+-
+-    this->InsertApplet(std::move(applet));
+-}
+-
+-std::shared_ptr<Applet> AppletManager::GetByAppletResourceUserId(AppletResourceUserId aruid) const {
+-    std::scoped_lock lk{m_lock};
+-
+-    if (const auto it = m_applets.find(aruid); it != m_applets.end()) {
+-        return it->second;
+-    }
+-
+-    return {};
+-}
+-
+-void AppletManager::Reset() {
+-    std::scoped_lock lk{m_lock};
+-
+-    m_applets.clear();
+-}
+-
+-void AppletManager::RequestExit() {
+-    std::scoped_lock lk{m_lock};
+-
+-    for (const auto& [aruid, applet] : m_applets) {
+-        applet->message_queue.RequestExit();
++    applet->lifecycle_manager.SetFocusState(FocusState::InFocus);
++
++    if (applet->applet_id == AppletId::QLaunch) {
++        applet->lifecycle_manager.SetFocusHandlingMode(false);
++        applet->lifecycle_manager.SetOutOfFocusSuspendingEnabled(false);
++        m_window_system->TrackApplet(applet, false);
++        m_window_system->RequestHomeMenuToGetForeground();
++    } else {
++        m_window_system->TrackApplet(applet, true);
++        m_window_system->RequestApplicationToGetForeground();
+     }
+-}
+-
+-void AppletManager::RequestResume() {
+-    std::scoped_lock lk{m_lock};
+ 
+-    for (const auto& [aruid, applet] : m_applets) {
+-        applet->message_queue.RequestResume();
+-    }
+-}
+-
+-void AppletManager::OperationModeChanged() {
+-    std::scoped_lock lk{m_lock};
+-
+-    for (const auto& [aruid, applet] : m_applets) {
+-        applet->message_queue.OperationModeChanged();
+-    }
+-}
+-
+-void AppletManager::FocusStateChanged() {
+-    std::scoped_lock lk{m_lock};
+-
+-    for (const auto& [aruid, applet] : m_applets) {
+-        applet->message_queue.FocusStateChanged();
+-    }
++    applet->process->Run();
+ }
+ 
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/applet_manager.h b/src/core/hle/service/am/applet_manager.h
+index 4875de309ea2..fbdc77140062 100644
+--- a/src/core/hle/service/am/applet_manager.h
++++ b/src/core/hle/service/am/applet_manager.h
+@@ -3,17 +3,23 @@
+ 
+ #pragma once
+ 
+-#include <map>
++#include <condition_variable>
+ #include <mutex>
+ 
+-#include "core/hle/service/am/applet.h"
++#include "core/hle/service/am/am_types.h"
+ 
+ namespace Core {
+ class System;
+ }
+ 
++namespace Service {
++class Process;
++}
++
+ namespace Service::AM {
+ 
++class WindowSystem;
++
+ enum class LaunchType {
+     FrontendInitiated,
+     ApplicationInitiated,
+@@ -33,27 +39,24 @@ class AppletManager {
+     explicit AppletManager(Core::System& system);
+     ~AppletManager();
+ 
+-    void InsertApplet(std::shared_ptr<Applet> applet);
+-    void TerminateAndRemoveApplet(AppletResourceUserId aruid);
+-
+-    void CreateAndInsertByFrontendAppletParameters(AppletResourceUserId aruid,
++    void CreateAndInsertByFrontendAppletParameters(std::unique_ptr<Process> process,
+                                                    const FrontendAppletParameters& params);
+-    std::shared_ptr<Applet> GetByAppletResourceUserId(AppletResourceUserId aruid) const;
+-
+-    void Reset();
+-
+     void RequestExit();
+-    void RequestResume();
+     void OperationModeChanged();
+-    void FocusStateChanged();
++
++public:
++    void SetWindowSystem(WindowSystem* window_system);
+ 
+ private:
+     Core::System& m_system;
+ 
+-    mutable std::mutex m_lock{};
+-    std::map<AppletResourceUserId, std::shared_ptr<Applet>> m_applets{};
++    std::mutex m_lock;
++    std::condition_variable m_cv;
++
++    WindowSystem* m_window_system{};
+ 
+-    // AudioController state goes here
++    FrontendAppletParameters m_pending_parameters{};
++    std::unique_ptr<Process> m_pending_process{};
+ };
+ 
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/applet_message_queue.cpp b/src/core/hle/service/am/applet_message_queue.cpp
+deleted file mode 100644
+index 83c3c5a551e5..000000000000
+--- a/src/core/hle/service/am/applet_message_queue.cpp
++++ /dev/null
+@@ -1,73 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#include "core/hle/service/am/applet_message_queue.h"
+-#include "core/hle/service/ipc_helpers.h"
+-
+-namespace Service::AM {
+-
+-AppletMessageQueue::AppletMessageQueue(Core::System& system)
+-    : service_context{system, "AppletMessageQueue"} {
+-    on_new_message = service_context.CreateEvent("AMMessageQueue:OnMessageReceived");
+-    on_operation_mode_changed = service_context.CreateEvent("AMMessageQueue:OperationModeChanged");
+-}
+-
+-AppletMessageQueue::~AppletMessageQueue() {
+-    service_context.CloseEvent(on_new_message);
+-    service_context.CloseEvent(on_operation_mode_changed);
+-}
+-
+-Kernel::KReadableEvent& AppletMessageQueue::GetMessageReceiveEvent() {
+-    return on_new_message->GetReadableEvent();
+-}
+-
+-Kernel::KReadableEvent& AppletMessageQueue::GetOperationModeChangedEvent() {
+-    return on_operation_mode_changed->GetReadableEvent();
+-}
+-
+-void AppletMessageQueue::PushMessage(AppletMessage msg) {
+-    {
+-        std::scoped_lock lk{lock};
+-        messages.push(msg);
+-    }
+-    on_new_message->Signal();
+-}
+-
+-AppletMessage AppletMessageQueue::PopMessage() {
+-    std::scoped_lock lk{lock};
+-    if (messages.empty()) {
+-        on_new_message->Clear();
+-        return AppletMessage::None;
+-    }
+-    auto msg = messages.front();
+-    messages.pop();
+-    if (messages.empty()) {
+-        on_new_message->Clear();
+-    }
+-    return msg;
+-}
+-
+-std::size_t AppletMessageQueue::GetMessageCount() const {
+-    std::scoped_lock lk{lock};
+-    return messages.size();
+-}
+-
+-void AppletMessageQueue::RequestExit() {
+-    PushMessage(AppletMessage::Exit);
+-}
+-
+-void AppletMessageQueue::RequestResume() {
+-    PushMessage(AppletMessage::Resume);
+-}
+-
+-void AppletMessageQueue::FocusStateChanged() {
+-    PushMessage(AppletMessage::FocusStateChanged);
+-}
+-
+-void AppletMessageQueue::OperationModeChanged() {
+-    PushMessage(AppletMessage::OperationModeChanged);
+-    PushMessage(AppletMessage::PerformanceModeChanged);
+-    on_operation_mode_changed->Signal();
+-}
+-
+-} // namespace Service::AM
+diff --git a/src/core/hle/service/am/applet_message_queue.h b/src/core/hle/service/am/applet_message_queue.h
+deleted file mode 100644
+index 429b77d37028..000000000000
+--- a/src/core/hle/service/am/applet_message_queue.h
++++ /dev/null
+@@ -1,43 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#pragma once
+-
+-#include <queue>
+-
+-#include "core/hle/service/am/am_types.h"
+-#include "core/hle/service/kernel_helpers.h"
+-#include "core/hle/service/service.h"
+-
+-namespace Kernel {
+-class KReadableEvent;
+-} // namespace Kernel
+-
+-namespace Service::AM {
+-
+-class AppletMessageQueue {
+-public:
+-    explicit AppletMessageQueue(Core::System& system);
+-    ~AppletMessageQueue();
+-
+-    Kernel::KReadableEvent& GetMessageReceiveEvent();
+-    Kernel::KReadableEvent& GetOperationModeChangedEvent();
+-    void PushMessage(AppletMessage msg);
+-    AppletMessage PopMessage();
+-    std::size_t GetMessageCount() const;
+-    void RequestExit();
+-    void RequestResume();
+-    void FocusStateChanged();
+-    void OperationModeChanged();
+-
+-private:
+-    KernelHelpers::ServiceContext service_context;
+-
+-    Kernel::KEvent* on_new_message;
+-    Kernel::KEvent* on_operation_mode_changed;
+-
+-    mutable std::mutex lock;
+-    std::queue<AppletMessage> messages;
+-};
+-
+-} // namespace Service::AM
+diff --git a/src/core/hle/service/am/button_poller.cpp b/src/core/hle/service/am/button_poller.cpp
+new file mode 100644
+index 000000000000..aab397085ff3
+--- /dev/null
++++ b/src/core/hle/service/am/button_poller.cpp
+@@ -0,0 +1,89 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/core.h"
++#include "core/hle/service/am/button_poller.h"
++#include "core/hle/service/am/window_system.h"
++#include "hid_core/frontend/emulated_controller.h"
++#include "hid_core/hid_core.h"
++#include "hid_core/hid_types.h"
++
++namespace Service::AM {
++
++namespace {
++
++ButtonPressDuration ClassifyPressDuration(std::chrono::steady_clock::time_point start) {
++    using namespace std::chrono_literals;
++
++    const auto dur = std::chrono::steady_clock::now() - start;
++
++    // TODO: determine actual thresholds
++    // TODO: these are likely different for each button
++    if (dur < 500ms) {
++        return ButtonPressDuration::ShortPressing;
++    } else if (dur < 1000ms) {
++        return ButtonPressDuration::MiddlePressing;
++    } else {
++        return ButtonPressDuration::LongPressing;
++    }
++}
++
++} // namespace
++
++ButtonPoller::ButtonPoller(Core::System& system, WindowSystem& window_system)
++    : m_window_system(window_system) {
++    // TODO: am reads this from the home button state in hid, which is controller-agnostic.
++    Core::HID::ControllerUpdateCallback engine_callback{
++        .on_change =
++            [this](Core::HID::ControllerTriggerType type) {
++                if (type == Core::HID::ControllerTriggerType::Button) {
++                    this->OnButtonStateChanged();
++                }
++            },
++        .is_npad_service = true,
++    };
++
++    m_handheld = system.HIDCore().GetEmulatedController(Core::HID::NpadIdType::Handheld);
++    m_handheld_key = m_handheld->SetCallback(engine_callback);
++    m_player1 = system.HIDCore().GetEmulatedController(Core::HID::NpadIdType::Player1);
++    m_player1_key = m_player1->SetCallback(engine_callback);
++}
++
++ButtonPoller::~ButtonPoller() {
++    m_handheld->DeleteCallback(m_handheld_key);
++    m_player1->DeleteCallback(m_player1_key);
++}
++
++void ButtonPoller::OnButtonStateChanged() {
++    const bool home_button =
++        m_handheld->GetHomeButtons().home.Value() || m_player1->GetHomeButtons().home.Value();
++    const bool capture_button = m_handheld->GetCaptureButtons().capture.Value() ||
++                                m_player1->GetCaptureButtons().capture.Value();
++
++    // Buttons pressed which were not previously pressed
++    if (home_button && !m_home_button_press_start) {
++        m_home_button_press_start = std::chrono::steady_clock::now();
++    }
++    if (capture_button && !m_capture_button_press_start) {
++        m_capture_button_press_start = std::chrono::steady_clock::now();
++    }
++    // if (power_button && !m_power_button_press_start) {
++    //     m_power_button_press_start = std::chrono::steady_clock::now();
++    // }
++
++    // Buttons released which were previously held
++    if (!home_button && m_home_button_press_start) {
++        m_window_system.OnHomeButtonPressed(ClassifyPressDuration(*m_home_button_press_start));
++        m_home_button_press_start = std::nullopt;
++    }
++    if (!capture_button && m_capture_button_press_start) {
++        // TODO
++        m_capture_button_press_start = std::nullopt;
++    }
++    // if (!power_button && m_power_button_press_start) {
++    //     // TODO
++    //     m_power_button_press_start = std::nullopt;
++    // }
++}
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/button_poller.h b/src/core/hle/service/am/button_poller.h
+new file mode 100644
+index 000000000000..b1c39aad30d0
+--- /dev/null
++++ b/src/core/hle/service/am/button_poller.h
+@@ -0,0 +1,43 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <chrono>
++#include <optional>
++#include "hid_core/frontend/emulated_controller.h"
++
++namespace Core {
++namespace HID {
++class EmulatedController;
++}
++
++class System;
++} // namespace Core
++
++namespace Service::AM {
++
++class WindowSystem;
++
++class ButtonPoller {
++public:
++    explicit ButtonPoller(Core::System& system, WindowSystem& window_system);
++    ~ButtonPoller();
++
++private:
++    void OnButtonStateChanged();
++
++private:
++    WindowSystem& m_window_system;
++
++    Core::HID::EmulatedController* m_handheld{};
++    int m_handheld_key{};
++    Core::HID::EmulatedController* m_player1{};
++    int m_player1_key{};
++
++    std::optional<std::chrono::steady_clock::time_point> m_home_button_press_start{};
++    std::optional<std::chrono::steady_clock::time_point> m_capture_button_press_start{};
++    std::optional<std::chrono::steady_clock::time_point> m_power_button_press_start{};
++};
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/event_observer.cpp b/src/core/hle/service/am/event_observer.cpp
+new file mode 100644
+index 000000000000..5d1d303ed3c0
+--- /dev/null
++++ b/src/core/hle/service/am/event_observer.cpp
+@@ -0,0 +1,162 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/core.h"
++#include "core/hle/kernel/k_event.h"
++#include "core/hle/service/am/applet.h"
++#include "core/hle/service/am/event_observer.h"
++#include "core/hle/service/am/window_system.h"
++
++namespace Service::AM {
++
++enum class UserDataTag : u32 {
++    WakeupEvent,
++    AppletProcess,
++};
++
++EventObserver::EventObserver(Core::System& system, WindowSystem& window_system)
++    : m_system(system), m_context(system, "am:EventObserver"), m_window_system(window_system),
++      m_wakeup_event(m_context), m_wakeup_holder(m_wakeup_event.GetHandle()) {
++    m_window_system.SetEventObserver(this);
++    m_wakeup_holder.SetUserData(static_cast<uintptr_t>(UserDataTag::WakeupEvent));
++    m_wakeup_holder.LinkToMultiWait(std::addressof(m_multi_wait));
++    m_thread = std::thread([&] { this->ThreadFunc(); });
++}
++
++EventObserver::~EventObserver() {
++    // Signal thread and wait for processing to finish.
++    m_stop_source.request_stop();
++    m_wakeup_event.Signal();
++    m_thread.join();
++
++    // Free remaining owned sessions.
++    auto it = m_process_holder_list.begin();
++    while (it != m_process_holder_list.end()) {
++        // Get the holder.
++        auto* const holder = std::addressof(*it);
++
++        // Remove from the list.
++        it = m_process_holder_list.erase(it);
++
++        // Free the holder.
++        delete holder;
++    }
++}
++
++void EventObserver::TrackAppletProcess(Applet& applet) {
++    // Don't observe dummy processes.
++    if (!applet.process->IsInitialized()) {
++        return;
++    }
++
++    // Allocate new holder.
++    auto* holder = new ProcessHolder(applet, *applet.process);
++    holder->SetUserData(static_cast<uintptr_t>(UserDataTag::AppletProcess));
++
++    // Insert into list.
++    {
++        std::scoped_lock lk{m_lock};
++        m_process_holder_list.push_back(*holder);
++        holder->LinkToMultiWait(std::addressof(m_deferred_wait_list));
++    }
++
++    // Signal wakeup.
++    m_wakeup_event.Signal();
++}
++
++void EventObserver::RequestUpdate() {
++    m_wakeup_event.Signal();
++}
++
++void EventObserver::LinkDeferred() {
++    std::scoped_lock lk{m_lock};
++    m_multi_wait.MoveAll(std::addressof(m_deferred_wait_list));
++}
++
++MultiWaitHolder* EventObserver::WaitSignaled() {
++    while (true) {
++        this->LinkDeferred();
++
++        // If we're done, return before we start waiting.
++        if (m_stop_source.stop_requested()) {
++            return nullptr;
++        }
++
++        auto* selected = m_multi_wait.WaitAny(m_system.Kernel());
++        if (selected != std::addressof(m_wakeup_holder)) {
++            // Unlink the process.
++            selected->UnlinkFromMultiWait();
++        }
++
++        return selected;
++    }
++}
++
++void EventObserver::Process(MultiWaitHolder* holder) {
++    switch (static_cast<UserDataTag>(holder->GetUserData())) {
++    case UserDataTag::WakeupEvent:
++        this->OnWakeupEvent(holder);
++        break;
++    case UserDataTag::AppletProcess:
++        this->OnProcessEvent(static_cast<ProcessHolder*>(holder));
++        break;
++    default:
++        UNREACHABLE();
++    }
++}
++
++void EventObserver::OnWakeupEvent(MultiWaitHolder* holder) {
++    m_wakeup_event.Clear();
++
++    // Perform recalculation.
++    m_window_system.Update();
++}
++
++void EventObserver::OnProcessEvent(ProcessHolder* holder) {
++    // Check process state.
++    auto& applet = holder->GetApplet();
++    auto& process = holder->GetProcess();
++
++    {
++        std::scoped_lock lk{m_lock, applet.lock};
++        if (process.IsTerminated()) {
++            // Destroy the holder.
++            this->DestroyAppletProcessHolderLocked(holder);
++        } else {
++            // Reset signaled state.
++            process.ResetSignal();
++
++            // Relink wakeup event.
++            holder->LinkToMultiWait(std::addressof(m_deferred_wait_list));
++        }
++
++        // Set running.
++        applet.is_process_running = process.IsRunning();
++    }
++
++    // Perform recalculation.
++    m_window_system.Update();
++}
++
++void EventObserver::DestroyAppletProcessHolderLocked(ProcessHolder* holder) {
++    // Remove from owned list.
++    m_process_holder_list.erase(m_process_holder_list.iterator_to(*holder));
++
++    // Destroy and free.
++    delete holder;
++}
++
++void EventObserver::ThreadFunc() {
++    Common::SetCurrentThreadName("am:EventObserver");
++
++    while (true) {
++        auto* signaled_holder = this->WaitSignaled();
++        if (!signaled_holder) {
++            break;
++        }
++
++        this->Process(signaled_holder);
++    }
++}
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/event_observer.h b/src/core/hle/service/am/event_observer.h
+new file mode 100644
+index 000000000000..3e52e8494da7
+--- /dev/null
++++ b/src/core/hle/service/am/event_observer.h
+@@ -0,0 +1,74 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "common/polyfill_thread.h"
++#include "common/thread.h"
++#include "core/hle/service/kernel_helpers.h"
++#include "core/hle/service/os/event.h"
++#include "core/hle/service/os/multi_wait.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::AM {
++
++struct Applet;
++class ProcessHolder;
++class WindowSystem;
++
++class EventObserver {
++public:
++    explicit EventObserver(Core::System& system, WindowSystem& window_system);
++    ~EventObserver();
++
++    void TrackAppletProcess(Applet& applet);
++    void RequestUpdate();
++
++private:
++    void LinkDeferred();
++    MultiWaitHolder* WaitSignaled();
++    void Process(MultiWaitHolder* holder);
++    bool WaitAndProcessImpl();
++    void LoopProcess();
++
++private:
++    void OnWakeupEvent(MultiWaitHolder* holder);
++    void OnProcessEvent(ProcessHolder* holder);
++
++private:
++    void DestroyAppletProcessHolderLocked(ProcessHolder* holder);
++
++private:
++    void ThreadFunc();
++
++private:
++    // System reference and context.
++    Core::System& m_system;
++    KernelHelpers::ServiceContext m_context;
++
++    // Window manager.
++    WindowSystem& m_window_system;
++
++    // Guest event handle to wake up the event loop processor.
++    Event m_wakeup_event;
++    MultiWaitHolder m_wakeup_holder;
++
++    // Mutex to protect remaining members.
++    std::mutex m_lock{};
++
++    // List of owned process holders.
++    Common::IntrusiveListBaseTraits<ProcessHolder>::ListType m_process_holder_list;
++
++    // Multi-wait objects for new tasks.
++    MultiWait m_multi_wait;
++    MultiWait m_deferred_wait_list;
++
++    // Processing thread.
++    std::thread m_thread{};
++    std::stop_source m_stop_source{};
++};
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/frontend/applets.cpp b/src/core/hle/service/am/frontend/applets.cpp
+index e662c6cd632d..cdd4318576e3 100644
+--- a/src/core/hle/service/am/frontend/applets.cpp
++++ b/src/core/hle/service/am/frontend/applets.cpp
+@@ -69,7 +69,11 @@ void FrontendApplet::PushInteractiveOutData(std::shared_ptr<IStorage> storage) {
+ }
+ 
+ void FrontendApplet::Exit() {
+-    applet.lock()->caller_applet_broker->SignalCompletion();
++    auto applet_ = applet.lock();
++
++    std::scoped_lock lk{applet_->lock};
++    applet_->is_completed = true;
++    applet_->state_changed_event.Signal();
+ }
+ 
+ FrontendAppletSet::FrontendAppletSet() = default;
+diff --git a/src/core/hle/service/am/hid_registration.cpp b/src/core/hle/service/am/hid_registration.cpp
+index 8ed49bac1208..ea4bd8f45bfd 100644
+--- a/src/core/hle/service/am/hid_registration.cpp
++++ b/src/core/hle/service/am/hid_registration.cpp
+@@ -3,24 +3,28 @@
+ 
+ #include "core/core.h"
+ #include "core/hle/service/am/hid_registration.h"
+-#include "core/hle/service/am/process.h"
+ #include "core/hle/service/hid/hid_server.h"
++#include "core/hle/service/os/process.h"
+ #include "core/hle/service/sm/sm.h"
+ #include "hid_core/resource_manager.h"
+ 
+ namespace Service::AM {
+ 
+ HidRegistration::HidRegistration(Core::System& system, Process& process) : m_process(process) {
+-    m_hid_server = system.ServiceManager().GetService<HID::IHidServer>("hid");
++    m_hid_server = system.ServiceManager().GetService<HID::IHidServer>("hid", true);
+ 
+     if (m_process.IsInitialized()) {
+         m_hid_server->GetResourceManager()->RegisterAppletResourceUserId(m_process.GetProcessId(),
+                                                                          true);
++        m_hid_server->GetResourceManager()->SetAruidValidForVibration(m_process.GetProcessId(),
++                                                                      true);
+     }
+ }
+ 
+ HidRegistration::~HidRegistration() {
+     if (m_process.IsInitialized()) {
++        m_hid_server->GetResourceManager()->SetAruidValidForVibration(m_process.GetProcessId(),
++                                                                      false);
+         m_hid_server->GetResourceManager()->UnregisterAppletResourceUserId(
+             m_process.GetProcessId());
+     }
+@@ -28,6 +32,8 @@ HidRegistration::~HidRegistration() {
+ 
+ void HidRegistration::EnableAppletToGetInput(bool enable) {
+     if (m_process.IsInitialized()) {
++        m_hid_server->GetResourceManager()->SetAruidValidForVibration(m_process.GetProcessId(),
++                                                                      enable);
+         m_hid_server->GetResourceManager()->EnableInput(m_process.GetProcessId(), enable);
+     }
+ }
+diff --git a/src/core/hle/service/am/hid_registration.h b/src/core/hle/service/am/hid_registration.h
+index 67cd849615e3..54f42af18932 100644
+--- a/src/core/hle/service/am/hid_registration.h
++++ b/src/core/hle/service/am/hid_registration.h
+@@ -13,9 +13,11 @@ namespace Service::HID {
+ class IHidServer;
+ }
+ 
+-namespace Service::AM {
+-
++namespace Service {
+ class Process;
++}
++
++namespace Service::AM {
+ 
+ class HidRegistration {
+ public:
+diff --git a/src/core/hle/service/am/lifecycle_manager.cpp b/src/core/hle/service/am/lifecycle_manager.cpp
+new file mode 100644
+index 000000000000..0dac27ed08cb
+--- /dev/null
++++ b/src/core/hle/service/am/lifecycle_manager.cpp
+@@ -0,0 +1,379 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "common/assert.h"
++#include "core/hle/service/am/lifecycle_manager.h"
++
++namespace Service::AM {
++
++LifecycleManager::LifecycleManager(Core::System& system, KernelHelpers::ServiceContext& context,
++                                   bool is_application)
++    : m_system_event(context), m_operation_mode_changed_system_event(context),
++      m_is_application(is_application) {}
++
++LifecycleManager::~LifecycleManager() = default;
++
++Event& LifecycleManager::GetSystemEvent() {
++    return m_system_event;
++}
++
++Event& LifecycleManager::GetOperationModeChangedSystemEvent() {
++    return m_operation_mode_changed_system_event;
++}
++
++void LifecycleManager::PushUnorderedMessage(AppletMessage message) {
++    m_unordered_messages.push_back(message);
++    this->SignalSystemEventIfNeeded();
++}
++
++AppletMessage LifecycleManager::PopMessageInOrderOfPriority() {
++    if (m_has_resume) {
++        m_has_resume = false;
++        return AppletMessage::Resume;
++    }
++
++    if (m_has_acknowledged_exit != m_has_requested_exit) {
++        m_has_acknowledged_exit = m_has_requested_exit;
++        return AppletMessage::Exit;
++    }
++
++    if (m_focus_state_changed_notification_enabled) {
++        if (!m_is_application) {
++            if (m_requested_focus_state != m_acknowledged_focus_state) {
++                m_acknowledged_focus_state = m_requested_focus_state;
++                switch (m_requested_focus_state) {
++                case FocusState::InFocus:
++                    return AppletMessage::ChangeIntoForeground;
++                case FocusState::NotInFocus:
++                    return AppletMessage::ChangeIntoBackground;
++                default:
++                    ASSERT(false);
++                }
++            }
++        } else if (m_has_focus_state_changed) {
++            m_has_focus_state_changed = false;
++            return AppletMessage::FocusStateChanged;
++        }
++    }
++
++    if (m_has_requested_request_to_prepare_sleep != m_has_acknowledged_request_to_prepare_sleep) {
++        m_has_acknowledged_request_to_prepare_sleep = true;
++        return AppletMessage::RequestToPrepareSleep;
++    }
++
++    if (m_requested_request_to_display_state != m_acknowledged_request_to_display_state) {
++        m_acknowledged_request_to_display_state = m_requested_request_to_display_state;
++        return AppletMessage::RequestToDisplay;
++    }
++
++    if (m_has_operation_mode_changed) {
++        m_has_operation_mode_changed = false;
++        return AppletMessage::OperationModeChanged;
++    }
++
++    if (m_has_performance_mode_changed) {
++        m_has_performance_mode_changed = false;
++        return AppletMessage::PerformanceModeChanged;
++    }
++
++    if (m_has_sd_card_removed) {
++        m_has_sd_card_removed = false;
++        return AppletMessage::SdCardRemoved;
++    }
++
++    if (m_has_sleep_required_by_high_temperature) {
++        m_has_sleep_required_by_high_temperature = false;
++        return AppletMessage::SleepRequiredByHighTemperature;
++    }
++
++    if (m_has_sleep_required_by_low_battery) {
++        m_has_sleep_required_by_low_battery = false;
++        return AppletMessage::SleepRequiredByLowBattery;
++    }
++
++    if (m_has_auto_power_down) {
++        m_has_auto_power_down = false;
++        return AppletMessage::AutoPowerDown;
++    }
++
++    if (m_has_album_screen_shot_taken) {
++        m_has_album_screen_shot_taken = false;
++        return AppletMessage::AlbumScreenShotTaken;
++    }
++
++    if (m_has_album_recording_saved) {
++        m_has_album_recording_saved = false;
++        return AppletMessage::AlbumRecordingSaved;
++    }
++
++    if (!m_unordered_messages.empty()) {
++        const auto message = m_unordered_messages.front();
++        m_unordered_messages.pop_front();
++        return message;
++    }
++
++    return AppletMessage::None;
++}
++
++bool LifecycleManager::ShouldSignalSystemEvent() {
++    if (m_focus_state_changed_notification_enabled) {
++        if (!m_is_application) {
++            if (m_requested_focus_state != m_acknowledged_focus_state) {
++                return true;
++            }
++        } else if (m_has_focus_state_changed) {
++            return true;
++        }
++    }
++
++    return !m_unordered_messages.empty() || m_has_resume ||
++           (m_has_requested_exit != m_has_acknowledged_exit) ||
++           (m_has_requested_request_to_prepare_sleep !=
++            m_has_acknowledged_request_to_prepare_sleep) ||
++           m_has_operation_mode_changed || m_has_performance_mode_changed ||
++           m_has_sd_card_removed || m_has_sleep_required_by_high_temperature ||
++           m_has_sleep_required_by_low_battery || m_has_auto_power_down ||
++           (m_requested_request_to_display_state != m_acknowledged_request_to_display_state) ||
++           m_has_album_screen_shot_taken || m_has_album_recording_saved;
++}
++
++void LifecycleManager::OnOperationAndPerformanceModeChanged() {
++    if (m_operation_mode_changed_notification_enabled) {
++        m_has_operation_mode_changed = true;
++    }
++    if (m_performance_mode_changed_notification_enabled) {
++        m_has_performance_mode_changed = true;
++    }
++    m_operation_mode_changed_system_event.Signal();
++    this->SignalSystemEventIfNeeded();
++}
++
++void LifecycleManager::SignalSystemEventIfNeeded() {
++    // Check our cached value for the system event.
++    const bool applet_message_available = m_applet_message_available;
++
++    // If it's not current, we need to do an update, either clearing or signaling.
++    if (applet_message_available != this->ShouldSignalSystemEvent()) {
++        if (!applet_message_available) {
++            m_system_event.Signal();
++            m_applet_message_available = true;
++        } else {
++            m_system_event.Clear();
++            m_applet_message_available = false;
++        }
++    }
++}
++
++bool LifecycleManager::PopMessage(AppletMessage* out_message) {
++    const auto message = this->PopMessageInOrderOfPriority();
++    this->SignalSystemEventIfNeeded();
++
++    *out_message = message;
++    return message != AppletMessage::None;
++}
++
++void LifecycleManager::SetFocusHandlingMode(bool suspend) {
++    switch (m_focus_handling_mode) {
++    case FocusHandlingMode::AlwaysSuspend:
++    case FocusHandlingMode::SuspendHomeSleep:
++        if (!suspend) {
++            // Disallow suspension.
++            m_focus_handling_mode = FocusHandlingMode::NoSuspend;
++        }
++        break;
++    case FocusHandlingMode::NoSuspend:
++        if (suspend) {
++            // Allow suspension temporally.
++            m_focus_handling_mode = FocusHandlingMode::SuspendHomeSleep;
++        }
++        break;
++    }
++}
++
++void LifecycleManager::SetOutOfFocusSuspendingEnabled(bool enabled) {
++    switch (m_focus_handling_mode) {
++    case FocusHandlingMode::AlwaysSuspend:
++        if (!enabled) {
++            // Allow suspension temporally.
++            m_focus_handling_mode = FocusHandlingMode::SuspendHomeSleep;
++        }
++        break;
++    case FocusHandlingMode::SuspendHomeSleep:
++    case FocusHandlingMode::NoSuspend:
++        if (enabled) {
++            // Allow suspension.
++            m_focus_handling_mode = FocusHandlingMode::AlwaysSuspend;
++        }
++        break;
++    }
++}
++
++void LifecycleManager::RemoveForceResumeIfPossible() {
++    // If resume is not forced, we have nothing to do.
++    if (m_suspend_mode != SuspendMode::ForceResume) {
++        return;
++    }
++
++    // Check activity state.
++    // If we are already resumed, we can remove the forced state.
++    switch (m_activity_state) {
++    case ActivityState::ForegroundVisible:
++    case ActivityState::ForegroundObscured:
++        m_suspend_mode = SuspendMode::NoOverride;
++        return;
++
++    default:
++        break;
++    }
++
++    // Check focus handling mode.
++    switch (m_focus_handling_mode) {
++    case FocusHandlingMode::AlwaysSuspend:
++    case FocusHandlingMode::SuspendHomeSleep:
++        // If the applet allows suspension, we can remove the forced state.
++        m_suspend_mode = SuspendMode::NoOverride;
++        break;
++
++    case FocusHandlingMode::NoSuspend:
++        // If the applet is not an application, we can remove the forced state.
++        // Only applications can be forced to resume.
++        if (!m_is_application) {
++            m_suspend_mode = SuspendMode::NoOverride;
++        }
++    }
++}
++
++bool LifecycleManager::IsRunnable() const {
++    // If suspend is forced, return that.
++    if (m_forced_suspend) {
++        return false;
++    }
++
++    // Check suspend mode override.
++    switch (m_suspend_mode) {
++    case SuspendMode::NoOverride:
++        // Continue processing.
++        break;
++
++    case SuspendMode::ForceResume:
++        // The applet is runnable during forced resumption when its exit is requested.
++        return m_has_requested_exit;
++
++    case SuspendMode::ForceSuspend:
++        // The applet is never runnable during forced suspension.
++        return false;
++    }
++
++    // Always run if exit is requested.
++    if (m_has_requested_exit) {
++        return true;
++    }
++
++    if (m_activity_state == ActivityState::ForegroundVisible) {
++        // The applet is runnable now.
++        return true;
++    }
++
++    if (m_activity_state == ActivityState::ForegroundObscured) {
++        switch (m_focus_handling_mode) {
++        case FocusHandlingMode::AlwaysSuspend:
++            // The applet is not runnable while running the applet.
++            return false;
++
++        case FocusHandlingMode::SuspendHomeSleep:
++            // The applet is runnable while running the applet.
++            return true;
++
++        case FocusHandlingMode::NoSuspend:
++            // The applet is always runnable.
++            return true;
++        }
++    }
++
++    // The activity is a suspended one.
++    // The applet should be suspended unless it has disabled suspension.
++    return m_focus_handling_mode == FocusHandlingMode::NoSuspend;
++}
++
++FocusState LifecycleManager::GetFocusStateWhileForegroundObscured() const {
++    switch (m_focus_handling_mode) {
++    case FocusHandlingMode::AlwaysSuspend:
++        // The applet never learns it has lost focus.
++        return FocusState::InFocus;
++
++    case FocusHandlingMode::SuspendHomeSleep:
++        // The applet learns it has lost focus when launching a child applet.
++        return FocusState::NotInFocus;
++
++    case FocusHandlingMode::NoSuspend:
++        // The applet always learns it has lost focus.
++        return FocusState::NotInFocus;
++
++    default:
++        UNREACHABLE();
++    }
++}
++
++FocusState LifecycleManager::GetFocusStateWhileBackground(bool is_obscured) const {
++    switch (m_focus_handling_mode) {
++    case FocusHandlingMode::AlwaysSuspend:
++        // The applet never learns it has lost focus.
++        return FocusState::InFocus;
++
++    case FocusHandlingMode::SuspendHomeSleep:
++        // The applet learns it has lost focus when launching a child applet.
++        return is_obscured ? FocusState::NotInFocus : FocusState::InFocus;
++
++    case FocusHandlingMode::NoSuspend:
++        // The applet always learns it has lost focus.
++        return m_is_application ? FocusState::Background : FocusState::NotInFocus;
++
++    default:
++        UNREACHABLE();
++    }
++}
++
++bool LifecycleManager::UpdateRequestedFocusState() {
++    FocusState new_state{};
++
++    if (m_suspend_mode == SuspendMode::NoOverride) {
++        // With no forced suspend or resume, we take the focus state designated
++        // by the combination of the activity flag and the focus handling mode.
++        switch (m_activity_state) {
++        case ActivityState::ForegroundVisible:
++            new_state = FocusState::InFocus;
++            break;
++
++        case ActivityState::ForegroundObscured:
++            new_state = this->GetFocusStateWhileForegroundObscured();
++            break;
++
++        case ActivityState::BackgroundVisible:
++            new_state = this->GetFocusStateWhileBackground(false);
++            break;
++
++        case ActivityState::BackgroundObscured:
++            new_state = this->GetFocusStateWhileBackground(true);
++            break;
++
++        default:
++            UNREACHABLE();
++        }
++    } else {
++        // With forced suspend or resume, the applet is guaranteed to be background.
++        new_state = this->GetFocusStateWhileBackground(false);
++    }
++
++    if (new_state != m_requested_focus_state) {
++        // Mark the focus state as ready for update.
++        m_requested_focus_state = new_state;
++
++        // We changed the focus state.
++        return true;
++    }
++
++    // We didn't change the focus state.
++    return false;
++}
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/lifecycle_manager.h b/src/core/hle/service/am/lifecycle_manager.h
+new file mode 100644
+index 000000000000..7c70434a18dc
+--- /dev/null
++++ b/src/core/hle/service/am/lifecycle_manager.h
+@@ -0,0 +1,183 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <list>
++
++#include "core/hle/service/am/am_types.h"
++#include "core/hle/service/os/event.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::AM {
++
++enum class ActivityState : u32 {
++    ForegroundVisible = 0,
++    ForegroundObscured = 1,
++    BackgroundVisible = 2,
++    BackgroundObscured = 3,
++};
++
++enum class FocusHandlingMode : u32 {
++    AlwaysSuspend = 0,
++    SuspendHomeSleep = 1,
++    NoSuspend = 2,
++};
++
++enum class SuspendMode : u32 {
++    NoOverride = 0,
++    ForceResume = 1,
++    ForceSuspend = 2,
++};
++
++class LifecycleManager {
++public:
++    explicit LifecycleManager(Core::System& system, KernelHelpers::ServiceContext& context,
++                              bool is_application);
++    ~LifecycleManager();
++
++public:
++    Event& GetSystemEvent();
++    Event& GetOperationModeChangedSystemEvent();
++
++public:
++    bool IsApplication() {
++        return m_is_application;
++    }
++
++    bool GetForcedSuspend() {
++        return m_forced_suspend;
++    }
++
++    bool GetExitRequested() {
++        return m_has_requested_exit;
++    }
++
++    ActivityState GetActivityState() {
++        return m_activity_state;
++    }
++
++    FocusState GetAndClearFocusState() {
++        m_acknowledged_focus_state = m_requested_focus_state;
++        return m_acknowledged_focus_state;
++    }
++
++    void SetFocusState(FocusState state) {
++        if (m_requested_focus_state != state) {
++            m_has_focus_state_changed = true;
++        }
++        m_requested_focus_state = state;
++        this->SignalSystemEventIfNeeded();
++    }
++
++    void RequestExit() {
++        m_has_requested_exit = true;
++        this->SignalSystemEventIfNeeded();
++    }
++
++    void RequestResumeNotification() {
++        // NOTE: this appears to be a bug in am.
++        // If an applet makes a concurrent request to receive resume notifications
++        // while it is being suspended, the first resume notification will be lost.
++        // This is not the case with other notification types.
++        if (m_resume_notification_enabled) {
++            m_has_resume = true;
++        }
++    }
++
++    void OnOperationAndPerformanceModeChanged();
++
++public:
++    void SetFocusStateChangedNotificationEnabled(bool enabled) {
++        m_focus_state_changed_notification_enabled = enabled;
++        this->SignalSystemEventIfNeeded();
++    }
++
++    void SetOperationModeChangedNotificationEnabled(bool enabled) {
++        m_operation_mode_changed_notification_enabled = enabled;
++        this->SignalSystemEventIfNeeded();
++    }
++
++    void SetPerformanceModeChangedNotificationEnabled(bool enabled) {
++        m_performance_mode_changed_notification_enabled = enabled;
++        this->SignalSystemEventIfNeeded();
++    }
++
++    void SetResumeNotificationEnabled(bool enabled) {
++        m_resume_notification_enabled = enabled;
++    }
++
++    void SetActivityState(ActivityState state) {
++        m_activity_state = state;
++    }
++
++    void SetSuspendMode(SuspendMode mode) {
++        m_suspend_mode = mode;
++    }
++
++    void SetForcedSuspend(bool enabled) {
++        m_forced_suspend = enabled;
++    }
++
++public:
++    void SetFocusHandlingMode(bool suspend);
++    void SetOutOfFocusSuspendingEnabled(bool enabled);
++    void RemoveForceResumeIfPossible();
++    bool IsRunnable() const;
++    bool UpdateRequestedFocusState();
++    void SignalSystemEventIfNeeded();
++
++public:
++    void PushUnorderedMessage(AppletMessage message);
++    bool PopMessage(AppletMessage* out_message);
++
++private:
++    FocusState GetFocusStateWhileForegroundObscured() const;
++    FocusState GetFocusStateWhileBackground(bool is_obscured) const;
++
++private:
++    AppletMessage PopMessageInOrderOfPriority();
++    bool ShouldSignalSystemEvent();
++
++private:
++    Event m_system_event;
++    Event m_operation_mode_changed_system_event;
++
++    std::list<AppletMessage> m_unordered_messages{};
++
++    bool m_is_application{};
++    bool m_focus_state_changed_notification_enabled{true};
++    bool m_operation_mode_changed_notification_enabled{true};
++    bool m_performance_mode_changed_notification_enabled{true};
++    bool m_resume_notification_enabled{};
++
++    bool m_requested_request_to_display_state{};
++    bool m_acknowledged_request_to_display_state{};
++    bool m_has_resume{};
++    bool m_has_focus_state_changed{true};
++    bool m_has_album_recording_saved{};
++    bool m_has_album_screen_shot_taken{};
++    bool m_has_auto_power_down{};
++    bool m_has_sleep_required_by_low_battery{};
++    bool m_has_sleep_required_by_high_temperature{};
++    bool m_has_sd_card_removed{};
++    bool m_has_performance_mode_changed{};
++    bool m_has_operation_mode_changed{};
++    bool m_has_requested_request_to_prepare_sleep{};
++    bool m_has_acknowledged_request_to_prepare_sleep{};
++    bool m_has_requested_exit{};
++    bool m_has_acknowledged_exit{};
++    bool m_applet_message_available{};
++
++    bool m_forced_suspend{};
++    FocusHandlingMode m_focus_handling_mode{FocusHandlingMode::SuspendHomeSleep};
++    ActivityState m_activity_state{ActivityState::ForegroundVisible};
++    SuspendMode m_suspend_mode{SuspendMode::NoOverride};
++    FocusState m_requested_focus_state{};
++    FocusState m_acknowledged_focus_state{};
++};
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/process_creation.cpp b/src/core/hle/service/am/process_creation.cpp
+new file mode 100644
+index 000000000000..237151d06103
+--- /dev/null
++++ b/src/core/hle/service/am/process_creation.cpp
+@@ -0,0 +1,130 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/core.h"
++#include "core/file_sys/content_archive.h"
++#include "core/file_sys/nca_metadata.h"
++#include "core/file_sys/patch_manager.h"
++#include "core/file_sys/registered_cache.h"
++#include "core/file_sys/romfs_factory.h"
++#include "core/hle/service/am/process_creation.h"
++#include "core/hle/service/glue/glue_manager.h"
++#include "core/hle/service/os/process.h"
++#include "core/loader/loader.h"
++
++namespace Service::AM {
++
++namespace {
++
++FileSys::StorageId GetStorageIdForFrontendSlot(
++    std::optional<FileSys::ContentProviderUnionSlot> slot) {
++    if (!slot.has_value()) {
++        return FileSys::StorageId::None;
++    }
++
++    switch (*slot) {
++    case FileSys::ContentProviderUnionSlot::UserNAND:
++        return FileSys::StorageId::NandUser;
++    case FileSys::ContentProviderUnionSlot::SysNAND:
++        return FileSys::StorageId::NandSystem;
++    case FileSys::ContentProviderUnionSlot::SDMC:
++        return FileSys::StorageId::SdCard;
++    case FileSys::ContentProviderUnionSlot::FrontendManual:
++        return FileSys::StorageId::Host;
++    default:
++        return FileSys::StorageId::None;
++    }
++}
++
++std::unique_ptr<Process> CreateProcessImpl(std::unique_ptr<Loader::AppLoader>& out_loader,
++                                           Loader::ResultStatus& out_load_result,
++                                           Core::System& system, FileSys::VirtualFile file,
++                                           u64 program_id, u64 program_index) {
++    // Get the appropriate loader to parse this NCA.
++    out_loader = Loader::GetLoader(system, file, program_id, program_index);
++
++    // Ensure we have a loader which can parse the NCA.
++    if (!out_loader) {
++        return nullptr;
++    }
++
++    // Try to load the process.
++    auto process = std::make_unique<Process>(system);
++    if (process->Initialize(*out_loader, out_load_result)) {
++        return process;
++    }
++
++    return nullptr;
++}
++
++} // Anonymous namespace
++
++std::unique_ptr<Process> CreateProcess(Core::System& system, u64 program_id,
++                                       u8 minimum_key_generation, u8 maximum_key_generation) {
++    // Attempt to load program NCA.
++    FileSys::VirtualFile nca_raw{};
++
++    // Get the program NCA from storage.
++    auto& storage = system.GetContentProviderUnion();
++    nca_raw = storage.GetEntryRaw(program_id, FileSys::ContentRecordType::Program);
++
++    // Ensure we retrieved a program NCA.
++    if (!nca_raw) {
++        return nullptr;
++    }
++
++    // Ensure we have a suitable version.
++    if (minimum_key_generation > 0) {
++        FileSys::NCA nca(nca_raw);
++        if (nca.GetStatus() == Loader::ResultStatus::Success &&
++            (nca.GetKeyGeneration() < minimum_key_generation ||
++             nca.GetKeyGeneration() > maximum_key_generation)) {
++            LOG_WARNING(Service_LDR, "Skipping program {:016X} with generation {}", program_id,
++                        nca.GetKeyGeneration());
++            return nullptr;
++        }
++    }
++
++    std::unique_ptr<Loader::AppLoader> loader;
++    Loader::ResultStatus status;
++    return CreateProcessImpl(loader, status, system, nca_raw, program_id, 0);
++}
++
++std::unique_ptr<Process> CreateApplicationProcess(std::vector<u8>& out_control,
++                                                  std::unique_ptr<Loader::AppLoader>& out_loader,
++                                                  Loader::ResultStatus& out_load_result,
++                                                  Core::System& system, FileSys::VirtualFile file,
++                                                  u64 program_id, u64 program_index) {
++    auto process =
++        CreateProcessImpl(out_loader, out_load_result, system, file, program_id, program_index);
++    if (!process) {
++        return nullptr;
++    }
++
++    FileSys::NACP nacp;
++    if (out_loader->ReadControlData(nacp) == Loader::ResultStatus::Success) {
++        out_control = nacp.GetRawBytes();
++    } else {
++        out_control.resize(sizeof(FileSys::RawNACP));
++    }
++
++    auto& storage = system.GetContentProviderUnion();
++    Service::Glue::ApplicationLaunchProperty launch{};
++    launch.title_id = process->GetProgramId();
++
++    FileSys::PatchManager pm{launch.title_id, system.GetFileSystemController(), storage};
++    launch.version = pm.GetGameVersion().value_or(0);
++
++    // TODO(DarkLordZach): When FSController/Game Card Support is added, if
++    // current_process_game_card use correct StorageId
++    launch.base_game_storage_id = GetStorageIdForFrontendSlot(
++        storage.GetSlotForEntry(launch.title_id, FileSys::ContentRecordType::Program));
++    launch.update_storage_id = GetStorageIdForFrontendSlot(storage.GetSlotForEntry(
++        FileSys::GetUpdateTitleID(launch.title_id), FileSys::ContentRecordType::Program));
++
++    system.GetARPManager().Register(launch.title_id, launch, out_control);
++
++    return process;
++}
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/process_creation.h b/src/core/hle/service/am/process_creation.h
+new file mode 100644
+index 000000000000..8cfb9e0c9e68
+--- /dev/null
++++ b/src/core/hle/service/am/process_creation.h
+@@ -0,0 +1,35 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <memory>
++#include <vector>
++
++#include "common/common_types.h"
++#include "core/file_sys/vfs/vfs_types.h"
++
++namespace Core {
++class System;
++}
++
++namespace Loader {
++class AppLoader;
++enum class ResultStatus : u16;
++} // namespace Loader
++
++namespace Service {
++class Process;
++}
++
++namespace Service::AM {
++
++std::unique_ptr<Process> CreateProcess(Core::System& system, u64 program_id,
++                                       u8 minimum_key_generation, u8 maximum_key_generation);
++std::unique_ptr<Process> CreateApplicationProcess(std::vector<u8>& out_control,
++                                                  std::unique_ptr<Loader::AppLoader>& out_loader,
++                                                  Loader::ResultStatus& out_load_result,
++                                                  Core::System& system, FileSys::VirtualFile file,
++                                                  u64 program_id, u64 program_index);
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/process_holder.cpp b/src/core/hle/service/am/process_holder.cpp
+new file mode 100644
+index 000000000000..21ef5bf838ea
+--- /dev/null
++++ b/src/core/hle/service/am/process_holder.cpp
+@@ -0,0 +1,15 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/kernel/k_process.h"
++#include "core/hle/service/am/process_holder.h"
++#include "core/hle/service/os/process.h"
++
++namespace Service::AM {
++
++ProcessHolder::ProcessHolder(Applet& applet, Process& process)
++    : MultiWaitHolder(process.GetHandle()), m_applet(applet), m_process(process) {}
++
++ProcessHolder::~ProcessHolder() = default;
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/process_holder.h b/src/core/hle/service/am/process_holder.h
+new file mode 100644
+index 000000000000..3a9b81dfb4d9
+--- /dev/null
++++ b/src/core/hle/service/am/process_holder.h
+@@ -0,0 +1,34 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/hle/service/os/multi_wait_holder.h"
++
++namespace Service {
++class Process;
++}
++
++namespace Service::AM {
++
++struct Applet;
++
++class ProcessHolder : public MultiWaitHolder, public Common::IntrusiveListBaseNode<ProcessHolder> {
++public:
++    explicit ProcessHolder(Applet& applet, Process& process);
++    ~ProcessHolder();
++
++    Applet& GetApplet() const {
++        return m_applet;
++    }
++
++    Process& GetProcess() const {
++        return m_process;
++    }
++
++private:
++    Applet& m_applet;
++    Process& m_process;
++};
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/service/all_system_applet_proxies_service.cpp b/src/core/hle/service/am/service/all_system_applet_proxies_service.cpp
+index 21747783aef6..bc9c86c5576b 100644
+--- a/src/core/hle/service/am/service/all_system_applet_proxies_service.cpp
++++ b/src/core/hle/service/am/service/all_system_applet_proxies_service.cpp
+@@ -6,12 +6,14 @@
+ #include "core/hle/service/am/service/all_system_applet_proxies_service.h"
+ #include "core/hle/service/am/service/library_applet_proxy.h"
+ #include "core/hle/service/am/service/system_applet_proxy.h"
++#include "core/hle/service/am/window_system.h"
+ #include "core/hle/service/cmif_serialization.h"
+ 
+ namespace Service::AM {
+ 
+-IAllSystemAppletProxiesService::IAllSystemAppletProxiesService(Core::System& system_)
+-    : ServiceFramework{system_, "appletAE"} {
++IAllSystemAppletProxiesService::IAllSystemAppletProxiesService(Core::System& system_,
++                                                               WindowSystem& window_system)
++    : ServiceFramework{system_, "appletAE"}, m_window_system{window_system} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {100, D<&IAllSystemAppletProxiesService::OpenSystemAppletProxy>, "OpenSystemAppletProxy"},
+@@ -36,8 +38,8 @@ Result IAllSystemAppletProxiesService::OpenSystemAppletProxy(
+     LOG_DEBUG(Service_AM, "called");
+ 
+     if (const auto applet = this->GetAppletFromProcessId(pid); applet) {
+-        *out_system_applet_proxy =
+-            std::make_shared<ISystemAppletProxy>(system, applet, process_handle.Get());
++        *out_system_applet_proxy = std::make_shared<ISystemAppletProxy>(
++            system, applet, process_handle.Get(), m_window_system);
+         R_SUCCEED();
+     } else {
+         UNIMPLEMENTED();
+@@ -52,8 +54,8 @@ Result IAllSystemAppletProxiesService::OpenLibraryAppletProxy(
+     LOG_DEBUG(Service_AM, "called");
+ 
+     if (const auto applet = this->GetAppletFromProcessId(pid); applet) {
+-        *out_library_applet_proxy =
+-            std::make_shared<ILibraryAppletProxy>(system, applet, process_handle.Get());
++        *out_library_applet_proxy = std::make_shared<ILibraryAppletProxy>(
++            system, applet, process_handle.Get(), m_window_system);
+         R_SUCCEED();
+     } else {
+         UNIMPLEMENTED();
+@@ -73,7 +75,7 @@ Result IAllSystemAppletProxiesService::OpenLibraryAppletProxyOld(
+ 
+ std::shared_ptr<Applet> IAllSystemAppletProxiesService::GetAppletFromProcessId(
+     ProcessId process_id) {
+-    return system.GetAppletManager().GetByAppletResourceUserId(process_id.pid);
++    return m_window_system.GetByAppletResourceUserId(process_id.pid);
+ }
+ 
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/service/all_system_applet_proxies_service.h b/src/core/hle/service/am/service/all_system_applet_proxies_service.h
+index 0e2dcb86d9c5..e3e79dc4fa06 100644
+--- a/src/core/hle/service/am/service/all_system_applet_proxies_service.h
++++ b/src/core/hle/service/am/service/all_system_applet_proxies_service.h
+@@ -14,11 +14,12 @@ struct Applet;
+ struct AppletAttribute;
+ class ILibraryAppletProxy;
+ class ISystemAppletProxy;
++class WindowSystem;
+ 
+ class IAllSystemAppletProxiesService final
+     : public ServiceFramework<IAllSystemAppletProxiesService> {
+ public:
+-    explicit IAllSystemAppletProxiesService(Core::System& system_);
++    explicit IAllSystemAppletProxiesService(Core::System& system_, WindowSystem& window_system);
+     ~IAllSystemAppletProxiesService() override;
+ 
+ private:
+@@ -35,6 +36,8 @@ class IAllSystemAppletProxiesService final
+ 
+ private:
+     std::shared_ptr<Applet> GetAppletFromProcessId(ProcessId pid);
++
++    WindowSystem& m_window_system;
+ };
+ 
+ } // namespace AM
+diff --git a/src/core/hle/service/am/service/applet_common_functions.cpp b/src/core/hle/service/am/service/applet_common_functions.cpp
+index 0f29ab285b93..a051000af457 100644
+--- a/src/core/hle/service/am/service/applet_common_functions.cpp
++++ b/src/core/hle/service/am/service/applet_common_functions.cpp
+@@ -19,7 +19,7 @@ IAppletCommonFunctions::IAppletCommonFunctions(Core::System& system_,
+         {21, nullptr, "TryPopFromAppletBoundChannel"},
+         {40, nullptr, "GetDisplayLogicalResolution"},
+         {42, nullptr, "SetDisplayMagnification"},
+-        {50, nullptr, "SetHomeButtonDoubleClickEnabled"},
++        {50, D<&IAppletCommonFunctions::SetHomeButtonDoubleClickEnabled>, "SetHomeButtonDoubleClickEnabled"},
+         {51, D<&IAppletCommonFunctions::GetHomeButtonDoubleClickEnabled>, "GetHomeButtonDoubleClickEnabled"},
+         {52, nullptr, "IsHomeButtonShortPressedBlocked"},
+         {60, nullptr, "IsVrModeCurtainRequired"},
+@@ -40,6 +40,13 @@ IAppletCommonFunctions::IAppletCommonFunctions(Core::System& system_,
+ 
+ IAppletCommonFunctions::~IAppletCommonFunctions() = default;
+ 
++Result IAppletCommonFunctions::SetHomeButtonDoubleClickEnabled(
++    bool home_button_double_click_enabled) {
++    LOG_WARNING(Service_AM, "(STUBBED) called, home_button_double_click_enabled={}",
++                home_button_double_click_enabled);
++    R_SUCCEED();
++}
++
+ Result IAppletCommonFunctions::GetHomeButtonDoubleClickEnabled(
+     Out<bool> out_home_button_double_click_enabled) {
+     LOG_WARNING(Service_AM, "(STUBBED) called");
+diff --git a/src/core/hle/service/am/service/applet_common_functions.h b/src/core/hle/service/am/service/applet_common_functions.h
+index 4424fc83d1ee..376f85acf781 100644
+--- a/src/core/hle/service/am/service/applet_common_functions.h
++++ b/src/core/hle/service/am/service/applet_common_functions.h
+@@ -16,6 +16,7 @@ class IAppletCommonFunctions final : public ServiceFramework<IAppletCommonFuncti
+     ~IAppletCommonFunctions() override;
+ 
+ private:
++    Result SetHomeButtonDoubleClickEnabled(bool home_button_double_click_enabled);
+     Result GetHomeButtonDoubleClickEnabled(Out<bool> out_home_button_double_click_enabled);
+     Result SetCpuBoostRequestPriority(s32 priority);
+     Result GetCurrentApplicationId(Out<u64> out_application_id);
+diff --git a/src/core/hle/service/am/service/application_accessor.cpp b/src/core/hle/service/am/service/application_accessor.cpp
+index 6e7d110e840a..986abc716a16 100644
+--- a/src/core/hle/service/am/service/application_accessor.cpp
++++ b/src/core/hle/service/am/service/application_accessor.cpp
+@@ -9,12 +9,16 @@
+ #include "core/hle/service/am/service/application_accessor.h"
+ #include "core/hle/service/am/service/library_applet_accessor.h"
+ #include "core/hle/service/am/service/storage.h"
++#include "core/hle/service/am/window_system.h"
+ #include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/glue/glue_manager.h"
+ 
+ namespace Service::AM {
+ 
+-IApplicationAccessor::IApplicationAccessor(Core::System& system_, std::shared_ptr<Applet> applet)
+-    : ServiceFramework{system_, "IApplicationAccessor"}, m_applet(std::move(applet)) {
++IApplicationAccessor::IApplicationAccessor(Core::System& system_, std::shared_ptr<Applet> applet,
++                                           WindowSystem& window_system)
++    : ServiceFramework{system_, "IApplicationAccessor"}, m_window_system(window_system),
++      m_applet(std::move(applet)) {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, D<&IApplicationAccessor::GetAppletStateChangedEvent>, "GetAppletStateChangedEvent"},
+@@ -59,7 +63,15 @@ Result IApplicationAccessor::Start() {
+ 
+ Result IApplicationAccessor::RequestExit() {
+     LOG_INFO(Service_AM, "called");
+-    m_applet->message_queue.RequestExit();
++
++    std::scoped_lock lk{m_applet->lock};
++    if (m_applet->exit_locked) {
++        m_applet->lifecycle_manager.RequestExit();
++        m_applet->UpdateSuspensionStateLocked(true);
++    } else {
++        m_applet->process->Terminate();
++    }
++
+     R_SUCCEED();
+ }
+ 
+@@ -71,13 +83,14 @@ Result IApplicationAccessor::Terminate() {
+ 
+ Result IApplicationAccessor::GetResult() {
+     LOG_INFO(Service_AM, "called");
+-    R_SUCCEED();
++    std::scoped_lock lk{m_applet->lock};
++    R_RETURN(m_applet->terminate_result);
+ }
+ 
+ Result IApplicationAccessor::GetAppletStateChangedEvent(
+     OutCopyHandle<Kernel::KReadableEvent> out_event) {
+     LOG_INFO(Service_AM, "called");
+-    *out_event = m_applet->caller_applet_broker->GetStateChangedEvent().GetHandle();
++    *out_event = m_applet->state_changed_event.GetHandle();
+     R_SUCCEED();
+ }
+ 
+@@ -96,8 +109,15 @@ Result IApplicationAccessor::PushLaunchParameter(LaunchParameterKind kind,
+ 
+ Result IApplicationAccessor::GetApplicationControlProperty(
+     OutBuffer<BufferAttr_HipcMapAlias> out_control_property) {
+-    LOG_WARNING(Service_AM, "(STUBBED) called");
+-    R_THROW(ResultUnknown);
++    LOG_INFO(Service_AM, "called");
++
++    std::vector<u8> nacp;
++    R_TRY(system.GetARPManager().GetControlProperty(&nacp, m_applet->program_id));
++
++    std::memcpy(out_control_property.data(), nacp.data(),
++                std::min(out_control_property.size(), nacp.size()));
++
++    R_SUCCEED();
+ }
+ 
+ Result IApplicationAccessor::SetUsers(bool enable,
+@@ -114,8 +134,9 @@ Result IApplicationAccessor::GetCurrentLibraryApplet(
+ }
+ 
+ Result IApplicationAccessor::RequestForApplicationToGetForeground() {
+-    LOG_WARNING(Service_AM, "(STUBBED) called");
+-    R_THROW(ResultUnknown);
++    LOG_INFO(Service_AM, "called");
++    m_window_system.RequestApplicationToGetForeground();
++    R_SUCCEED();
+ }
+ 
+ Result IApplicationAccessor::CheckRightsEnvironmentAvailable(Out<bool> out_is_available) {
+diff --git a/src/core/hle/service/am/service/application_accessor.h b/src/core/hle/service/am/service/application_accessor.h
+index 39a9b2153268..b9797bcc0a7f 100644
+--- a/src/core/hle/service/am/service/application_accessor.h
++++ b/src/core/hle/service/am/service/application_accessor.h
+@@ -13,10 +13,12 @@ namespace Service::AM {
+ struct Applet;
+ class ILibraryAppletAccessor;
+ class IStorage;
++class WindowSystem;
+ 
+ class IApplicationAccessor final : public ServiceFramework<IApplicationAccessor> {
+ public:
+-    explicit IApplicationAccessor(Core::System& system_, std::shared_ptr<Applet> applet);
++    explicit IApplicationAccessor(Core::System& system_, std::shared_ptr<Applet> applet,
++                                  WindowSystem& window_system);
+     ~IApplicationAccessor() override;
+ 
+ private:
+@@ -34,6 +36,7 @@ class IApplicationAccessor final : public ServiceFramework<IApplicationAccessor>
+     Result GetNsRightsEnvironmentHandle(Out<u64> out_handle);
+     Result ReportApplicationExitTimeout();
+ 
++    WindowSystem& m_window_system;
+     const std::shared_ptr<Applet> m_applet;
+ };
+ 
+diff --git a/src/core/hle/service/am/service/application_creator.cpp b/src/core/hle/service/am/service/application_creator.cpp
+index 568bb012238a..8994f191426e 100644
+--- a/src/core/hle/service/am/service/application_creator.cpp
++++ b/src/core/hle/service/am/service/application_creator.cpp
+@@ -1,17 +1,57 @@
+ // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "core/file_sys/nca_metadata.h"
++#include "core/file_sys/registered_cache.h"
+ #include "core/hle/service/am/am_types.h"
+ #include "core/hle/service/am/applet.h"
+ #include "core/hle/service/am/applet_manager.h"
++#include "core/hle/service/am/process_creation.h"
+ #include "core/hle/service/am/service/application_accessor.h"
+ #include "core/hle/service/am/service/application_creator.h"
++#include "core/hle/service/am/window_system.h"
+ #include "core/hle/service/cmif_serialization.h"
++#include "core/loader/loader.h"
+ 
+ namespace Service::AM {
+ 
+-IApplicationCreator::IApplicationCreator(Core::System& system_)
+-    : ServiceFramework{system_, "IApplicationCreator"} {
++namespace {
++
++Result CreateGuestApplication(SharedPointer<IApplicationAccessor>* out_application_accessor,
++                              Core::System& system, WindowSystem& window_system, u64 program_id) {
++    FileSys::VirtualFile nca_raw{};
++
++    // Get the program NCA from storage.
++    auto& storage = system.GetContentProviderUnion();
++    nca_raw = storage.GetEntryRaw(program_id, FileSys::ContentRecordType::Program);
++
++    // Ensure we retrieved a program NCA.
++    R_UNLESS(nca_raw != nullptr, ResultUnknown);
++
++    std::vector<u8> control;
++    std::unique_ptr<Loader::AppLoader> loader;
++    Loader::ResultStatus result;
++    auto process =
++        CreateApplicationProcess(control, loader, result, system, nca_raw, program_id, 0);
++    R_UNLESS(process != nullptr, ResultUnknown);
++
++    const auto applet = std::make_shared<Applet>(system, std::move(process), true);
++    applet->program_id = program_id;
++    applet->applet_id = AppletId::Application;
++    applet->type = AppletType::Application;
++    applet->library_applet_mode = LibraryAppletMode::AllForeground;
++
++    window_system.TrackApplet(applet, true);
++
++    *out_application_accessor =
++        std::make_shared<IApplicationAccessor>(system, applet, window_system);
++    R_SUCCEED();
++}
++
++} // namespace
++
++IApplicationCreator::IApplicationCreator(Core::System& system_, WindowSystem& window_system)
++    : ServiceFramework{system_, "IApplicationCreator"}, m_window_system{window_system} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, D<&IApplicationCreator::CreateApplication>, "CreateApplication"},
+@@ -28,8 +68,9 @@ IApplicationCreator::~IApplicationCreator() = default;
+ 
+ Result IApplicationCreator::CreateApplication(
+     Out<SharedPointer<IApplicationAccessor>> out_application_accessor, u64 application_id) {
+-    LOG_ERROR(Service_NS, "called, application_id={:x}", application_id);
+-    R_THROW(ResultUnknown);
++    LOG_INFO(Service_NS, "called, application_id={:016X}", application_id);
++    R_RETURN(
++        CreateGuestApplication(out_application_accessor, system, m_window_system, application_id));
+ }
+ 
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/service/application_creator.h b/src/core/hle/service/am/service/application_creator.h
+index 9f939ebf6d22..287745af8532 100644
+--- a/src/core/hle/service/am/service/application_creator.h
++++ b/src/core/hle/service/am/service/application_creator.h
+@@ -10,14 +10,17 @@ namespace Service::AM {
+ 
+ class IApplicationAccessor;
+ struct Applet;
++class WindowSystem;
+ 
+ class IApplicationCreator final : public ServiceFramework<IApplicationCreator> {
+ public:
+-    explicit IApplicationCreator(Core::System& system_);
++    explicit IApplicationCreator(Core::System& system_, WindowSystem& window_system);
+     ~IApplicationCreator() override;
+ 
+ private:
+     Result CreateApplication(Out<SharedPointer<IApplicationAccessor>>, u64 application_id);
++
++    WindowSystem& m_window_system;
+ };
+ 
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/service/application_functions.cpp b/src/core/hle/service/am/service/application_functions.cpp
+index bfccb6b09ff7..3bab5ac5f16c 100644
+--- a/src/core/hle/service/am/service/application_functions.cpp
++++ b/src/core/hle/service/am/service/application_functions.cpp
+@@ -181,7 +181,8 @@ Result IApplicationFunctions::GetDesiredLanguage(Out<u64> out_language_code) {
+ }
+ 
+ Result IApplicationFunctions::SetTerminateResult(Result terminate_result) {
+-    LOG_INFO(Service_AM, "(STUBBED) called, result={:#x} ({}-{})", terminate_result.GetInnerValue(),
++    LOG_INFO(Service_AM, "(STUBBED) called, result={:#x} ({:04}-{:04})",
++             terminate_result.GetInnerValue(),
+              static_cast<u32>(terminate_result.GetModule()) + 2000,
+              terminate_result.GetDescription());
+ 
+diff --git a/src/core/hle/service/am/service/application_proxy.cpp b/src/core/hle/service/am/service/application_proxy.cpp
+index 19d6a3b89cbb..6e1328fee7d9 100644
+--- a/src/core/hle/service/am/service/application_proxy.cpp
++++ b/src/core/hle/service/am/service/application_proxy.cpp
+@@ -17,9 +17,9 @@
+ namespace Service::AM {
+ 
+ IApplicationProxy::IApplicationProxy(Core::System& system_, std::shared_ptr<Applet> applet,
+-                                     Kernel::KProcess* process)
+-    : ServiceFramework{system_, "IApplicationProxy"}, m_process{process}, m_applet{
+-                                                                              std::move(applet)} {
++                                     Kernel::KProcess* process, WindowSystem& window_system)
++    : ServiceFramework{system_, "IApplicationProxy"},
++      m_window_system{window_system}, m_process{process}, m_applet{std::move(applet)} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, D<&IApplicationProxy::GetCommonStateGetter>, "GetCommonStateGetter"},
+@@ -70,7 +70,7 @@ Result IApplicationProxy::GetDebugFunctions(
+ Result IApplicationProxy::GetWindowController(
+     Out<SharedPointer<IWindowController>> out_window_controller) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_window_controller = std::make_shared<IWindowController>(system, m_applet);
++    *out_window_controller = std::make_shared<IWindowController>(system, m_applet, m_window_system);
+     R_SUCCEED();
+ }
+ 
+@@ -91,7 +91,8 @@ Result IApplicationProxy::GetCommonStateGetter(
+ Result IApplicationProxy::GetLibraryAppletCreator(
+     Out<SharedPointer<ILibraryAppletCreator>> out_library_applet_creator) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_library_applet_creator = std::make_shared<ILibraryAppletCreator>(system, m_applet);
++    *out_library_applet_creator =
++        std::make_shared<ILibraryAppletCreator>(system, m_applet, m_window_system);
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/am/service/application_proxy.h b/src/core/hle/service/am/service/application_proxy.h
+index 6da350df72f9..8c62459c45ed 100644
+--- a/src/core/hle/service/am/service/application_proxy.h
++++ b/src/core/hle/service/am/service/application_proxy.h
+@@ -18,11 +18,12 @@ class ILibraryAppletCreator;
+ class IProcessWindingController;
+ class ISelfController;
+ class IWindowController;
++class WindowSystem;
+ 
+ class IApplicationProxy final : public ServiceFramework<IApplicationProxy> {
+ public:
+     explicit IApplicationProxy(Core::System& system_, std::shared_ptr<Applet> applet,
+-                               Kernel::KProcess* process);
++                               Kernel::KProcess* process, WindowSystem& window_system);
+     ~IApplicationProxy();
+ 
+ private:
+@@ -40,6 +41,7 @@ class IApplicationProxy final : public ServiceFramework<IApplicationProxy> {
+         Out<SharedPointer<IApplicationFunctions>> out_application_functions);
+ 
+ private:
++    WindowSystem& m_window_system;
+     Kernel::KProcess* const m_process;
+     const std::shared_ptr<Applet> m_applet;
+ };
+diff --git a/src/core/hle/service/am/service/application_proxy_service.cpp b/src/core/hle/service/am/service/application_proxy_service.cpp
+index fd66e77b9617..b7d7b3c2d957 100644
+--- a/src/core/hle/service/am/service/application_proxy_service.cpp
++++ b/src/core/hle/service/am/service/application_proxy_service.cpp
+@@ -6,12 +6,14 @@
+ #include "core/hle/service/am/applet_manager.h"
+ #include "core/hle/service/am/service/application_proxy.h"
+ #include "core/hle/service/am/service/application_proxy_service.h"
++#include "core/hle/service/am/window_system.h"
+ #include "core/hle/service/cmif_serialization.h"
+ 
+ namespace Service::AM {
+ 
+-IApplicationProxyService::IApplicationProxyService(Core::System& system_)
+-    : ServiceFramework{system_, "appletOE"} {
++IApplicationProxyService::IApplicationProxyService(Core::System& system_,
++                                                   WindowSystem& window_system)
++    : ServiceFramework{system_, "appletOE"}, m_window_system{window_system} {
+     static const FunctionInfo functions[] = {
+         {0, D<&IApplicationProxyService::OpenApplicationProxy>, "OpenApplicationProxy"},
+     };
+@@ -26,8 +28,8 @@ Result IApplicationProxyService::OpenApplicationProxy(
+     LOG_DEBUG(Service_AM, "called");
+ 
+     if (const auto applet = this->GetAppletFromProcessId(pid)) {
+-        *out_application_proxy =
+-            std::make_shared<IApplicationProxy>(system, applet, process_handle.Get());
++        *out_application_proxy = std::make_shared<IApplicationProxy>(
++            system, applet, process_handle.Get(), m_window_system);
+         R_SUCCEED();
+     } else {
+         UNIMPLEMENTED();
+@@ -36,7 +38,7 @@ Result IApplicationProxyService::OpenApplicationProxy(
+ }
+ 
+ std::shared_ptr<Applet> IApplicationProxyService::GetAppletFromProcessId(ProcessId process_id) {
+-    return system.GetAppletManager().GetByAppletResourceUserId(process_id.pid);
++    return m_window_system.GetByAppletResourceUserId(process_id.pid);
+ }
+ 
+ } // namespace Service::AM
+diff --git a/src/core/hle/service/am/service/application_proxy_service.h b/src/core/hle/service/am/service/application_proxy_service.h
+index 8efafa31ac0c..e5f4ea345bdb 100644
+--- a/src/core/hle/service/am/service/application_proxy_service.h
++++ b/src/core/hle/service/am/service/application_proxy_service.h
+@@ -12,10 +12,11 @@ namespace AM {
+ 
+ struct Applet;
+ class IApplicationProxy;
++class WindowSystem;
+ 
+ class IApplicationProxyService final : public ServiceFramework<IApplicationProxyService> {
+ public:
+-    explicit IApplicationProxyService(Core::System& system_);
++    explicit IApplicationProxyService(Core::System& system_, WindowSystem& window_system);
+     ~IApplicationProxyService() override;
+ 
+ private:
+@@ -24,6 +25,8 @@ class IApplicationProxyService final : public ServiceFramework<IApplicationProxy
+ 
+ private:
+     std::shared_ptr<Applet> GetAppletFromProcessId(ProcessId pid);
++
++    WindowSystem& m_window_system;
+ };
+ 
+ } // namespace AM
+diff --git a/src/core/hle/service/am/service/common_state_getter.cpp b/src/core/hle/service/am/service/common_state_getter.cpp
+index a32855ffa30c..f523bcd9e65e 100644
+--- a/src/core/hle/service/am/service/common_state_getter.cpp
++++ b/src/core/hle/service/am/service/common_state_getter.cpp
+@@ -80,15 +80,14 @@ ICommonStateGetter::~ICommonStateGetter() = default;
+ 
+ Result ICommonStateGetter::GetEventHandle(OutCopyHandle<Kernel::KReadableEvent> out_event) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_event = &m_applet->message_queue.GetMessageReceiveEvent();
++    *out_event = m_applet->lifecycle_manager.GetSystemEvent().GetHandle();
+     R_SUCCEED();
+ }
+ 
+ Result ICommonStateGetter::ReceiveMessage(Out<AppletMessage> out_applet_message) {
+     LOG_DEBUG(Service_AM, "called");
+ 
+-    *out_applet_message = m_applet->message_queue.PopMessage();
+-    if (*out_applet_message == AppletMessage::None) {
++    if (!m_applet->lifecycle_manager.PopMessage(out_applet_message)) {
+         LOG_ERROR(Service_AM, "Tried to pop message but none was available!");
+         R_THROW(AM::ResultNoMessages);
+     }
+@@ -100,7 +99,7 @@ Result ICommonStateGetter::GetCurrentFocusState(Out<FocusState> out_focus_state)
+     LOG_DEBUG(Service_AM, "called");
+ 
+     std::scoped_lock lk{m_applet->lock};
+-    *out_focus_state = m_applet->focus_state;
++    *out_focus_state = m_applet->lifecycle_manager.GetAndClearFocusState();
+ 
+     R_SUCCEED();
+ }
+@@ -137,7 +136,7 @@ Result ICommonStateGetter::GetWriterLockAccessorEx(
+ Result ICommonStateGetter::GetDefaultDisplayResolutionChangeEvent(
+     OutCopyHandle<Kernel::KReadableEvent> out_event) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_event = &m_applet->message_queue.GetOperationModeChangedEvent();
++    *out_event = m_applet->lifecycle_manager.GetOperationModeChangedSystemEvent().GetHandle();
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/am/service/home_menu_functions.cpp b/src/core/hle/service/am/service/home_menu_functions.cpp
+index 0c4d24b58b3f..25f78beb5a7b 100644
+--- a/src/core/hle/service/am/service/home_menu_functions.cpp
++++ b/src/core/hle/service/am/service/home_menu_functions.cpp
+@@ -4,13 +4,16 @@
+ #include "core/hle/result.h"
+ #include "core/hle/service/am/applet_manager.h"
+ #include "core/hle/service/am/service/home_menu_functions.h"
++#include "core/hle/service/am/window_system.h"
+ #include "core/hle/service/cmif_serialization.h"
+ 
+ namespace Service::AM {
+ 
+-IHomeMenuFunctions::IHomeMenuFunctions(Core::System& system_, std::shared_ptr<Applet> applet)
+-    : ServiceFramework{system_, "IHomeMenuFunctions"}, m_applet{std::move(applet)},
+-      m_context{system, "IHomeMenuFunctions"}, m_pop_from_general_channel_event{m_context} {
++IHomeMenuFunctions::IHomeMenuFunctions(Core::System& system_, std::shared_ptr<Applet> applet,
++                                       WindowSystem& window_system)
++    : ServiceFramework{system_, "IHomeMenuFunctions"}, m_window_system{window_system},
++      m_applet{std::move(applet)}, m_context{system, "IHomeMenuFunctions"},
++      m_pop_from_general_channel_event{m_context} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {10, D<&IHomeMenuFunctions::RequestToGetForeground>, "RequestToGetForeground"},
+@@ -37,17 +40,20 @@ IHomeMenuFunctions::IHomeMenuFunctions(Core::System& system_, std::shared_ptr<Ap
+ IHomeMenuFunctions::~IHomeMenuFunctions() = default;
+ 
+ Result IHomeMenuFunctions::RequestToGetForeground() {
+-    LOG_WARNING(Service_AM, "(STUBBED) called");
++    LOG_INFO(Service_AM, "called");
++    m_window_system.RequestHomeMenuToGetForeground();
+     R_SUCCEED();
+ }
+ 
+ Result IHomeMenuFunctions::LockForeground() {
+-    LOG_WARNING(Service_AM, "(STUBBED) called");
++    LOG_INFO(Service_AM, "called");
++    m_window_system.RequestLockHomeMenuIntoForeground();
+     R_SUCCEED();
+ }
+ 
+ Result IHomeMenuFunctions::UnlockForeground() {
+-    LOG_WARNING(Service_AM, "(STUBBED) called");
++    LOG_INFO(Service_AM, "called");
++    m_window_system.RequestUnlockHomeMenuIntoForeground();
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/am/service/home_menu_functions.h b/src/core/hle/service/am/service/home_menu_functions.h
+index caf6fbaabbd5..f56094aa9d8c 100644
+--- a/src/core/hle/service/am/service/home_menu_functions.h
++++ b/src/core/hle/service/am/service/home_menu_functions.h
+@@ -11,10 +11,12 @@
+ namespace Service::AM {
+ 
+ struct Applet;
++class WindowSystem;
+ 
+ class IHomeMenuFunctions final : public ServiceFramework<IHomeMenuFunctions> {
+ public:
+-    explicit IHomeMenuFunctions(Core::System& system_, std::shared_ptr<Applet> applet);
++    explicit IHomeMenuFunctions(Core::System& system_, std::shared_ptr<Applet> applet,
++                                WindowSystem& window_system);
+     ~IHomeMenuFunctions() override;
+ 
+ private:
+@@ -26,6 +28,7 @@ class IHomeMenuFunctions final : public ServiceFramework<IHomeMenuFunctions> {
+     Result IsForceTerminateApplicationDisabledForDebug(
+         Out<bool> out_is_force_terminate_application_disabled_for_debug);
+ 
++    WindowSystem& m_window_system;
+     const std::shared_ptr<Applet> m_applet;
+     KernelHelpers::ServiceContext m_context;
+     Event m_pop_from_general_channel_event;
+diff --git a/src/core/hle/service/am/service/library_applet_accessor.cpp b/src/core/hle/service/am/service/library_applet_accessor.cpp
+index 0c2426d4ba21..cda8c3eb87c5 100644
+--- a/src/core/hle/service/am/service/library_applet_accessor.cpp
++++ b/src/core/hle/service/am/service/library_applet_accessor.cpp
+@@ -47,20 +47,21 @@ ILibraryAppletAccessor::~ILibraryAppletAccessor() = default;
+ Result ILibraryAppletAccessor::GetAppletStateChangedEvent(
+     OutCopyHandle<Kernel::KReadableEvent> out_event) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_event = m_broker->GetStateChangedEvent().GetHandle();
++    *out_event = m_applet->state_changed_event.GetHandle();
+     R_SUCCEED();
+ }
+ 
+ Result ILibraryAppletAccessor::IsCompleted(Out<bool> out_is_completed) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_is_completed = m_broker->IsCompleted();
++    std::scoped_lock lk{m_applet->lock};
++    *out_is_completed = m_applet->is_completed;
+     R_SUCCEED();
+ }
+ 
+-Result ILibraryAppletAccessor::GetResult(Out<Result> out_result) {
++Result ILibraryAppletAccessor::GetResult() {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_result = m_applet->terminate_result;
+-    R_SUCCEED();
++    std::scoped_lock lk{m_applet->lock};
++    R_RETURN(m_applet->terminate_result);
+ }
+ 
+ Result ILibraryAppletAccessor::PresetLibraryAppletGpuTimeSliceZero() {
+@@ -77,7 +78,10 @@ Result ILibraryAppletAccessor::Start() {
+ 
+ Result ILibraryAppletAccessor::RequestExit() {
+     LOG_DEBUG(Service_AM, "called");
+-    m_applet->message_queue.RequestExit();
++    {
++        std::scoped_lock lk{m_applet->lock};
++        m_applet->lifecycle_manager.RequestExit();
++    }
+     FrontendRequestExit();
+     R_SUCCEED();
+ }
+diff --git a/src/core/hle/service/am/service/library_applet_accessor.h b/src/core/hle/service/am/service/library_applet_accessor.h
+index 97d3b6c8aa5a..36712821a5a7 100644
+--- a/src/core/hle/service/am/service/library_applet_accessor.h
++++ b/src/core/hle/service/am/service/library_applet_accessor.h
+@@ -21,7 +21,7 @@ class ILibraryAppletAccessor final : public ServiceFramework<ILibraryAppletAcces
+ private:
+     Result GetAppletStateChangedEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
+     Result IsCompleted(Out<bool> out_is_completed);
+-    Result GetResult(Out<Result> out_result);
++    Result GetResult();
+     Result PresetLibraryAppletGpuTimeSliceZero();
+     Result Start();
+     Result RequestExit();
+diff --git a/src/core/hle/service/am/service/library_applet_creator.cpp b/src/core/hle/service/am/service/library_applet_creator.cpp
+index c97358d81526..3ffb03bc9781 100644
+--- a/src/core/hle/service/am/service/library_applet_creator.cpp
++++ b/src/core/hle/service/am/service/library_applet_creator.cpp
+@@ -7,9 +7,11 @@
+ #include "core/hle/service/am/applet_manager.h"
+ #include "core/hle/service/am/frontend/applets.h"
+ #include "core/hle/service/am/library_applet_storage.h"
++#include "core/hle/service/am/process_creation.h"
+ #include "core/hle/service/am/service/library_applet_accessor.h"
+ #include "core/hle/service/am/service/library_applet_creator.h"
+ #include "core/hle/service/am/service/storage.h"
++#include "core/hle/service/am/window_system.h"
+ #include "core/hle/service/cmif_serialization.h"
+ #include "core/hle/service/sm/sm.h"
+ 
+@@ -93,6 +95,7 @@ AppletProgramId AppletIdToProgramId(AppletId applet_id) {
+ }
+ 
+ std::shared_ptr<ILibraryAppletAccessor> CreateGuestApplet(Core::System& system,
++                                                          WindowSystem& window_system,
+                                                           std::shared_ptr<Applet> caller_applet,
+                                                           AppletId applet_id,
+                                                           LibraryAppletMode mode) {
+@@ -110,53 +113,38 @@ std::shared_ptr<ILibraryAppletAccessor> CreateGuestApplet(Core::System& system,
+         Firmware1700 = 17,
+     };
+ 
+-    auto process = std::make_unique<Process>(system);
+-    if (!process->Initialize(program_id, Firmware1400, Firmware1700)) {
++    auto process = CreateProcess(system, program_id, Firmware1400, Firmware1700);
++    if (!process) {
+         // Couldn't initialize the guest process
+         return {};
+     }
+ 
+-    const auto applet = std::make_shared<Applet>(system, std::move(process));
++    const auto applet = std::make_shared<Applet>(system, std::move(process), false);
+     applet->program_id = program_id;
+     applet->applet_id = applet_id;
+     applet->type = AppletType::LibraryApplet;
+     applet->library_applet_mode = mode;
+-
+-    // Set focus state
+-    switch (mode) {
+-    case LibraryAppletMode::AllForeground:
+-    case LibraryAppletMode::NoUi:
+-    case LibraryAppletMode::PartialForeground:
+-    case LibraryAppletMode::PartialForegroundIndirectDisplay:
+-        applet->hid_registration.EnableAppletToGetInput(true);
+-        applet->focus_state = FocusState::InFocus;
+-        applet->message_queue.PushMessage(AppletMessage::ChangeIntoForeground);
+-        break;
+-    case LibraryAppletMode::AllForegroundInitiallyHidden:
+-        applet->hid_registration.EnableAppletToGetInput(false);
+-        applet->focus_state = FocusState::NotInFocus;
+-        applet->display_layer_manager.SetWindowVisibility(false);
+-        applet->message_queue.PushMessage(AppletMessage::ChangeIntoBackground);
+-        break;
+-    }
++    applet->window_visible = mode != LibraryAppletMode::AllForegroundInitiallyHidden;
+ 
+     auto broker = std::make_shared<AppletDataBroker>(system);
+     applet->caller_applet = caller_applet;
+     applet->caller_applet_broker = broker;
++    caller_applet->child_applets.push_back(applet);
+ 
+-    system.GetAppletManager().InsertApplet(applet);
++    window_system.TrackApplet(applet, false);
+ 
+     return std::make_shared<ILibraryAppletAccessor>(system, broker, applet);
+ }
+ 
+ std::shared_ptr<ILibraryAppletAccessor> CreateFrontendApplet(Core::System& system,
++                                                             WindowSystem& window_system,
+                                                              std::shared_ptr<Applet> caller_applet,
+                                                              AppletId applet_id,
+                                                              LibraryAppletMode mode) {
+     const auto program_id = static_cast<u64>(AppletIdToProgramId(applet_id));
+ 
+     auto process = std::make_unique<Process>(system);
+-    auto applet = std::make_shared<Applet>(system, std::move(process));
++    auto applet = std::make_shared<Applet>(system, std::move(process), false);
+     applet->program_id = program_id;
+     applet->applet_id = applet_id;
+     applet->type = AppletType::LibraryApplet;
+@@ -166,14 +154,19 @@ std::shared_ptr<ILibraryAppletAccessor> CreateFrontendApplet(Core::System& syste
+     applet->caller_applet = caller_applet;
+     applet->caller_applet_broker = storage;
+     applet->frontend = system.GetFrontendAppletHolder().GetApplet(applet, applet_id, mode);
++    caller_applet->child_applets.push_back(applet);
++
++    window_system.TrackApplet(applet, false);
+ 
+     return std::make_shared<ILibraryAppletAccessor>(system, storage, applet);
+ }
+ 
+ } // namespace
+ 
+-ILibraryAppletCreator::ILibraryAppletCreator(Core::System& system_, std::shared_ptr<Applet> applet)
+-    : ServiceFramework{system_, "ILibraryAppletCreator"}, m_applet{std::move(applet)} {
++ILibraryAppletCreator::ILibraryAppletCreator(Core::System& system_, std::shared_ptr<Applet> applet,
++                                             WindowSystem& window_system)
++    : ServiceFramework{system_, "ILibraryAppletCreator"},
++      m_window_system{window_system}, m_applet{std::move(applet)} {
+     static const FunctionInfo functions[] = {
+         {0, D<&ILibraryAppletCreator::CreateLibraryApplet>, "CreateLibraryApplet"},
+         {1, nullptr, "TerminateAllLibraryApplets"},
+@@ -195,10 +188,12 @@ Result ILibraryAppletCreator::CreateLibraryApplet(
+ 
+     std::shared_ptr<ILibraryAppletAccessor> library_applet;
+     if (ShouldCreateGuestApplet(applet_id)) {
+-        library_applet = CreateGuestApplet(system, m_applet, applet_id, library_applet_mode);
++        library_applet =
++            CreateGuestApplet(system, m_window_system, m_applet, applet_id, library_applet_mode);
+     }
+     if (!library_applet) {
+-        library_applet = CreateFrontendApplet(system, m_applet, applet_id, library_applet_mode);
++        library_applet =
++            CreateFrontendApplet(system, m_window_system, m_applet, applet_id, library_applet_mode);
+     }
+     if (!library_applet) {
+         LOG_ERROR(Service_AM, "Applet doesn't exist! applet_id={}", applet_id);
+diff --git a/src/core/hle/service/am/service/library_applet_creator.h b/src/core/hle/service/am/service/library_applet_creator.h
+index fe6d40eb334c..a10a7698280d 100644
+--- a/src/core/hle/service/am/service/library_applet_creator.h
++++ b/src/core/hle/service/am/service/library_applet_creator.h
+@@ -12,10 +12,12 @@ namespace Service::AM {
+ struct Applet;
+ class ILibraryAppletAccessor;
+ class IStorage;
++class WindowSystem;
+ 
+ class ILibraryAppletCreator final : public ServiceFramework<ILibraryAppletCreator> {
+ public:
+-    explicit ILibraryAppletCreator(Core::System& system_, std::shared_ptr<Applet> applet);
++    explicit ILibraryAppletCreator(Core::System& system_, std::shared_ptr<Applet> applet,
++                                   WindowSystem& window_system);
+     ~ILibraryAppletCreator() override;
+ 
+ private:
+@@ -29,6 +31,7 @@ class ILibraryAppletCreator final : public ServiceFramework<ILibraryAppletCreato
+     Result CreateHandleStorage(Out<SharedPointer<IStorage>> out_storage, s64 size,
+                                InCopyHandle<Kernel::KTransferMemory> transfer_memory_handle);
+ 
++    WindowSystem& m_window_system;
+     const std::shared_ptr<Applet> m_applet;
+ };
+ 
+diff --git a/src/core/hle/service/am/service/library_applet_proxy.cpp b/src/core/hle/service/am/service/library_applet_proxy.cpp
+index 58e709347021..f9cfb82a906d 100644
+--- a/src/core/hle/service/am/service/library_applet_proxy.cpp
++++ b/src/core/hle/service/am/service/library_applet_proxy.cpp
+@@ -19,9 +19,9 @@
+ namespace Service::AM {
+ 
+ ILibraryAppletProxy::ILibraryAppletProxy(Core::System& system_, std::shared_ptr<Applet> applet,
+-                                         Kernel::KProcess* process)
+-    : ServiceFramework{system_, "ILibraryAppletProxy"}, m_process{process}, m_applet{
+-                                                                                std::move(applet)} {
++                                         Kernel::KProcess* process, WindowSystem& window_system)
++    : ServiceFramework{system_, "ILibraryAppletProxy"},
++      m_window_system{window_system}, m_process{process}, m_applet{std::move(applet)} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, D<&ILibraryAppletProxy::GetCommonStateGetter>, "GetCommonStateGetter"},
+@@ -75,7 +75,7 @@ Result ILibraryAppletProxy::GetDebugFunctions(
+ Result ILibraryAppletProxy::GetWindowController(
+     Out<SharedPointer<IWindowController>> out_window_controller) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_window_controller = std::make_shared<IWindowController>(system, m_applet);
++    *out_window_controller = std::make_shared<IWindowController>(system, m_applet, m_window_system);
+     R_SUCCEED();
+ }
+ 
+@@ -96,7 +96,8 @@ Result ILibraryAppletProxy::GetCommonStateGetter(
+ Result ILibraryAppletProxy::GetLibraryAppletCreator(
+     Out<SharedPointer<ILibraryAppletCreator>> out_library_applet_creator) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_library_applet_creator = std::make_shared<ILibraryAppletCreator>(system, m_applet);
++    *out_library_applet_creator =
++        std::make_shared<ILibraryAppletCreator>(system, m_applet, m_window_system);
+     R_SUCCEED();
+ }
+ 
+@@ -118,7 +119,8 @@ Result ILibraryAppletProxy::GetAppletCommonFunctions(
+ Result ILibraryAppletProxy::GetHomeMenuFunctions(
+     Out<SharedPointer<IHomeMenuFunctions>> out_home_menu_functions) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_home_menu_functions = std::make_shared<IHomeMenuFunctions>(system, m_applet);
++    *out_home_menu_functions =
++        std::make_shared<IHomeMenuFunctions>(system, m_applet, m_window_system);
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/am/service/library_applet_proxy.h b/src/core/hle/service/am/service/library_applet_proxy.h
+index 7d0714b85170..792d58582755 100644
+--- a/src/core/hle/service/am/service/library_applet_proxy.h
++++ b/src/core/hle/service/am/service/library_applet_proxy.h
+@@ -21,11 +21,12 @@ class ILibraryAppletSelfAccessor;
+ class IProcessWindingController;
+ class ISelfController;
+ class IWindowController;
++class WindowSystem;
+ 
+ class ILibraryAppletProxy final : public ServiceFramework<ILibraryAppletProxy> {
+ public:
+     explicit ILibraryAppletProxy(Core::System& system_, std::shared_ptr<Applet> applet,
+-                                 Kernel::KProcess* process);
++                                 Kernel::KProcess* process, WindowSystem& window_system);
+     ~ILibraryAppletProxy();
+ 
+ private:
+@@ -47,6 +48,7 @@ class ILibraryAppletProxy final : public ServiceFramework<ILibraryAppletProxy> {
+     Result GetGlobalStateController(
+         Out<SharedPointer<IGlobalStateController>> out_global_state_controller);
+ 
++    WindowSystem& m_window_system;
+     Kernel::KProcess* const m_process;
+     const std::shared_ptr<Applet> m_applet;
+ };
+diff --git a/src/core/hle/service/am/service/library_applet_self_accessor.cpp b/src/core/hle/service/am/service/library_applet_self_accessor.cpp
+index 330eb26f05cd..3fe36b899780 100644
+--- a/src/core/hle/service/am/service/library_applet_self_accessor.cpp
++++ b/src/core/hle/service/am/service/library_applet_self_accessor.cpp
+@@ -176,8 +176,7 @@ Result ILibraryAppletSelfAccessor::GetMainAppletStorageId(Out<FileSys::StorageId
+ 
+ Result ILibraryAppletSelfAccessor::ExitProcessAndReturn() {
+     LOG_INFO(Service_AM, "called");
+-    system.GetAppletManager().TerminateAndRemoveApplet(m_applet->aruid);
+-    m_broker->SignalCompletion();
++    m_applet->process->Terminate();
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/am/service/self_controller.cpp b/src/core/hle/service/am/service/self_controller.cpp
+index 06314407c5ff..1db02b88fd55 100644
+--- a/src/core/hle/service/am/service/self_controller.cpp
++++ b/src/core/hle/service/am/service/self_controller.cpp
+@@ -86,8 +86,7 @@ ISelfController::~ISelfController() {
+ Result ISelfController::Exit() {
+     LOG_DEBUG(Service_AM, "called");
+ 
+-    // TODO
+-    system.Exit();
++    m_applet->process->Terminate();
+ 
+     R_SUCCEED();
+ }
+@@ -95,7 +94,16 @@ Result ISelfController::Exit() {
+ Result ISelfController::LockExit() {
+     LOG_DEBUG(Service_AM, "called");
+ 
+-    system.SetExitLocked(true);
++    std::scoped_lock lk{m_applet->lock};
++
++    if (m_applet->lifecycle_manager.GetExitRequested()) {
++        // With exit already requested, ignore and terminate immediately.
++        m_applet->process->Terminate();
++    } else {
++        // Otherwise, set exit lock state.
++        m_applet->exit_locked = true;
++        system.SetExitLocked(true);
++    }
+ 
+     R_SUCCEED();
+ }
+@@ -103,10 +111,13 @@ Result ISelfController::LockExit() {
+ Result ISelfController::UnlockExit() {
+     LOG_DEBUG(Service_AM, "called");
+ 
++    std::scoped_lock lk{m_applet->lock};
++
++    m_applet->exit_locked = false;
+     system.SetExitLocked(false);
+ 
+-    if (system.GetExitRequested()) {
+-        system.Exit();
++    if (m_applet->lifecycle_manager.GetExitRequested()) {
++        m_applet->process->Terminate();
+     }
+ 
+     R_SUCCEED();
+@@ -155,7 +166,7 @@ Result ISelfController::SetOperationModeChangedNotification(bool enabled) {
+     LOG_INFO(Service_AM, "called, enabled={}", enabled);
+ 
+     std::scoped_lock lk{m_applet->lock};
+-    m_applet->operation_mode_changed_notification_enabled = enabled;
++    m_applet->lifecycle_manager.SetOperationModeChangedNotificationEnabled(enabled);
+ 
+     R_SUCCEED();
+ }
+@@ -164,17 +175,18 @@ Result ISelfController::SetPerformanceModeChangedNotification(bool enabled) {
+     LOG_INFO(Service_AM, "called, enabled={}", enabled);
+ 
+     std::scoped_lock lk{m_applet->lock};
+-    m_applet->performance_mode_changed_notification_enabled = enabled;
++    m_applet->lifecycle_manager.SetPerformanceModeChangedNotificationEnabled(enabled);
+ 
+     R_SUCCEED();
+ }
+ 
+ Result ISelfController::SetFocusHandlingMode(bool notify, bool background, bool suspend) {
+-    LOG_WARNING(Service_AM, "(STUBBED) called, notify={} background={} suspend={}", notify,
+-                background, suspend);
++    LOG_INFO(Service_AM, "called, notify={} background={} suspend={}", notify, background, suspend);
+ 
+     std::scoped_lock lk{m_applet->lock};
+-    m_applet->focus_handling_mode = {notify, background, suspend};
++    m_applet->lifecycle_manager.SetFocusStateChangedNotificationEnabled(notify);
++    m_applet->lifecycle_manager.SetFocusHandlingMode(suspend);
++    m_applet->UpdateSuspensionStateLocked(true);
+ 
+     R_SUCCEED();
+ }
+@@ -183,7 +195,7 @@ Result ISelfController::SetRestartMessageEnabled(bool enabled) {
+     LOG_INFO(Service_AM, "called, enabled={}", enabled);
+ 
+     std::scoped_lock lk{m_applet->lock};
+-    m_applet->restart_message_enabled = enabled;
++    m_applet->lifecycle_manager.SetResumeNotificationEnabled(enabled);
+ 
+     R_SUCCEED();
+ }
+@@ -202,7 +214,8 @@ Result ISelfController::SetOutOfFocusSuspendingEnabled(bool enabled) {
+     LOG_INFO(Service_AM, "called, enabled={}", enabled);
+ 
+     std::scoped_lock lk{m_applet->lock};
+-    m_applet->out_of_focus_suspension_enabled = enabled;
++    m_applet->lifecycle_manager.SetOutOfFocusSuspendingEnabled(enabled);
++    m_applet->UpdateSuspensionStateLocked(false);
+ 
+     R_SUCCEED();
+ }
+diff --git a/src/core/hle/service/am/service/system_applet_proxy.cpp b/src/core/hle/service/am/service/system_applet_proxy.cpp
+index d1871ef9b7bf..c435288a2607 100644
+--- a/src/core/hle/service/am/service/system_applet_proxy.cpp
++++ b/src/core/hle/service/am/service/system_applet_proxy.cpp
+@@ -19,9 +19,9 @@
+ namespace Service::AM {
+ 
+ ISystemAppletProxy::ISystemAppletProxy(Core::System& system_, std::shared_ptr<Applet> applet,
+-                                       Kernel::KProcess* process)
+-    : ServiceFramework{system_, "ISystemAppletProxy"}, m_process{process}, m_applet{
+-                                                                               std::move(applet)} {
++                                       Kernel::KProcess* process, WindowSystem& window_system)
++    : ServiceFramework{system_, "ISystemAppletProxy"},
++      m_window_system{window_system}, m_process{process}, m_applet{std::move(applet)} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, D<&ISystemAppletProxy::GetCommonStateGetter>, "GetCommonStateGetter"},
+@@ -75,7 +75,7 @@ Result ISystemAppletProxy::GetDebugFunctions(
+ Result ISystemAppletProxy::GetWindowController(
+     Out<SharedPointer<IWindowController>> out_window_controller) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_window_controller = std::make_shared<IWindowController>(system, m_applet);
++    *out_window_controller = std::make_shared<IWindowController>(system, m_applet, m_window_system);
+     R_SUCCEED();
+ }
+ 
+@@ -96,14 +96,15 @@ Result ISystemAppletProxy::GetCommonStateGetter(
+ Result ISystemAppletProxy::GetLibraryAppletCreator(
+     Out<SharedPointer<ILibraryAppletCreator>> out_library_applet_creator) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_library_applet_creator = std::make_shared<ILibraryAppletCreator>(system, m_applet);
++    *out_library_applet_creator =
++        std::make_shared<ILibraryAppletCreator>(system, m_applet, m_window_system);
+     R_SUCCEED();
+ }
+ 
+ Result ISystemAppletProxy::GetApplicationCreator(
+     Out<SharedPointer<IApplicationCreator>> out_application_creator) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_application_creator = std::make_shared<IApplicationCreator>(system);
++    *out_application_creator = std::make_shared<IApplicationCreator>(system, m_window_system);
+     R_SUCCEED();
+ }
+ 
+@@ -117,7 +118,8 @@ Result ISystemAppletProxy::GetAppletCommonFunctions(
+ Result ISystemAppletProxy::GetHomeMenuFunctions(
+     Out<SharedPointer<IHomeMenuFunctions>> out_home_menu_functions) {
+     LOG_DEBUG(Service_AM, "called");
+-    *out_home_menu_functions = std::make_shared<IHomeMenuFunctions>(system, m_applet);
++    *out_home_menu_functions =
++        std::make_shared<IHomeMenuFunctions>(system, m_applet, m_window_system);
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/am/service/system_applet_proxy.h b/src/core/hle/service/am/service/system_applet_proxy.h
+index 67cd50e03504..217d9dc8caef 100644
+--- a/src/core/hle/service/am/service/system_applet_proxy.h
++++ b/src/core/hle/service/am/service/system_applet_proxy.h
+@@ -21,11 +21,12 @@ class ILibraryAppletCreator;
+ class IProcessWindingController;
+ class ISelfController;
+ class IWindowController;
++class WindowSystem;
+ 
+ class ISystemAppletProxy final : public ServiceFramework<ISystemAppletProxy> {
+ public:
+     explicit ISystemAppletProxy(Core::System& system, std::shared_ptr<Applet> applet,
+-                                Kernel::KProcess* process);
++                                Kernel::KProcess* process, WindowSystem& window_system);
+     ~ISystemAppletProxy();
+ 
+ private:
+@@ -46,6 +47,7 @@ class ISystemAppletProxy final : public ServiceFramework<ISystemAppletProxy> {
+     Result GetGlobalStateController(
+         Out<SharedPointer<IGlobalStateController>> out_global_state_controller);
+ 
++    WindowSystem& m_window_system;
+     Kernel::KProcess* const m_process;
+     const std::shared_ptr<Applet> m_applet;
+ };
+diff --git a/src/core/hle/service/am/service/window_controller.cpp b/src/core/hle/service/am/service/window_controller.cpp
+index 99a4f50a2e25..54396affbe15 100644
+--- a/src/core/hle/service/am/service/window_controller.cpp
++++ b/src/core/hle/service/am/service/window_controller.cpp
+@@ -4,12 +4,15 @@
+ #include "core/hle/service/am/applet.h"
+ #include "core/hle/service/am/applet_manager.h"
+ #include "core/hle/service/am/service/window_controller.h"
++#include "core/hle/service/am/window_system.h"
+ #include "core/hle/service/cmif_serialization.h"
+ 
+ namespace Service::AM {
+ 
+-IWindowController::IWindowController(Core::System& system_, std::shared_ptr<Applet> applet)
+-    : ServiceFramework{system_, "IWindowController"}, m_applet{std::move(applet)} {
++IWindowController::IWindowController(Core::System& system_, std::shared_ptr<Applet> applet,
++                                     WindowSystem& window_system)
++    : ServiceFramework{system_, "IWindowController"},
++      m_window_system{window_system}, m_applet{std::move(applet)} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0, nullptr, "CreateWindow"},
+@@ -63,17 +66,9 @@ Result IWindowController::RejectToChangeIntoBackground() {
+ }
+ 
+ Result IWindowController::SetAppletWindowVisibility(bool visible) {
+-    m_applet->display_layer_manager.SetWindowVisibility(visible);
+-    m_applet->hid_registration.EnableAppletToGetInput(visible);
+-
+-    if (visible) {
+-        m_applet->message_queue.PushMessage(AppletMessage::ChangeIntoForeground);
+-        m_applet->focus_state = FocusState::InFocus;
+-    } else {
+-        m_applet->focus_state = FocusState::NotInFocus;
+-    }
++    LOG_INFO(Service_AM, "called");
+ 
+-    m_applet->message_queue.PushMessage(AppletMessage::FocusStateChanged);
++    m_window_system.RequestAppletVisibilityState(*m_applet, visible);
+ 
+     R_SUCCEED();
+ }
+diff --git a/src/core/hle/service/am/service/window_controller.h b/src/core/hle/service/am/service/window_controller.h
+index bfbad9bcc635..a784dd4a490e 100644
+--- a/src/core/hle/service/am/service/window_controller.h
++++ b/src/core/hle/service/am/service/window_controller.h
+@@ -9,10 +9,12 @@
+ namespace Service::AM {
+ 
+ struct Applet;
++class WindowSystem;
+ 
+ class IWindowController final : public ServiceFramework<IWindowController> {
+ public:
+-    explicit IWindowController(Core::System& system_, std::shared_ptr<Applet> applet);
++    explicit IWindowController(Core::System& system_, std::shared_ptr<Applet> applet,
++                               WindowSystem& window_system);
+     ~IWindowController() override;
+ 
+ private:
+@@ -24,6 +26,7 @@ class IWindowController final : public ServiceFramework<IWindowController> {
+     Result SetAppletWindowVisibility(bool visible);
+     Result SetAppletGpuTimeSlice(s64 time_slice);
+ 
++    WindowSystem& m_window_system;
+     const std::shared_ptr<Applet> m_applet;
+ };
+ 
+diff --git a/src/core/hle/service/am/window_system.cpp b/src/core/hle/service/am/window_system.cpp
+new file mode 100644
+index 000000000000..5cf24007cc8e
+--- /dev/null
++++ b/src/core/hle/service/am/window_system.cpp
+@@ -0,0 +1,315 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/core.h"
++#include "core/hle/service/am/am_results.h"
++#include "core/hle/service/am/applet.h"
++#include "core/hle/service/am/applet_manager.h"
++#include "core/hle/service/am/event_observer.h"
++#include "core/hle/service/am/window_system.h"
++
++namespace Service::AM {
++
++WindowSystem::WindowSystem(Core::System& system) : m_system(system) {}
++
++WindowSystem::~WindowSystem() {
++    m_system.GetAppletManager().SetWindowSystem(nullptr);
++}
++
++void WindowSystem::SetEventObserver(EventObserver* observer) {
++    m_event_observer = observer;
++    m_system.GetAppletManager().SetWindowSystem(this);
++}
++
++void WindowSystem::Update() {
++    std::scoped_lock lk{m_lock};
++
++    // Loop through all applets and remove terminated applets.
++    this->PruneTerminatedAppletsLocked();
++
++    // If the home menu is being locked into the foreground, handle that.
++    if (this->LockHomeMenuIntoForegroundLocked()) {
++        return;
++    }
++
++    // Recursively update each applet root.
++    this->UpdateAppletStateLocked(m_home_menu, m_foreground_requested_applet == m_home_menu);
++    this->UpdateAppletStateLocked(m_application, m_foreground_requested_applet == m_application);
++}
++
++void WindowSystem::TrackApplet(std::shared_ptr<Applet> applet, bool is_application) {
++    std::scoped_lock lk{m_lock};
++
++    if (applet->applet_id == AppletId::QLaunch) {
++        ASSERT(m_home_menu == nullptr);
++        m_home_menu = applet.get();
++    } else if (is_application) {
++        ASSERT(m_application == nullptr);
++        m_application = applet.get();
++    }
++
++    m_event_observer->TrackAppletProcess(*applet);
++    m_applets.emplace(applet->aruid.pid, std::move(applet));
++}
++
++std::shared_ptr<Applet> WindowSystem::GetByAppletResourceUserId(u64 aruid) {
++    std::scoped_lock lk{m_lock};
++
++    const auto it = m_applets.find(aruid);
++    if (it == m_applets.end()) {
++        return nullptr;
++    }
++
++    return it->second;
++}
++
++std::shared_ptr<Applet> WindowSystem::GetMainApplet() {
++    std::scoped_lock lk{m_lock};
++
++    if (m_application) {
++        return m_applets.at(m_application->aruid.pid);
++    }
++
++    return nullptr;
++}
++
++void WindowSystem::RequestHomeMenuToGetForeground() {
++    {
++        std::scoped_lock lk{m_lock};
++        m_foreground_requested_applet = m_home_menu;
++    }
++
++    m_event_observer->RequestUpdate();
++}
++
++void WindowSystem::RequestApplicationToGetForeground() {
++    {
++        std::scoped_lock lk{m_lock};
++        m_foreground_requested_applet = m_application;
++    }
++
++    m_event_observer->RequestUpdate();
++}
++
++void WindowSystem::RequestLockHomeMenuIntoForeground() {
++    {
++        std::scoped_lock lk{m_lock};
++        m_home_menu_foreground_locked = true;
++    }
++
++    m_event_observer->RequestUpdate();
++}
++
++void WindowSystem::RequestUnlockHomeMenuIntoForeground() {
++    {
++        std::scoped_lock lk{m_lock};
++        m_home_menu_foreground_locked = false;
++    }
++
++    m_event_observer->RequestUpdate();
++}
++
++void WindowSystem::RequestAppletVisibilityState(Applet& applet, bool visible) {
++    {
++        std::scoped_lock lk{applet.lock};
++        applet.window_visible = visible;
++    }
++
++    m_event_observer->RequestUpdate();
++}
++
++void WindowSystem::OnOperationModeChanged() {
++    std::scoped_lock lk{m_lock};
++
++    for (const auto& [aruid, applet] : m_applets) {
++        std::scoped_lock lk2{applet->lock};
++        applet->lifecycle_manager.OnOperationAndPerformanceModeChanged();
++    }
++}
++
++void WindowSystem::OnExitRequested() {
++    std::scoped_lock lk{m_lock};
++
++    for (const auto& [aruid, applet] : m_applets) {
++        std::scoped_lock lk2{applet->lock};
++        applet->lifecycle_manager.RequestExit();
++    }
++}
++
++void WindowSystem::OnHomeButtonPressed(ButtonPressDuration type) {
++    std::scoped_lock lk{m_lock};
++
++    // If we don't have a home menu, nothing to do.
++    if (!m_home_menu) {
++        return;
++    }
++
++    // Lock.
++    std::scoped_lock lk2{m_home_menu->lock};
++
++    // Send home button press event to home menu.
++    if (type == ButtonPressDuration::ShortPressing) {
++        m_home_menu->lifecycle_manager.PushUnorderedMessage(
++            AppletMessage::DetectShortPressingHomeButton);
++    }
++}
++
++void WindowSystem::PruneTerminatedAppletsLocked() {
++    for (auto it = m_applets.begin(); it != m_applets.end(); /* ... */) {
++        const auto& [aruid, applet] = *it;
++
++        std::scoped_lock lk{applet->lock};
++
++        if (!applet->process->IsTerminated()) {
++            // Not terminated.
++            it = std::next(it);
++            continue;
++        }
++
++        // Terminated, so ensure all child applets are terminated.
++        if (!applet->child_applets.empty()) {
++            this->TerminateChildAppletsLocked(applet.get());
++
++            // Not ready to unlink until all child applets are terminated.
++            it = std::next(it);
++            continue;
++        }
++
++        // Erase from caller applet's list of children.
++        if (auto caller_applet = applet->caller_applet.lock(); caller_applet) {
++            std::scoped_lock lk2{caller_applet->lock};
++            std::erase(caller_applet->child_applets, applet);
++            applet->caller_applet.reset();
++
++            // We don't need to update the activity state of the caller applet yet.
++            // It will be recalculated once we fall out of the termination handling path.
++        }
++
++        // If this applet was foreground, it no longer is.
++        if (applet.get() == m_foreground_requested_applet) {
++            m_foreground_requested_applet = nullptr;
++        }
++
++        // If this was the home menu, we should clean up.
++        if (applet.get() == m_home_menu) {
++            m_home_menu = nullptr;
++            m_foreground_requested_applet = m_application;
++        }
++
++        // If this was the application, we should try to switch to the home menu.
++        if (applet.get() == m_application) {
++            m_application = nullptr;
++            m_foreground_requested_applet = m_home_menu;
++
++            // If we have a home menu, send it the application exited message.
++            if (m_home_menu) {
++                m_home_menu->lifecycle_manager.PushUnorderedMessage(
++                    AppletMessage::ApplicationExited);
++            }
++        }
++
++        // Finalize applet.
++        applet->OnProcessTerminatedLocked();
++
++        // Request update to ensure quiescence.
++        m_event_observer->RequestUpdate();
++
++        // Unlink and advance.
++        it = m_applets.erase(it);
++    }
++
++    // If the last applet has exited, exit the system.
++    if (m_applets.empty()) {
++        m_system.Exit();
++    }
++}
++
++bool WindowSystem::LockHomeMenuIntoForegroundLocked() {
++    // If the home menu is not locked into foreground, then there's nothing to do.
++    if (m_home_menu == nullptr || !m_home_menu_foreground_locked) {
++        m_home_menu_foreground_locked = false;
++        return false;
++    }
++
++    // Terminate any direct child applets of the home menu.
++    std::scoped_lock lk{m_home_menu->lock};
++
++    this->TerminateChildAppletsLocked(m_home_menu);
++
++    // When there are zero child applets left, we can proceed with the update.
++    if (m_home_menu->child_applets.empty()) {
++        m_home_menu->window_visible = true;
++        m_foreground_requested_applet = m_home_menu;
++        return false;
++    }
++
++    return true;
++}
++
++void WindowSystem::TerminateChildAppletsLocked(Applet* applet) {
++    auto child_applets = applet->child_applets;
++
++    applet->lock.unlock();
++    for (const auto& child_applet : child_applets) {
++        std::scoped_lock lk{child_applet->lock};
++        child_applet->process->Terminate();
++        child_applet->terminate_result = AM::ResultLibraryAppletTerminated;
++    }
++    applet->lock.lock();
++}
++
++void WindowSystem::UpdateAppletStateLocked(Applet* applet, bool is_foreground) {
++    // With no applet, we don't have anything to do.
++    if (!applet) {
++        return;
++    }
++
++    std::scoped_lock lk{applet->lock};
++
++    const bool inherited_foreground = applet->is_process_running && is_foreground;
++    const auto visible_state =
++        inherited_foreground ? ActivityState::ForegroundVisible : ActivityState::BackgroundVisible;
++    const auto obscured_state = inherited_foreground ? ActivityState::ForegroundObscured
++                                                     : ActivityState::BackgroundObscured;
++
++    const bool has_obscuring_child_applets = [&] {
++        for (const auto& child_applet : applet->child_applets) {
++            std::scoped_lock lk2{child_applet->lock};
++            const auto mode = child_applet->library_applet_mode;
++            if (child_applet->is_process_running && child_applet->window_visible &&
++                (mode == LibraryAppletMode::AllForeground ||
++                 mode == LibraryAppletMode::AllForegroundInitiallyHidden)) {
++                return true;
++            }
++        }
++
++        return false;
++    }();
++
++    // Update visibility state.
++    applet->display_layer_manager.SetWindowVisibility(is_foreground && applet->window_visible);
++
++    // Update interactibility state.
++    applet->SetInteractibleLocked(is_foreground && applet->window_visible);
++
++    // Update focus state and suspension.
++    const bool is_obscured = has_obscuring_child_applets || !applet->window_visible;
++    const auto state = applet->lifecycle_manager.GetActivityState();
++
++    if (is_obscured && state != obscured_state) {
++        // Set obscured state.
++        applet->lifecycle_manager.SetActivityState(obscured_state);
++        applet->UpdateSuspensionStateLocked(true);
++    } else if (!is_obscured && state != visible_state) {
++        // Set visible state.
++        applet->lifecycle_manager.SetActivityState(visible_state);
++        applet->UpdateSuspensionStateLocked(true);
++    }
++
++    // Recurse into child applets.
++    for (const auto& child_applet : applet->child_applets) {
++        this->UpdateAppletStateLocked(child_applet.get(), is_foreground);
++    }
++}
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/am/window_system.h b/src/core/hle/service/am/window_system.h
+new file mode 100644
+index 000000000000..69e7a27ba56f
+--- /dev/null
++++ b/src/core/hle/service/am/window_system.h
+@@ -0,0 +1,83 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <map>
++#include <memory>
++#include <mutex>
++
++#include "common/common_types.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::AM {
++
++struct Applet;
++class EventObserver;
++
++enum class ButtonPressDuration {
++    ShortPressing,
++    MiddlePressing,
++    LongPressing,
++};
++
++class WindowSystem {
++public:
++    explicit WindowSystem(Core::System& system);
++    ~WindowSystem();
++
++public:
++    void SetEventObserver(EventObserver* event_observer);
++    void Update();
++
++public:
++    void TrackApplet(std::shared_ptr<Applet> applet, bool is_application);
++    std::shared_ptr<Applet> GetByAppletResourceUserId(u64 aruid);
++    std::shared_ptr<Applet> GetMainApplet();
++
++public:
++    void RequestHomeMenuToGetForeground();
++    void RequestApplicationToGetForeground();
++    void RequestLockHomeMenuIntoForeground();
++    void RequestUnlockHomeMenuIntoForeground();
++    void RequestAppletVisibilityState(Applet& applet, bool visible);
++
++public:
++    void OnOperationModeChanged();
++    void OnExitRequested();
++    void OnHomeButtonPressed(ButtonPressDuration type);
++    void OnCaptureButtonPressed(ButtonPressDuration type) {}
++    void OnPowerButtonPressed(ButtonPressDuration type) {}
++
++private:
++    void PruneTerminatedAppletsLocked();
++    bool LockHomeMenuIntoForegroundLocked();
++    void TerminateChildAppletsLocked(Applet* applet);
++    void UpdateAppletStateLocked(Applet* applet, bool is_foreground);
++
++private:
++    // System reference.
++    Core::System& m_system;
++
++    // Event observer.
++    EventObserver* m_event_observer{};
++
++    // Lock.
++    std::mutex m_lock{};
++
++    // Home menu state.
++    bool m_home_menu_foreground_locked{};
++    Applet* m_foreground_requested_applet{};
++
++    // Foreground roots.
++    Applet* m_home_menu{};
++    Applet* m_application{};
++
++    // Applet map by aruid.
++    std::map<u64, std::shared_ptr<Applet>> m_applets{};
++};
++
++} // namespace Service::AM
+diff --git a/src/core/hle/service/hid/hid.cpp b/src/core/hle/service/hid/hid.cpp
+index 1fa9cfbfb1e0..47eedd73b2bd 100644
+--- a/src/core/hle/service/hid/hid.cpp
++++ b/src/core/hle/service/hid/hid.cpp
+@@ -23,11 +23,7 @@ void LoopProcess(Core::System& system) {
+     std::shared_ptr<ResourceManager> resource_manager =
+         std::make_shared<ResourceManager>(system, firmware_settings);
+ 
+-    // TODO: Remove this hack when am is emulated properly.
+     resource_manager->Initialize();
+-    resource_manager->RegisterAppletResourceUserId(system.ApplicationProcess()->GetProcessId(),
+-                                                   true);
+-    resource_manager->SetAruidValidForVibration(system.ApplicationProcess()->GetProcessId(), true);
+ 
+     server_manager->RegisterNamedService(
+         "hid", std::make_shared<IHidServer>(system, resource_manager, firmware_settings));
+diff --git a/src/core/hle/service/am/process.cpp b/src/core/hle/service/os/process.cpp
+similarity index 58%
+rename from src/core/hle/service/am/process.cpp
+rename to src/core/hle/service/os/process.cpp
+index 388d2045c828..0dbadc315ed6 100644
+--- a/src/core/hle/service/am/process.cpp
++++ b/src/core/hle/service/os/process.cpp
+@@ -3,66 +3,25 @@
+ 
+ #include "common/scope_exit.h"
+ 
+-#include "core/file_sys/content_archive.h"
+-#include "core/file_sys/nca_metadata.h"
+-#include "core/file_sys/registered_cache.h"
+ #include "core/hle/kernel/k_process.h"
+-#include "core/hle/service/am/process.h"
+-#include "core/hle/service/filesystem/filesystem.h"
++#include "core/hle/kernel/svc_types.h"
++#include "core/hle/service/os/process.h"
+ #include "core/loader/loader.h"
+ 
+-namespace Service::AM {
++namespace Service {
+ 
+ Process::Process(Core::System& system)
+     : m_system(system), m_process(), m_main_thread_priority(), m_main_thread_stack_size(),
+-      m_program_id(), m_process_started() {}
++      m_process_started() {}
+ 
+ Process::~Process() {
+     this->Finalize();
+ }
+ 
+-bool Process::Initialize(u64 program_id, u8 minimum_key_generation, u8 maximum_key_generation) {
++bool Process::Initialize(Loader::AppLoader& loader, Loader::ResultStatus& out_load_result) {
+     // First, ensure we are not holding another process.
+     this->Finalize();
+ 
+-    // Get the filesystem controller.
+-    auto& fsc = m_system.GetFileSystemController();
+-
+-    // Attempt to load program NCA.
+-    const FileSys::RegisteredCache* bis_system{};
+-    FileSys::VirtualFile nca_raw{};
+-
+-    // Get the program NCA from built-in storage.
+-    bis_system = fsc.GetSystemNANDContents();
+-    if (bis_system) {
+-        nca_raw = bis_system->GetEntryRaw(program_id, FileSys::ContentRecordType::Program);
+-    }
+-
+-    // Ensure we retrieved a program NCA.
+-    if (!nca_raw) {
+-        return false;
+-    }
+-
+-    // Ensure we have a suitable version.
+-    if (minimum_key_generation > 0) {
+-        FileSys::NCA nca(nca_raw);
+-        if (nca.GetStatus() == Loader::ResultStatus::Success &&
+-            (nca.GetKeyGeneration() < minimum_key_generation ||
+-             nca.GetKeyGeneration() > maximum_key_generation)) {
+-            LOG_WARNING(Service_LDR, "Skipping program {:016X} with generation {}", program_id,
+-                        nca.GetKeyGeneration());
+-            return false;
+-        }
+-    }
+-
+-    // Get the appropriate loader to parse this NCA.
+-    auto app_loader = Loader::GetLoader(m_system, nca_raw, program_id, 0);
+-
+-    // Ensure we have a loader which can parse the NCA.
+-    if (!app_loader) {
+-        return false;
+-    }
+-
+     // Create the process.
+     auto* const process = Kernel::KProcess::Create(m_system.Kernel());
+     Kernel::KProcess::Register(m_system.Kernel(), process);
+@@ -73,7 +32,8 @@ bool Process::Initialize(u64 program_id, u8 minimum_key_generation, u8 maximum_k
+     };
+ 
+     // Insert process modules into memory.
+-    const auto [load_result, load_parameters] = app_loader->Load(*process, m_system);
++    const auto [load_result, load_parameters] = loader.Load(*process, m_system);
++    out_load_result = load_result;
+ 
+     // Ensure loading was successful.
+     if (load_result != Loader::ResultStatus::Success) {
+@@ -114,7 +74,6 @@ void Process::Finalize() {
+     m_process = nullptr;
+     m_main_thread_priority = 0;
+     m_main_thread_stack_size = 0;
+-    m_program_id = 0;
+     m_process_started = false;
+ }
+ 
+@@ -142,6 +101,31 @@ void Process::Terminate() {
+     }
+ }
+ 
++void Process::ResetSignal() {
++    if (m_process) {
++        m_process->Reset();
++    }
++}
++
++bool Process::IsRunning() const {
++    if (m_process) {
++        const auto state = m_process->GetState();
++        return state == Kernel::KProcess::State::Running ||
++               state == Kernel::KProcess::State::RunningAttached ||
++               state == Kernel::KProcess::State::DebugBreak;
++    }
++
++    return false;
++}
++
++bool Process::IsTerminated() const {
++    if (m_process) {
++        return m_process->IsTerminated();
++    }
++
++    return false;
++}
++
+ u64 Process::GetProcessId() const {
+     if (m_process) {
+         return m_process->GetProcessId();
+@@ -150,4 +134,19 @@ u64 Process::GetProcessId() const {
+     return 0;
+ }
+ 
+-} // namespace Service::AM
++u64 Process::GetProgramId() const {
++    if (m_process) {
++        return m_process->GetProgramId();
++    }
++
++    return 0;
++}
++
++void Process::Suspend(bool suspended) {
++    if (m_process) {
++        m_process->SetActivity(suspended ? Kernel::Svc::ProcessActivity::Paused
++                                         : Kernel::Svc::ProcessActivity::Runnable);
++    }
++}
++
++} // namespace Service
+diff --git a/src/core/hle/service/am/process.h b/src/core/hle/service/os/process.h
+similarity index 62%
+rename from src/core/hle/service/am/process.h
+rename to src/core/hle/service/os/process.h
+index 4b8102fb6b5d..9109b7d0a58e 100644
+--- a/src/core/hle/service/am/process.h
++++ b/src/core/hle/service/os/process.h
+@@ -3,38 +3,47 @@
+ 
+ #pragma once
+ 
+-#include "common/common_funcs.h"
+ #include "common/common_types.h"
+ 
+-namespace Kernel {
+-class KProcess;
+-}
+-
+ namespace Core {
+ class System;
+ }
+ 
+-namespace Service::AM {
++namespace Loader {
++class AppLoader;
++enum class ResultStatus : u16;
++} // namespace Loader
++
++namespace Kernel {
++class KProcess;
++}
++
++namespace Service {
+ 
+ class Process {
+ public:
+     explicit Process(Core::System& system);
+     ~Process();
+ 
+-    bool Initialize(u64 program_id, u8 minimum_key_generation, u8 maximum_key_generation);
++    bool Initialize(Loader::AppLoader& loader, Loader::ResultStatus& out_load_result);
+     void Finalize();
+ 
+     bool Run();
+     void Terminate();
++    void Suspend(bool suspended);
++    void ResetSignal();
+ 
+     bool IsInitialized() const {
+         return m_process != nullptr;
+     }
++
++    bool IsRunning() const;
++    bool IsTerminated() const;
++
+     u64 GetProcessId() const;
+-    u64 GetProgramId() const {
+-        return m_program_id;
+-    }
+-    Kernel::KProcess* GetProcess() const {
++    u64 GetProgramId() const;
++
++    Kernel::KProcess* GetHandle() const {
+         return m_process;
+     }
+ 
+@@ -43,8 +52,7 @@ class Process {
+     Kernel::KProcess* m_process{};
+     s32 m_main_thread_priority{};
+     u64 m_main_thread_stack_size{};
+-    u64 m_program_id{};
+     bool m_process_started{};
+ };
+ 
+-} // namespace Service::AM
++} // namespace Service
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 8775369a417b..6f7703fced77 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -49,8 +49,7 @@ struct Memory::Impl {
+     void SetCurrentPageTable(Kernel::KProcess& process) {
+         current_page_table = &process.GetPageTable().GetImpl();
+ 
+-        if (std::addressof(process) == system.ApplicationProcess() &&
+-            Settings::IsFastmemEnabled()) {
++        if (process.IsApplication() && Settings::IsFastmemEnabled()) {
+             current_page_table->fastmem_arena = system.DeviceMemory().buffer.VirtualBasePointer();
+         } else {
+             current_page_table->fastmem_arena = nullptr;
+diff --git a/src/yuzu/main.cpp b/src/yuzu/main.cpp
+index c0c0a19b85ee..19aaff7c67b1 100644
+--- a/src/yuzu/main.cpp
++++ b/src/yuzu/main.cpp
+@@ -1461,7 +1461,6 @@ void GMainWindow::OnAppFocusStateChanged(Qt::ApplicationState state) {
+             OnPauseGame();
+         } else if (!emu_thread->IsRunning() && auto_paused && state == Qt::ApplicationActive) {
+             auto_paused = false;
+-            RequestGameResume();
+             OnStartGame();
+         }
+     }
+@@ -1702,7 +1701,6 @@ void GMainWindow::OnPrepareForSleep(bool prepare_sleep) {
+     } else {
+         if (!emu_thread->IsRunning() && auto_paused) {
+             auto_paused = false;
+-            RequestGameResume();
+             OnStartGame();
+         }
+     }
+@@ -3457,7 +3455,6 @@ void GMainWindow::OnPauseContinueGame() {
+         if (emu_thread->IsRunning()) {
+             OnPauseGame();
+         } else {
+-            RequestGameResume();
+             OnStartGame();
+         }
+     }
+@@ -5013,10 +5010,6 @@ void GMainWindow::RequestGameExit() {
+     system->GetAppletManager().RequestExit();
+ }
+ 
+-void GMainWindow::RequestGameResume() {
+-    system->GetAppletManager().RequestResume();
+-}
+-
+ void GMainWindow::filterBarSetChecked(bool state) {
+     ui->action_Show_Filter_Bar->setChecked(state);
+     emit(OnToggleFilterBar());
+diff --git a/src/yuzu/main.h b/src/yuzu/main.h
+index fce643f3f899..cb68f5a751dc 100644
+--- a/src/yuzu/main.h
++++ b/src/yuzu/main.h
+@@ -310,7 +310,6 @@ public slots:
+     bool ConfirmChangeGame();
+     bool ConfirmForceLockedExit();
+     void RequestGameExit();
+-    void RequestGameResume();
+     void changeEvent(QEvent* event) override;
+     void closeEvent(QCloseEvent* event) override;
+ 

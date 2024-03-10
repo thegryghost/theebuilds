@@ -1,0 +1,81 @@
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv.cpp b/src/shader_recompiler/backend/spirv/emit_spirv.cpp
+index 0031fa5fbef3..3f9698d6bf19 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv.cpp
+@@ -261,7 +261,9 @@ void DefineEntryPoint(const IR::Program& program, EmitContext& ctx, Id main) {
+     case Stage::Geometry:
+         execution_model = spv::ExecutionModel::Geometry;
+         ctx.AddCapability(spv::Capability::Geometry);
+-        ctx.AddCapability(spv::Capability::GeometryStreams);
++        if (ctx.profile.support_geometry_streams) {
++            ctx.AddCapability(spv::Capability::GeometryStreams);
++        }
+         switch (ctx.runtime_info.input_topology) {
+         case InputTopology::Points:
+             ctx.AddExecutionMode(main, spv::ExecutionMode::InputPoints);
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_special.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_special.cpp
+index 9f7b6bb4beb0..f60da758e6b4 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_special.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_special.cpp
+@@ -129,7 +129,9 @@ void EmitEmitVertex(EmitContext& ctx, const IR::Value& stream) {
+     if (ctx.runtime_info.convert_depth_mode && !ctx.profile.support_native_ndc) {
+         ConvertDepthMode(ctx);
+     }
+-    if (stream.IsImmediate()) {
++    if (!ctx.profile.support_geometry_streams) {
++        throw NotImplementedException("Geometry streams");
++    } else if (stream.IsImmediate()) {
+         ctx.OpEmitStreamVertex(ctx.Def(stream));
+     } else {
+         LOG_WARNING(Shader_SPIRV, "Stream is not immediate");
+@@ -140,7 +142,9 @@ void EmitEmitVertex(EmitContext& ctx, const IR::Value& stream) {
+ }
+ 
+ void EmitEndPrimitive(EmitContext& ctx, const IR::Value& stream) {
+-    if (stream.IsImmediate()) {
++    if (!ctx.profile.support_geometry_streams) {
++        throw NotImplementedException("Geometry streams");
++    } else if (stream.IsImmediate()) {
+         ctx.OpEndStreamPrimitive(ctx.Def(stream));
+     } else {
+         LOG_WARNING(Shader_SPIRV, "Stream is not immediate");
+diff --git a/src/shader_recompiler/profile.h b/src/shader_recompiler/profile.h
+index 7578d41cc094..90e46bb1ba0c 100644
+--- a/src/shader_recompiler/profile.h
++++ b/src/shader_recompiler/profile.h
+@@ -44,6 +44,7 @@ struct Profile {
+     bool support_gl_derivative_control{};
+     bool support_scaled_attributes{};
+     bool support_multi_viewport{};
++    bool support_geometry_streams{};
+ 
+     bool warp_size_potentially_larger_than_guest{};
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 20f7a970278d..d34b585d67bc 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -352,6 +352,7 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
+         .support_native_ndc = device.IsExtDepthClipControlSupported(),
+         .support_scaled_attributes = !device.MustEmulateScaledFormats(),
+         .support_multi_viewport = device.SupportsMultiViewport(),
++        .support_geometry_streams = device.AreTransformFeedbackGeometryStreamsSupported(),
+ 
+         .warp_size_potentially_larger_than_guest = device.IsWarpSizePotentiallyBiggerThanGuest(),
+ 
+diff --git a/src/video_core/vulkan_common/vulkan_device.h b/src/video_core/vulkan_common/vulkan_device.h
+index a2ec26697cdb..e3abe8ddfabb 100644
+--- a/src/video_core/vulkan_common/vulkan_device.h
++++ b/src/video_core/vulkan_common/vulkan_device.h
+@@ -499,6 +499,11 @@ class Device {
+         return extensions.transform_feedback;
+     }
+ 
++    /// Returns true if the device supports VK_EXT_transform_feedback properly.
++    bool AreTransformFeedbackGeometryStreamsSupported() const {
++        return features.transform_feedback.geometryStreams;
++    }
++
+     /// Returns true if the device supports VK_EXT_custom_border_color.
+     bool IsExtCustomBorderColorSupported() const {
+         return extensions.custom_border_color;

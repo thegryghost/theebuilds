@@ -1,0 +1,91 @@
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index 6d3d933c59e1..3818e00f4ff8 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -35,7 +35,7 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
+     const s64 min_spacing_critical = device_local_memory - 512_MiB;
+     const s64 mem_threshold = std::min(device_local_memory, TARGET_THRESHOLD);
+     const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
+-    const s64 min_vacancy_critical = (3 * mem_threshold) / 10;
++    const s64 min_vacancy_critical = (2 * mem_threshold) / 10;
+     minimum_memory = static_cast<u64>(
+         std::max(std::min(device_local_memory - min_vacancy_expected, min_spacing_expected),
+                  DEFAULT_EXPECTED_MEMORY));
+diff --git a/src/video_core/surface.cpp b/src/video_core/surface.cpp
+index 5b3c7aa5aa3d..9055b1b9292e 100644
+--- a/src/video_core/surface.cpp
++++ b/src/video_core/surface.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "common/common_types.h"
+ #include "common/math_util.h"
++#include "common/settings.h"
+ #include "video_core/surface.h"
+ 
+ namespace VideoCore::Surface {
+@@ -400,11 +401,20 @@ std::pair<u32, u32> GetASTCBlockSize(PixelFormat format) {
+     return {DefaultBlockWidth(format), DefaultBlockHeight(format)};
+ }
+ 
+-u64 EstimatedDecompressedSize(u64 base_size, PixelFormat format) {
++u64 TranscodedAstcSize(u64 base_size, PixelFormat format) {
+     constexpr u64 RGBA8_PIXEL_SIZE = 4;
+     const u64 base_block_size = static_cast<u64>(DefaultBlockWidth(format)) *
+                                 static_cast<u64>(DefaultBlockHeight(format)) * RGBA8_PIXEL_SIZE;
+-    return (base_size * base_block_size) / BytesPerBlock(format);
++    const u64 uncompressed_size = (base_size * base_block_size) / BytesPerBlock(format);
++
++    switch (Settings::values.astc_recompression.GetValue()) {
++    case Settings::AstcRecompression::Bc1:
++        return uncompressed_size / 8;
++    case Settings::AstcRecompression::Bc3:
++        return uncompressed_size / 4;
++    default:
++        return uncompressed_size;
++    }
+ }
+ 
+ } // namespace VideoCore::Surface
+diff --git a/src/video_core/surface.h b/src/video_core/surface.h
+index a5e8e2f62f20..ec9cd2fbf095 100644
+--- a/src/video_core/surface.h
++++ b/src/video_core/surface.h
+@@ -517,6 +517,6 @@ size_t PixelComponentSizeBitsInteger(PixelFormat format);
+ 
+ std::pair<u32, u32> GetASTCBlockSize(PixelFormat format);
+ 
+-u64 EstimatedDecompressedSize(u64 base_size, PixelFormat format);
++u64 TranscodedAstcSize(u64 base_size, PixelFormat format);
+ 
+ } // namespace VideoCore::Surface
+diff --git a/src/video_core/texture_cache/texture_cache.h b/src/video_core/texture_cache/texture_cache.h
+index a20c956ffc04..ca07942144a7 100644
+--- a/src/video_core/texture_cache/texture_cache.h
++++ b/src/video_core/texture_cache/texture_cache.h
+@@ -55,7 +55,7 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
+         const s64 min_spacing_critical = device_local_memory - 512_MiB;
+         const s64 mem_threshold = std::min(device_local_memory, TARGET_THRESHOLD);
+         const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
+-        const s64 min_vacancy_critical = (3 * mem_threshold) / 10;
++        const s64 min_vacancy_critical = (2 * mem_threshold) / 10;
+         expected_memory = static_cast<u64>(
+             std::max(std::min(device_local_memory - min_vacancy_expected, min_spacing_expected),
+                      DEFAULT_EXPECTED_MEMORY));
+@@ -1972,7 +1972,7 @@ void TextureCache<P>::RegisterImage(ImageId image_id) {
+     if ((IsPixelFormatASTC(image.info.format) &&
+          True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
+         True(image.flags & ImageFlagBits::Converted)) {
+-        tentative_size = EstimatedDecompressedSize(tentative_size, image.info.format);
++        tentative_size = TranscodedAstcSize(tentative_size, image.info.format);
+     }
+     total_used_memory += Common::AlignUp(tentative_size, 1024);
+     image.lru_index = lru_cache.Insert(image_id, frame_tick);
+@@ -2142,7 +2142,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
+     if ((IsPixelFormatASTC(image.info.format) &&
+          True(image.flags & ImageFlagBits::AcceleratedUpload)) ||
+         True(image.flags & ImageFlagBits::Converted)) {
+-        tentative_size = EstimatedDecompressedSize(tentative_size, image.info.format);
++        tentative_size = TranscodedAstcSize(tentative_size, image.info.format);
+     }
+     total_used_memory -= Common::AlignUp(tentative_size, 1024);
+     const GPUVAddr gpu_addr = image.gpu_addr;

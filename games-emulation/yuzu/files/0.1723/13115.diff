@@ -1,0 +1,2219 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index f67a12f8f725..45b4b203d034 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -860,8 +860,20 @@ add_library(core STATIC
+     hle/service/nvnflinger/ui/graphic_buffer.cpp
+     hle/service/nvnflinger/ui/graphic_buffer.h
+     hle/service/nvnflinger/window.h
++    hle/service/olsc/daemon_controller.cpp
++    hle/service/olsc/daemon_controller.h
++    hle/service/olsc/native_handle_holder.cpp
++    hle/service/olsc/native_handle_holder.h
++    hle/service/olsc/olsc_service_for_application.cpp
++    hle/service/olsc/olsc_service_for_application.h
++    hle/service/olsc/olsc_service_for_system_service.cpp
++    hle/service/olsc/olsc_service_for_system_service.h
+     hle/service/olsc/olsc.cpp
+     hle/service/olsc/olsc.h
++    hle/service/olsc/remote_storage_controller.cpp
++    hle/service/olsc/remote_storage_controller.h
++    hle/service/olsc/transfer_task_list_controller.cpp
++    hle/service/olsc/transfer_task_list_controller.h
+     hle/service/omm/omm.cpp
+     hle/service/omm/omm.h
+     hle/service/omm/operation_mode_manager.cpp
+@@ -881,10 +893,14 @@ add_library(core STATIC
+     hle/service/os/mutex.h
+     hle/service/pcie/pcie.cpp
+     hle/service/pcie/pcie.h
++    hle/service/pctl/parental_control_service_factory.cpp
++    hle/service/pctl/parental_control_service_factory.h
++    hle/service/pctl/parental_control_service.cpp
++    hle/service/pctl/parental_control_service.h
+     hle/service/pctl/pctl.cpp
+     hle/service/pctl/pctl.h
+-    hle/service/pctl/pctl_module.cpp
+-    hle/service/pctl/pctl_module.h
++    hle/service/pctl/pctl_results.h
++    hle/service/pctl/pctl_types.h
+     hle/service/pcv/pcv.cpp
+     hle/service/pcv/pcv.h
+     hle/service/pm/pm.cpp
+diff --git a/src/core/hle/service/olsc/daemon_controller.cpp b/src/core/hle/service/olsc/daemon_controller.cpp
+new file mode 100644
+index 000000000000..7823780a8470
+--- /dev/null
++++ b/src/core/hle/service/olsc/daemon_controller.cpp
+@@ -0,0 +1,40 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/olsc/daemon_controller.h"
++
++namespace Service::OLSC {
++
++IDaemonController::IDaemonController(Core::System& system_)
++    : ServiceFramework{system_, "IDaemonController"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, D<&IDaemonController::GetAutoTransferEnabledForAccountAndApplication>, "GetAutoTransferEnabledForAccountAndApplication"},
++        {1, nullptr, "SetAutoTransferEnabledForAccountAndApplication"},
++        {2, nullptr, "GetGlobalUploadEnabledForAccount"},
++        {3, nullptr, "SetGlobalUploadEnabledForAccount"},
++        {4, nullptr, "TouchAccount"},
++        {5, nullptr, "GetGlobalDownloadEnabledForAccount"},
++        {6, nullptr, "SetGlobalDownloadEnabledForAccount"},
++        {10, nullptr, "GetForbiddenSaveDataIndication"},
++        {11, nullptr, "GetStopperObject"},
++        {12, nullptr, "GetState"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IDaemonController::~IDaemonController() = default;
++
++Result IDaemonController::GetAutoTransferEnabledForAccountAndApplication(Out<bool> out_is_enabled,
++                                                                         Common::UUID user_id,
++                                                                         u64 application_id) {
++    LOG_WARNING(Service_OLSC, "(STUBBED) called, user_id={} application_id={:016X}",
++                user_id.FormattedString(), application_id);
++    *out_is_enabled = false;
++    R_SUCCEED();
++}
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/daemon_controller.h b/src/core/hle/service/olsc/daemon_controller.h
+new file mode 100644
+index 000000000000..dfad7f52a8e2
+--- /dev/null
++++ b/src/core/hle/service/olsc/daemon_controller.h
+@@ -0,0 +1,20 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "common/uuid.h"
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Service::OLSC {
++
++class IDaemonController final : public ServiceFramework<IDaemonController> {
++public:
++    explicit IDaemonController(Core::System& system_);
++    ~IDaemonController() override;
++
++private:
++    Result GetAutoTransferEnabledForAccountAndApplication(Out<bool> out_is_enabled,
++                                                          Common::UUID user_id, u64 application_id);
++};
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/native_handle_holder.cpp b/src/core/hle/service/olsc/native_handle_holder.cpp
+new file mode 100644
+index 000000000000..3cb5d7b11483
+--- /dev/null
++++ b/src/core/hle/service/olsc/native_handle_holder.cpp
+@@ -0,0 +1,28 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/olsc/native_handle_holder.h"
++
++namespace Service::OLSC {
++
++INativeHandleHolder::INativeHandleHolder(Core::System& system_)
++    : ServiceFramework{system_, "INativeHandleHolder"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, D<&INativeHandleHolder::GetNativeHandle>, "GetNativeHandle"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++INativeHandleHolder::~INativeHandleHolder() = default;
++
++Result INativeHandleHolder::GetNativeHandle(OutCopyHandle<Kernel::KReadableEvent> out_event) {
++    LOG_WARNING(Service_OLSC, "(STUBBED) called");
++    *out_event = nullptr;
++    R_SUCCEED();
++}
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/native_handle_holder.h b/src/core/hle/service/olsc/native_handle_holder.h
+new file mode 100644
+index 000000000000..a44754c2010d
+--- /dev/null
++++ b/src/core/hle/service/olsc/native_handle_holder.h
+@@ -0,0 +1,22 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Kernel {
++class KReadableEvent;
++}
++
++namespace Service::OLSC {
++
++class INativeHandleHolder final : public ServiceFramework<INativeHandleHolder> {
++public:
++    explicit INativeHandleHolder(Core::System& system_);
++    ~INativeHandleHolder() override;
++
++private:
++    Result GetNativeHandle(OutCopyHandle<Kernel::KReadableEvent> out_event);
++};
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/olsc.cpp b/src/core/hle/service/olsc/olsc.cpp
+index 889f27c31bcb..18e5ad43f8af 100644
+--- a/src/core/hle/service/olsc/olsc.cpp
++++ b/src/core/hle/service/olsc/olsc.cpp
+@@ -1,226 +1,27 @@
+ // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#include "core/hle/service/ipc_helpers.h"
+ #include "core/hle/service/olsc/olsc.h"
++#include "core/hle/service/olsc/olsc_service_for_application.h"
++#include "core/hle/service/olsc/olsc_service_for_system_service.h"
+ #include "core/hle/service/server_manager.h"
+ #include "core/hle/service/service.h"
+ 
+ namespace Service::OLSC {
+ 
+-class IOlscServiceForApplication final : public ServiceFramework<IOlscServiceForApplication> {
+-public:
+-    explicit IOlscServiceForApplication(Core::System& system_)
+-        : ServiceFramework{system_, "olsc:u"} {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {0, &IOlscServiceForApplication::Initialize, "Initialize"},
+-            {10, nullptr, "VerifySaveDataBackupLicenseAsync"},
+-            {13, &IOlscServiceForApplication::GetSaveDataBackupSetting, "GetSaveDataBackupSetting"},
+-            {14, &IOlscServiceForApplication::SetSaveDataBackupSettingEnabled, "SetSaveDataBackupSettingEnabled"},
+-            {15, nullptr, "SetCustomData"},
+-            {16, nullptr, "DeleteSaveDataBackupSetting"},
+-            {18, nullptr, "GetSaveDataBackupInfoCache"},
+-            {19, nullptr, "UpdateSaveDataBackupInfoCacheAsync"},
+-            {22, nullptr, "DeleteSaveDataBackupAsync"},
+-            {25, nullptr, "ListDownloadableSaveDataBackupInfoAsync"},
+-            {26, nullptr, "DownloadSaveDataBackupAsync"},
+-            {27, nullptr, "UploadSaveDataBackupAsync"},
+-            {9010, nullptr, "VerifySaveDataBackupLicenseAsyncForDebug"},
+-            {9013, nullptr, "GetSaveDataBackupSettingForDebug"},
+-            {9014, nullptr, "SetSaveDataBackupSettingEnabledForDebug"},
+-            {9015, nullptr, "SetCustomDataForDebug"},
+-            {9016, nullptr, "DeleteSaveDataBackupSettingForDebug"},
+-            {9018, nullptr, "GetSaveDataBackupInfoCacheForDebug"},
+-            {9019, nullptr, "UpdateSaveDataBackupInfoCacheAsyncForDebug"},
+-            {9022, nullptr, "DeleteSaveDataBackupAsyncForDebug"},
+-            {9025, nullptr, "ListDownloadableSaveDataBackupInfoAsyncForDebug"},
+-            {9026, nullptr, "DownloadSaveDataBackupAsyncForDebug"},
+-        };
+-        // clang-format on
+-
+-        RegisterHandlers(functions);
+-    }
+-
+-private:
+-    void Initialize(HLERequestContext& ctx) {
+-        LOG_WARNING(Service_OLSC, "(STUBBED) called");
+-
+-        initialized = true;
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void GetSaveDataBackupSetting(HLERequestContext& ctx) {
+-        LOG_WARNING(Service_OLSC, "(STUBBED) called");
+-
+-        // backup_setting is set to 0 since real value is unknown
+-        constexpr u64 backup_setting = 0;
+-
+-        IPC::ResponseBuilder rb{ctx, 4};
+-        rb.Push(ResultSuccess);
+-        rb.Push(backup_setting);
+-    }
+-
+-    void SetSaveDataBackupSettingEnabled(HLERequestContext& ctx) {
+-        LOG_WARNING(Service_OLSC, "(STUBBED) called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    bool initialized{};
+-};
+-
+-class INativeHandleHolder final : public ServiceFramework<INativeHandleHolder> {
+-public:
+-    explicit INativeHandleHolder(Core::System& system_)
+-        : ServiceFramework{system_, "INativeHandleHolder"} {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {0, nullptr, "GetNativeHandle"},
+-        };
+-        // clang-format on
+-
+-        RegisterHandlers(functions);
+-    }
+-};
+-
+-class ITransferTaskListController final : public ServiceFramework<ITransferTaskListController> {
+-public:
+-    explicit ITransferTaskListController(Core::System& system_)
+-        : ServiceFramework{system_, "ITransferTaskListController"} {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {0, nullptr, "Unknown0"},
+-            {1, nullptr, "Unknown1"},
+-            {2, nullptr, "Unknown2"},
+-            {3, nullptr, "Unknown3"},
+-            {4, nullptr, "Unknown4"},
+-            {5, &ITransferTaskListController::GetNativeHandleHolder , "GetNativeHandleHolder"},
+-            {6, nullptr, "Unknown6"},
+-            {7, nullptr, "Unknown7"},
+-            {8, nullptr, "GetRemoteStorageController"},
+-            {9, &ITransferTaskListController::GetNativeHandleHolder, "GetNativeHandleHolder2"},
+-            {10, nullptr, "Unknown10"},
+-            {11, nullptr, "Unknown11"},
+-            {12, nullptr, "Unknown12"},
+-            {13, nullptr, "Unknown13"},
+-            {14, nullptr, "Unknown14"},
+-            {15, nullptr, "Unknown15"},
+-            {16, nullptr, "Unknown16"},
+-            {17, nullptr, "Unknown17"},
+-            {18, nullptr, "Unknown18"},
+-            {19, nullptr, "Unknown19"},
+-            {20, nullptr, "Unknown20"},
+-            {21, nullptr, "Unknown21"},
+-            {22, nullptr, "Unknown22"},
+-            {23, nullptr, "Unknown23"},
+-            {24, nullptr, "Unknown24"},
+-            {25, nullptr, "Unknown25"},
+-        };
+-        // clang-format on
+-
+-        RegisterHandlers(functions);
+-    }
+-
+-private:
+-    void GetNativeHandleHolder(HLERequestContext& ctx) {
+-        LOG_INFO(Service_OLSC, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushIpcInterface<INativeHandleHolder>(system);
+-    }
+-};
+-
+-class IOlscServiceForSystemService final : public ServiceFramework<IOlscServiceForSystemService> {
+-public:
+-    explicit IOlscServiceForSystemService(Core::System& system_)
+-        : ServiceFramework{system_, "olsc:s"} {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {0, &IOlscServiceForSystemService::OpenTransferTaskListController, "OpenTransferTaskListController"},
+-            {1, nullptr, "OpenRemoteStorageController"},
+-            {2, nullptr, "OpenDaemonController"},
+-            {10, nullptr, "Unknown10"},
+-            {11, nullptr, "Unknown11"},
+-            {12, nullptr, "Unknown12"},
+-            {13, nullptr, "Unknown13"},
+-            {100, nullptr, "ListLastTransferTaskErrorInfo"},
+-            {101, nullptr, "GetLastErrorInfoCount"},
+-            {102, nullptr, "RemoveLastErrorInfoOld"},
+-            {103, nullptr, "GetLastErrorInfo"},
+-            {104, nullptr, "GetLastErrorEventHolder"},
+-            {105, nullptr, "GetLastTransferTaskErrorInfo"},
+-            {200, nullptr, "GetDataTransferPolicyInfo"},
+-            {201, nullptr, "RemoveDataTransferPolicyInfo"},
+-            {202, nullptr, "UpdateDataTransferPolicyOld"},
+-            {203, nullptr, "UpdateDataTransferPolicy"},
+-            {204, nullptr, "CleanupDataTransferPolicyInfo"},
+-            {205, nullptr, "RequestDataTransferPolicy"},
+-            {300, nullptr, "GetAutoTransferSeriesInfo"},
+-            {301, nullptr, "UpdateAutoTransferSeriesInfo"},
+-            {400, nullptr, "CleanupSaveDataArchiveInfoType1"},
+-            {900, nullptr, "CleanupTransferTask"},
+-            {902, nullptr, "CleanupSeriesInfoType0"},
+-            {903, nullptr, "CleanupSaveDataArchiveInfoType0"},
+-            {904, nullptr, "CleanupApplicationAutoTransferSetting"},
+-            {905, nullptr, "CleanupErrorHistory"},
+-            {906, nullptr, "SetLastError"},
+-            {907, nullptr, "AddSaveDataArchiveInfoType0"},
+-            {908, nullptr, "RemoveSeriesInfoType0"},
+-            {909, nullptr, "GetSeriesInfoType0"},
+-            {910, nullptr, "RemoveLastErrorInfo"},
+-            {911, nullptr, "CleanupSeriesInfoType1"},
+-            {912, nullptr, "RemoveSeriesInfoType1"},
+-            {913, nullptr, "GetSeriesInfoType1"},
+-            {1000, nullptr, "UpdateIssueOld"},
+-            {1010, nullptr, "Unknown1010"},
+-            {1011, nullptr, "ListIssueInfoOld"},
+-            {1012, nullptr, "GetIssueOld"},
+-            {1013, nullptr, "GetIssue2Old"},
+-            {1014, nullptr, "GetIssue3Old"},
+-            {1020, nullptr, "RepairIssueOld"},
+-            {1021, nullptr, "RepairIssueWithUserIdOld"},
+-            {1022, nullptr, "RepairIssue2Old"},
+-            {1023, nullptr, "RepairIssue3Old"},
+-            {1024, nullptr, "Unknown1024"},
+-            {1100, nullptr, "UpdateIssue"},
+-            {1110, nullptr, "Unknown1110"},
+-            {1111, nullptr, "ListIssueInfo"},
+-            {1112, nullptr, "GetIssue"},
+-            {1113, nullptr, "GetIssue2"},
+-            {1114, nullptr, "GetIssue3"},
+-            {1120, nullptr, "RepairIssue"},
+-            {1121, nullptr, "RepairIssueWithUserId"},
+-            {1122, nullptr, "RepairIssue2"},
+-            {1123, nullptr, "RepairIssue3"},
+-            {1124, nullptr, "Unknown1124"},
+-        };
+-        // clang-format on
+-
+-        RegisterHandlers(functions);
+-    }
+-
+-private:
+-    void OpenTransferTaskListController(HLERequestContext& ctx) {
+-        LOG_INFO(Service_OLSC, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushIpcInterface<ITransferTaskListController>(system);
+-    }
+-};
+-
+ void LoopProcess(Core::System& system) {
+     auto server_manager = std::make_unique<ServerManager>(system);
+ 
+-    server_manager->RegisterNamedService("olsc:u",
+-                                         std::make_shared<IOlscServiceForApplication>(system));
+-    server_manager->RegisterNamedService("olsc:s",
+-                                         std::make_shared<IOlscServiceForSystemService>(system));
++    const auto OlscFactoryForApplication = [&] {
++        return std::make_shared<IOlscServiceForApplication>(system);
++    };
++
++    const auto OlscFactoryForSystemService = [&] {
++        return std::make_shared<IOlscServiceForSystemService>(system);
++    };
++
++    server_manager->RegisterNamedService("olsc:u", OlscFactoryForApplication);
++    server_manager->RegisterNamedService("olsc:s", OlscFactoryForSystemService);
+ 
+     ServerManager::RunServer(std::move(server_manager));
+ }
+diff --git a/src/core/hle/service/olsc/olsc_service_for_application.cpp b/src/core/hle/service/olsc/olsc_service_for_application.cpp
+new file mode 100644
+index 000000000000..01360f5ef23c
+--- /dev/null
++++ b/src/core/hle/service/olsc/olsc_service_for_application.cpp
+@@ -0,0 +1,63 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/olsc/olsc_service_for_application.h"
++
++namespace Service::OLSC {
++
++IOlscServiceForApplication::IOlscServiceForApplication(Core::System& system_)
++    : ServiceFramework{system_, "olsc:u"} {
++    // clang-format off
++        static const FunctionInfo functions[] = {
++            {0, D<&IOlscServiceForApplication::Initialize>, "Initialize"},
++            {10, nullptr, "VerifySaveDataBackupLicenseAsync"},
++            {13, D<&IOlscServiceForApplication::GetSaveDataBackupSetting>, "GetSaveDataBackupSetting"},
++            {14, D<&IOlscServiceForApplication::SetSaveDataBackupSettingEnabled>, "SetSaveDataBackupSettingEnabled"},
++            {15, nullptr, "SetCustomData"},
++            {16, nullptr, "DeleteSaveDataBackupSetting"},
++            {18, nullptr, "GetSaveDataBackupInfoCache"},
++            {19, nullptr, "UpdateSaveDataBackupInfoCacheAsync"},
++            {22, nullptr, "DeleteSaveDataBackupAsync"},
++            {25, nullptr, "ListDownloadableSaveDataBackupInfoAsync"},
++            {26, nullptr, "DownloadSaveDataBackupAsync"},
++            {27, nullptr, "UploadSaveDataBackupAsync"},
++            {9010, nullptr, "VerifySaveDataBackupLicenseAsyncForDebug"},
++            {9013, nullptr, "GetSaveDataBackupSettingForDebug"},
++            {9014, nullptr, "SetSaveDataBackupSettingEnabledForDebug"},
++            {9015, nullptr, "SetCustomDataForDebug"},
++            {9016, nullptr, "DeleteSaveDataBackupSettingForDebug"},
++            {9018, nullptr, "GetSaveDataBackupInfoCacheForDebug"},
++            {9019, nullptr, "UpdateSaveDataBackupInfoCacheAsyncForDebug"},
++            {9022, nullptr, "DeleteSaveDataBackupAsyncForDebug"},
++            {9025, nullptr, "ListDownloadableSaveDataBackupInfoAsyncForDebug"},
++            {9026, nullptr, "DownloadSaveDataBackupAsyncForDebug"},
++        };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IOlscServiceForApplication::~IOlscServiceForApplication() = default;
++
++Result IOlscServiceForApplication::Initialize(ClientProcessId process_id) {
++    LOG_WARNING(Service_OLSC, "(STUBBED) called");
++    initialized = true;
++    R_SUCCEED();
++}
++
++Result IOlscServiceForApplication::GetSaveDataBackupSetting(Out<u8> out_save_data_backup_setting) {
++    LOG_WARNING(Service_OLSC, "(STUBBED) called");
++    // backup_setting is set to 0 since real value is unknown
++    *out_save_data_backup_setting = 0;
++    R_SUCCEED();
++}
++
++Result IOlscServiceForApplication::SetSaveDataBackupSettingEnabled(bool enabled,
++                                                                   NS::Uid account_id) {
++    LOG_WARNING(Service_OLSC, "(STUBBED) called, enabled={}, account_id={}", enabled,
++                account_id.uuid.FormattedString());
++    R_SUCCEED();
++}
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/olsc_service_for_application.h b/src/core/hle/service/olsc/olsc_service_for_application.h
+new file mode 100644
+index 000000000000..3f9ac7536a0d
+--- /dev/null
++++ b/src/core/hle/service/olsc/olsc_service_for_application.h
+@@ -0,0 +1,23 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/ns/ns_types.h"
++#include "core/hle/service/service.h"
++
++namespace Service::OLSC {
++
++class IOlscServiceForApplication final : public ServiceFramework<IOlscServiceForApplication> {
++public:
++    explicit IOlscServiceForApplication(Core::System& system_);
++    ~IOlscServiceForApplication() override;
++
++private:
++    Result Initialize(ClientProcessId process_id);
++    Result GetSaveDataBackupSetting(Out<u8> out_save_data_backup_setting);
++    Result SetSaveDataBackupSettingEnabled(bool enabled, NS::Uid account_id);
++
++    bool initialized{};
++};
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/olsc_service_for_system_service.cpp b/src/core/hle/service/olsc/olsc_service_for_system_service.cpp
+new file mode 100644
+index 000000000000..f027933c9292
+--- /dev/null
++++ b/src/core/hle/service/olsc/olsc_service_for_system_service.cpp
+@@ -0,0 +1,117 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/olsc/daemon_controller.h"
++#include "core/hle/service/olsc/olsc_service_for_system_service.h"
++#include "core/hle/service/olsc/remote_storage_controller.h"
++#include "core/hle/service/olsc/transfer_task_list_controller.h"
++
++namespace Service::OLSC {
++
++IOlscServiceForSystemService::IOlscServiceForSystemService(Core::System& system_)
++    : ServiceFramework{system_, "olsc:s"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, D<&IOlscServiceForSystemService::OpenTransferTaskListController>, "OpenTransferTaskListController"},
++        {1, D<&IOlscServiceForSystemService::OpenRemoteStorageController>, "OpenRemoteStorageController"},
++        {2, D<&IOlscServiceForSystemService::OpenDaemonController>, "OpenDaemonController"},
++        {10, nullptr, "Unknown10"},
++        {11, nullptr, "Unknown11"},
++        {12, nullptr, "Unknown12"},
++        {13, nullptr, "Unknown13"},
++        {100, nullptr, "ListLastTransferTaskErrorInfo"},
++        {101, nullptr, "GetLastErrorInfoCount"},
++        {102, nullptr, "RemoveLastErrorInfoOld"},
++        {103, nullptr, "GetLastErrorInfo"},
++        {104, nullptr, "GetLastErrorEventHolder"},
++        {105, nullptr, "GetLastTransferTaskErrorInfo"},
++        {200, D<&IOlscServiceForSystemService::GetDataTransferPolicyInfo>, "GetDataTransferPolicyInfo"},
++        {201, nullptr, "RemoveDataTransferPolicyInfo"},
++        {202, nullptr, "UpdateDataTransferPolicyOld"},
++        {203, nullptr, "UpdateDataTransferPolicy"},
++        {204, nullptr, "CleanupDataTransferPolicyInfo"},
++        {205, nullptr, "RequestDataTransferPolicy"},
++        {300, nullptr, "GetAutoTransferSeriesInfo"},
++        {301, nullptr, "UpdateAutoTransferSeriesInfo"},
++        {400, nullptr, "CleanupSaveDataArchiveInfoType1"},
++        {900, nullptr, "CleanupTransferTask"},
++        {902, nullptr, "CleanupSeriesInfoType0"},
++        {903, nullptr, "CleanupSaveDataArchiveInfoType0"},
++        {904, nullptr, "CleanupApplicationAutoTransferSetting"},
++        {905, nullptr, "CleanupErrorHistory"},
++        {906, nullptr, "SetLastError"},
++        {907, nullptr, "AddSaveDataArchiveInfoType0"},
++        {908, nullptr, "RemoveSeriesInfoType0"},
++        {909, nullptr, "GetSeriesInfoType0"},
++        {910, nullptr, "RemoveLastErrorInfo"},
++        {911, nullptr, "CleanupSeriesInfoType1"},
++        {912, nullptr, "RemoveSeriesInfoType1"},
++        {913, nullptr, "GetSeriesInfoType1"},
++        {1000, nullptr, "UpdateIssueOld"},
++        {1010, nullptr, "Unknown1010"},
++        {1011, nullptr, "ListIssueInfoOld"},
++        {1012, nullptr, "GetIssueOld"},
++        {1013, nullptr, "GetIssue2Old"},
++        {1014, nullptr, "GetIssue3Old"},
++        {1020, nullptr, "RepairIssueOld"},
++        {1021, nullptr, "RepairIssueWithUserIdOld"},
++        {1022, nullptr, "RepairIssue2Old"},
++        {1023, nullptr, "RepairIssue3Old"},
++        {1024, nullptr, "Unknown1024"},
++        {1100, nullptr, "UpdateIssue"},
++        {1110, nullptr, "Unknown1110"},
++        {1111, nullptr, "ListIssueInfo"},
++        {1112, nullptr, "GetIssue"},
++        {1113, nullptr, "GetIssue2"},
++        {1114, nullptr, "GetIssue3"},
++        {1120, nullptr, "RepairIssue"},
++        {1121, nullptr, "RepairIssueWithUserId"},
++        {1122, nullptr, "RepairIssue2"},
++        {1123, nullptr, "RepairIssue3"},
++        {1124, nullptr, "Unknown1124"},
++        {10000, D<&IOlscServiceForSystemService::CloneService>, "CloneService"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IOlscServiceForSystemService::~IOlscServiceForSystemService() = default;
++
++Result IOlscServiceForSystemService::OpenTransferTaskListController(
++    Out<SharedPointer<ITransferTaskListController>> out_interface) {
++    LOG_INFO(Service_OLSC, "called");
++    *out_interface = std::make_shared<ITransferTaskListController>(system);
++    R_SUCCEED();
++}
++
++Result IOlscServiceForSystemService::OpenRemoteStorageController(
++    Out<SharedPointer<IRemoteStorageController>> out_interface) {
++    LOG_INFO(Service_OLSC, "called");
++    *out_interface = std::make_shared<IRemoteStorageController>(system);
++    R_SUCCEED();
++}
++
++Result IOlscServiceForSystemService::OpenDaemonController(
++    Out<SharedPointer<IDaemonController>> out_interface) {
++    LOG_INFO(Service_OLSC, "called");
++    *out_interface = std::make_shared<IDaemonController>(system);
++    R_SUCCEED();
++}
++
++Result IOlscServiceForSystemService::GetDataTransferPolicyInfo(Out<u16> out_policy_info,
++                                                               u64 application_id) {
++    LOG_WARNING(Service_OLSC, "(STUBBED) called");
++    *out_policy_info = 0;
++    R_SUCCEED();
++}
++
++Result IOlscServiceForSystemService::CloneService(
++    Out<SharedPointer<IOlscServiceForSystemService>> out_interface) {
++    LOG_INFO(Service_OLSC, "called");
++    *out_interface = std::static_pointer_cast<IOlscServiceForSystemService>(shared_from_this());
++    R_SUCCEED();
++}
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/olsc_service_for_system_service.h b/src/core/hle/service/olsc/olsc_service_for_system_service.h
+new file mode 100644
+index 000000000000..13026272acf2
+--- /dev/null
++++ b/src/core/hle/service/olsc/olsc_service_for_system_service.h
+@@ -0,0 +1,27 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Service::OLSC {
++
++class IDaemonController;
++class IRemoteStorageController;
++class ITransferTaskListController;
++
++class IOlscServiceForSystemService final : public ServiceFramework<IOlscServiceForSystemService> {
++public:
++    explicit IOlscServiceForSystemService(Core::System& system_);
++    ~IOlscServiceForSystemService() override;
++
++private:
++    Result OpenTransferTaskListController(
++        Out<SharedPointer<ITransferTaskListController>> out_interface);
++    Result OpenRemoteStorageController(Out<SharedPointer<IRemoteStorageController>> out_interface);
++    Result OpenDaemonController(Out<SharedPointer<IDaemonController>> out_interface);
++    Result GetDataTransferPolicyInfo(Out<u16> out_policy_info, u64 application_id);
++    Result CloneService(Out<SharedPointer<IOlscServiceForSystemService>> out_interface);
++};
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/remote_storage_controller.cpp b/src/core/hle/service/olsc/remote_storage_controller.cpp
+new file mode 100644
+index 000000000000..81d9c96ab50a
+--- /dev/null
++++ b/src/core/hle/service/olsc/remote_storage_controller.cpp
+@@ -0,0 +1,54 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/olsc/remote_storage_controller.h"
++
++namespace Service::OLSC {
++
++IRemoteStorageController::IRemoteStorageController(Core::System& system_)
++    : ServiceFramework{system_, "IRemoteStorageController"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, nullptr, "GetSaveDataArchiveInfoBySaveDataId"},
++        {1, nullptr, "GetSaveDataArchiveInfoByApplicationId"},
++        {3, nullptr, "GetSaveDataArchiveCount"},
++        {6, nullptr, "CleanupSaveDataArchives"},
++        {7, nullptr, "CreateSaveDataArchiveCacheUpdationTask"},
++        {8, nullptr, "CreateSaveDataArchiveCacheUpdationForSpecifiedApplicationTask"},
++        {9, nullptr, "Delete"},
++        {10, nullptr, "GetSeriesInfo"},
++        {11, nullptr, "CreateDeleteDataTask"},
++        {12, nullptr, "DeleteSeriesInfo"},
++        {13, nullptr, "CreateRegisterNotificationTokenTask"},
++        {14, nullptr, "UpdateSeriesInfo"},
++        {15, nullptr, "RegisterUploadSaveDataTransferTaskForAutonomyRegistration"},
++        {16, nullptr, "CreateCleanupToDeleteSaveDataArchiveInfoTask"},
++        {17, nullptr, "ListDataInfo"},
++        {18, nullptr, "GetDataInfo"},
++        {19, nullptr, "Unknown19"},
++        {20, nullptr, "CreateSaveDataArchiveInfoCacheForSaveDataBackupUpdationTask"},
++        {21, nullptr, "ListSecondarySaves"},
++        {22, D<&IRemoteStorageController::GetSecondarySave>, "GetSecondarySave"},
++        {23, nullptr, "TouchSecondarySave"},
++        {24, nullptr, "GetSecondarySaveDataInfo"},
++        {25, nullptr, "RegisterDownloadSaveDataTransferTaskForAutonomyRegistration"},
++        {900, nullptr, "Unknown900"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++IRemoteStorageController::~IRemoteStorageController() = default;
++
++Result IRemoteStorageController::GetSecondarySave(Out<bool> out_has_secondary_save,
++                                                  Out<std::array<u64, 3>> out_unknown,
++                                                  u64 application_id) {
++    LOG_ERROR(Service_OLSC, "(STUBBED) called, application_id={:016X}", application_id);
++    *out_has_secondary_save = false;
++    *out_unknown = {};
++    R_SUCCEED();
++}
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/remote_storage_controller.h b/src/core/hle/service/olsc/remote_storage_controller.h
+new file mode 100644
+index 000000000000..e7a0b5244231
+--- /dev/null
++++ b/src/core/hle/service/olsc/remote_storage_controller.h
+@@ -0,0 +1,19 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Service::OLSC {
++
++class IRemoteStorageController final : public ServiceFramework<IRemoteStorageController> {
++public:
++    explicit IRemoteStorageController(Core::System& system_);
++    ~IRemoteStorageController() override;
++
++private:
++    Result GetSecondarySave(Out<bool> out_has_secondary_save, Out<std::array<u64, 3>> out_unknown,
++                            u64 application_id);
++};
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/transfer_task_list_controller.cpp b/src/core/hle/service/olsc/transfer_task_list_controller.cpp
+new file mode 100644
+index 000000000000..8ea9a0f1e3b7
+--- /dev/null
++++ b/src/core/hle/service/olsc/transfer_task_list_controller.cpp
+@@ -0,0 +1,55 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/olsc/native_handle_holder.h"
++#include "core/hle/service/olsc/transfer_task_list_controller.h"
++
++namespace Service::OLSC {
++
++ITransferTaskListController::ITransferTaskListController(Core::System& system_)
++    : ServiceFramework{system_, "ITransferTaskListController"} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {0, nullptr, "Unknown0"},
++        {1, nullptr, "Unknown1"},
++        {2, nullptr, "Unknown2"},
++        {3, nullptr, "Unknown3"},
++        {4, nullptr, "Unknown4"},
++        {5, D<&ITransferTaskListController::GetNativeHandleHolder>, "GetNativeHandleHolder"},
++        {6, nullptr, "Unknown6"},
++        {7, nullptr, "Unknown7"},
++        {8, nullptr, "GetRemoteStorageController"},
++        {9, D<&ITransferTaskListController::GetNativeHandleHolder>, "GetNativeHandleHolder2"},
++        {10, nullptr, "Unknown10"},
++        {11, nullptr, "Unknown11"},
++        {12, nullptr, "Unknown12"},
++        {13, nullptr, "Unknown13"},
++        {14, nullptr, "Unknown14"},
++        {15, nullptr, "Unknown15"},
++        {16, nullptr, "Unknown16"},
++        {17, nullptr, "Unknown17"},
++        {18, nullptr, "Unknown18"},
++        {19, nullptr, "Unknown19"},
++        {20, nullptr, "Unknown20"},
++        {21, nullptr, "Unknown21"},
++        {22, nullptr, "Unknown22"},
++        {23, nullptr, "Unknown23"},
++        {24, nullptr, "Unknown24"},
++        {25, nullptr, "Unknown25"},
++    };
++    // clang-format on
++
++    RegisterHandlers(functions);
++}
++
++ITransferTaskListController::~ITransferTaskListController() = default;
++
++Result ITransferTaskListController::GetNativeHandleHolder(
++    Out<SharedPointer<INativeHandleHolder>> out_holder) {
++    LOG_WARNING(Service_OLSC, "(STUBBED) called");
++    *out_holder = std::make_shared<INativeHandleHolder>(system);
++    R_SUCCEED();
++}
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/olsc/transfer_task_list_controller.h b/src/core/hle/service/olsc/transfer_task_list_controller.h
+new file mode 100644
+index 000000000000..f10a7137511d
+--- /dev/null
++++ b/src/core/hle/service/olsc/transfer_task_list_controller.h
+@@ -0,0 +1,20 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/service.h"
++
++namespace Service::OLSC {
++
++class INativeHandleHolder;
++
++class ITransferTaskListController final : public ServiceFramework<ITransferTaskListController> {
++public:
++    explicit ITransferTaskListController(Core::System& system_);
++    ~ITransferTaskListController() override;
++
++private:
++    Result GetNativeHandleHolder(Out<SharedPointer<INativeHandleHolder>> out_holder);
++};
++
++} // namespace Service::OLSC
+diff --git a/src/core/hle/service/pctl/parental_control_service.cpp b/src/core/hle/service/pctl/parental_control_service.cpp
+new file mode 100644
+index 000000000000..f57f2f1577fb
+--- /dev/null
++++ b/src/core/hle/service/pctl/parental_control_service.cpp
+@@ -0,0 +1,434 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/core.h"
++#include "core/file_sys/control_metadata.h"
++#include "core/file_sys/patch_manager.h"
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/pctl/parental_control_service.h"
++#include "core/hle/service/pctl/pctl_results.h"
++
++namespace Service::PCTL {
++
++IParentalControlService::IParentalControlService(Core::System& system_, Capability capability_)
++    : ServiceFramework{system_, "IParentalControlService"}, capability{capability_},
++      service_context{system_, "IParentalControlService"}, synchronization_event{service_context},
++      unlinked_event{service_context}, request_suspension_event{service_context} {
++    // clang-format off
++    static const FunctionInfo functions[] = {
++        {1, D<&IParentalControlService::Initialize>, "Initialize"},
++        {1001, D<&IParentalControlService::CheckFreeCommunicationPermission>, "CheckFreeCommunicationPermission"},
++        {1002, D<&IParentalControlService::ConfirmLaunchApplicationPermission>, "ConfirmLaunchApplicationPermission"},
++        {1003, D<&IParentalControlService::ConfirmResumeApplicationPermission>, "ConfirmResumeApplicationPermission"},
++        {1004, D<&IParentalControlService::ConfirmSnsPostPermission>, "ConfirmSnsPostPermission"},
++        {1005, nullptr, "ConfirmSystemSettingsPermission"},
++        {1006, D<&IParentalControlService::IsRestrictionTemporaryUnlocked>, "IsRestrictionTemporaryUnlocked"},
++        {1007, nullptr, "RevertRestrictionTemporaryUnlocked"},
++        {1008, nullptr, "EnterRestrictedSystemSettings"},
++        {1009, nullptr, "LeaveRestrictedSystemSettings"},
++        {1010, D<&IParentalControlService::IsRestrictedSystemSettingsEntered>, "IsRestrictedSystemSettingsEntered"},
++        {1011, nullptr, "RevertRestrictedSystemSettingsEntered"},
++        {1012, nullptr, "GetRestrictedFeatures"},
++        {1013, D<&IParentalControlService::ConfirmStereoVisionPermission>, "ConfirmStereoVisionPermission"},
++        {1014, nullptr, "ConfirmPlayableApplicationVideoOld"},
++        {1015, nullptr, "ConfirmPlayableApplicationVideo"},
++        {1016, nullptr, "ConfirmShowNewsPermission"},
++        {1017, D<&IParentalControlService::EndFreeCommunication>, "EndFreeCommunication"},
++        {1018, D<&IParentalControlService::IsFreeCommunicationAvailable>, "IsFreeCommunicationAvailable"},
++        {1031, D<&IParentalControlService::IsRestrictionEnabled>, "IsRestrictionEnabled"},
++        {1032, D<&IParentalControlService::GetSafetyLevel>, "GetSafetyLevel"},
++        {1033, nullptr, "SetSafetyLevel"},
++        {1034, nullptr, "GetSafetyLevelSettings"},
++        {1035, D<&IParentalControlService::GetCurrentSettings>, "GetCurrentSettings"},
++        {1036, nullptr, "SetCustomSafetyLevelSettings"},
++        {1037, nullptr, "GetDefaultRatingOrganization"},
++        {1038, nullptr, "SetDefaultRatingOrganization"},
++        {1039, D<&IParentalControlService::GetFreeCommunicationApplicationListCount>, "GetFreeCommunicationApplicationListCount"},
++        {1042, nullptr, "AddToFreeCommunicationApplicationList"},
++        {1043, nullptr, "DeleteSettings"},
++        {1044, nullptr, "GetFreeCommunicationApplicationList"},
++        {1045, nullptr, "UpdateFreeCommunicationApplicationList"},
++        {1046, nullptr, "DisableFeaturesForReset"},
++        {1047, nullptr, "NotifyApplicationDownloadStarted"},
++        {1048, nullptr, "NotifyNetworkProfileCreated"},
++        {1049, nullptr, "ResetFreeCommunicationApplicationList"},
++        {1061, D<&IParentalControlService::ConfirmStereoVisionRestrictionConfigurable>, "ConfirmStereoVisionRestrictionConfigurable"},
++        {1062, D<&IParentalControlService::GetStereoVisionRestriction>, "GetStereoVisionRestriction"},
++        {1063, D<&IParentalControlService::SetStereoVisionRestriction>, "SetStereoVisionRestriction"},
++        {1064, D<&IParentalControlService::ResetConfirmedStereoVisionPermission>, "ResetConfirmedStereoVisionPermission"},
++        {1065, D<&IParentalControlService::IsStereoVisionPermitted>, "IsStereoVisionPermitted"},
++        {1201, nullptr, "UnlockRestrictionTemporarily"},
++        {1202, nullptr, "UnlockSystemSettingsRestriction"},
++        {1203, nullptr, "SetPinCode"},
++        {1204, nullptr, "GenerateInquiryCode"},
++        {1205, nullptr, "CheckMasterKey"},
++        {1206, D<&IParentalControlService::GetPinCodeLength>, "GetPinCodeLength"},
++        {1207, nullptr, "GetPinCodeChangedEvent"},
++        {1208, nullptr, "GetPinCode"},
++        {1403, D<&IParentalControlService::IsPairingActive>, "IsPairingActive"},
++        {1406, nullptr, "GetSettingsLastUpdated"},
++        {1411, nullptr, "GetPairingAccountInfo"},
++        {1421, nullptr, "GetAccountNickname"},
++        {1424, nullptr, "GetAccountState"},
++        {1425, nullptr, "RequestPostEvents"},
++        {1426, nullptr, "GetPostEventInterval"},
++        {1427, nullptr, "SetPostEventInterval"},
++        {1432, D<&IParentalControlService::GetSynchronizationEvent>, "GetSynchronizationEvent"},
++        {1451, D<&IParentalControlService::StartPlayTimer>, "StartPlayTimer"},
++        {1452, D<&IParentalControlService::StopPlayTimer>, "StopPlayTimer"},
++        {1453, D<&IParentalControlService::IsPlayTimerEnabled>, "IsPlayTimerEnabled"},
++        {1454, nullptr, "GetPlayTimerRemainingTime"},
++        {1455, D<&IParentalControlService::IsRestrictedByPlayTimer>, "IsRestrictedByPlayTimer"},
++        {1456, D<&IParentalControlService::GetPlayTimerSettings>, "GetPlayTimerSettings"},
++        {1457, D<&IParentalControlService::GetPlayTimerEventToRequestSuspension>, "GetPlayTimerEventToRequestSuspension"},
++        {1458, D<&IParentalControlService::IsPlayTimerAlarmDisabled>, "IsPlayTimerAlarmDisabled"},
++        {1471, nullptr, "NotifyWrongPinCodeInputManyTimes"},
++        {1472, nullptr, "CancelNetworkRequest"},
++        {1473, D<&IParentalControlService::GetUnlinkedEvent>, "GetUnlinkedEvent"},
++        {1474, nullptr, "ClearUnlinkedEvent"},
++        {1601, nullptr, "DisableAllFeatures"},
++        {1602, nullptr, "PostEnableAllFeatures"},
++        {1603, nullptr, "IsAllFeaturesDisabled"},
++        {1901, nullptr, "DeleteFromFreeCommunicationApplicationListForDebug"},
++        {1902, nullptr, "ClearFreeCommunicationApplicationListForDebug"},
++        {1903, nullptr, "GetExemptApplicationListCountForDebug"},
++        {1904, nullptr, "GetExemptApplicationListForDebug"},
++        {1905, nullptr, "UpdateExemptApplicationListForDebug"},
++        {1906, nullptr, "AddToExemptApplicationListForDebug"},
++        {1907, nullptr, "DeleteFromExemptApplicationListForDebug"},
++        {1908, nullptr, "ClearExemptApplicationListForDebug"},
++        {1941, nullptr, "DeletePairing"},
++        {1951, nullptr, "SetPlayTimerSettingsForDebug"},
++        {1952, nullptr, "GetPlayTimerSpentTimeForTest"},
++        {1953, nullptr, "SetPlayTimerAlarmDisabledForDebug"},
++        {2001, nullptr, "RequestPairingAsync"},
++        {2002, nullptr, "FinishRequestPairing"},
++        {2003, nullptr, "AuthorizePairingAsync"},
++        {2004, nullptr, "FinishAuthorizePairing"},
++        {2005, nullptr, "RetrievePairingInfoAsync"},
++        {2006, nullptr, "FinishRetrievePairingInfo"},
++        {2007, nullptr, "UnlinkPairingAsync"},
++        {2008, nullptr, "FinishUnlinkPairing"},
++        {2009, nullptr, "GetAccountMiiImageAsync"},
++        {2010, nullptr, "FinishGetAccountMiiImage"},
++        {2011, nullptr, "GetAccountMiiImageContentTypeAsync"},
++        {2012, nullptr, "FinishGetAccountMiiImageContentType"},
++        {2013, nullptr, "SynchronizeParentalControlSettingsAsync"},
++        {2014, nullptr, "FinishSynchronizeParentalControlSettings"},
++        {2015, nullptr, "FinishSynchronizeParentalControlSettingsWithLastUpdated"},
++        {2016, nullptr, "RequestUpdateExemptionListAsync"},
++    };
++    // clang-format on
++    RegisterHandlers(functions);
++}
++
++IParentalControlService::~IParentalControlService() = default;
++
++bool IParentalControlService::CheckFreeCommunicationPermissionImpl() const {
++    if (states.temporary_unlocked) {
++        return true;
++    }
++    if ((states.application_info.parental_control_flag & 1) == 0) {
++        return true;
++    }
++    if (pin_code[0] == '\0') {
++        return true;
++    }
++    if (!settings.is_free_communication_default_on) {
++        return true;
++    }
++    // TODO(ogniK): Check for blacklisted/exempted applications. Return false can happen here
++    // but as we don't have multiproceses support yet, we can just assume our application is
++    // valid for the time being
++    return true;
++}
++
++bool IParentalControlService::ConfirmStereoVisionPermissionImpl() const {
++    if (states.temporary_unlocked) {
++        return true;
++    }
++    if (pin_code[0] == '\0') {
++        return true;
++    }
++    if (!settings.is_stero_vision_restricted) {
++        return false;
++    }
++    return true;
++}
++
++void IParentalControlService::SetStereoVisionRestrictionImpl(bool is_restricted) {
++    if (settings.disabled) {
++        return;
++    }
++
++    if (pin_code[0] == '\0') {
++        return;
++    }
++    settings.is_stero_vision_restricted = is_restricted;
++}
++
++Result IParentalControlService::Initialize() {
++    LOG_DEBUG(Service_PCTL, "called");
++
++    if (False(capability & (Capability::Application | Capability::System))) {
++        LOG_ERROR(Service_PCTL, "Invalid capability! capability={:X}", capability);
++        R_THROW(PCTL::ResultNoCapability);
++    }
++
++    // TODO(ogniK): Recovery flag initialization for pctl:r
++
++    const auto program_id = system.GetApplicationProcessProgramID();
++    if (program_id != 0) {
++        const FileSys::PatchManager pm{program_id, system.GetFileSystemController(),
++                                       system.GetContentProvider()};
++        const auto control = pm.GetControlMetadata();
++        if (control.first) {
++            states.tid_from_event = 0;
++            states.launch_time_valid = false;
++            states.is_suspended = false;
++            states.free_communication = false;
++            states.stereo_vision = false;
++            states.application_info = ApplicationInfo{
++                .application_id = program_id,
++                .age_rating = control.first->GetRatingAge(),
++                .parental_control_flag = control.first->GetParentalControlFlag(),
++                .capability = capability,
++            };
++
++            if (False(capability & (Capability::System | Capability::Recovery))) {
++                // TODO(ogniK): Signal application launch event
++            }
++        }
++    }
++
++    R_SUCCEED();
++}
++
++Result IParentalControlService::CheckFreeCommunicationPermission() {
++    LOG_DEBUG(Service_PCTL, "called");
++
++    if (!CheckFreeCommunicationPermissionImpl()) {
++        R_THROW(PCTL::ResultNoFreeCommunication);
++    } else {
++        states.free_communication = true;
++        R_SUCCEED();
++    }
++}
++
++Result IParentalControlService::ConfirmLaunchApplicationPermission(
++    InBuffer<BufferAttr_HipcPointer> restriction_bitset, u64 nacp_flag, u64 application_id) {
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, nacp_flag={:#x} application_id={:016X}", nacp_flag,
++                application_id);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::ConfirmResumeApplicationPermission(
++    InBuffer<BufferAttr_HipcPointer> restriction_bitset, u64 nacp_flag, u64 application_id) {
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, nacp_flag={:#x} application_id={:016X}", nacp_flag,
++                application_id);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::ConfirmSnsPostPermission() {
++    LOG_WARNING(Service_PCTL, "(STUBBED) called");
++    R_THROW(PCTL::ResultNoFreeCommunication);
++}
++
++Result IParentalControlService::IsRestrictionTemporaryUnlocked(
++    Out<bool> out_is_temporary_unlocked) {
++    *out_is_temporary_unlocked = false;
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, is_temporary_unlocked={}",
++                *out_is_temporary_unlocked);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::IsRestrictedSystemSettingsEntered(
++    Out<bool> out_is_restricted_system_settings_entered) {
++    *out_is_restricted_system_settings_entered = false;
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, is_temporary_unlocked={}",
++                *out_is_restricted_system_settings_entered);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::ConfirmStereoVisionPermission() {
++    LOG_DEBUG(Service_PCTL, "called");
++    states.stereo_vision = true;
++    R_SUCCEED();
++}
++
++Result IParentalControlService::EndFreeCommunication() {
++    LOG_WARNING(Service_PCTL, "(STUBBED) called");
++    R_SUCCEED();
++}
++
++Result IParentalControlService::IsFreeCommunicationAvailable() {
++    LOG_WARNING(Service_PCTL, "(STUBBED) called");
++
++    if (!CheckFreeCommunicationPermissionImpl()) {
++        R_THROW(PCTL::ResultNoFreeCommunication);
++    } else {
++        R_SUCCEED();
++    }
++}
++
++Result IParentalControlService::IsRestrictionEnabled(Out<bool> out_restriction_enabled) {
++    LOG_DEBUG(Service_PCTL, "called");
++
++    if (False(capability & (Capability::Status | Capability::Recovery))) {
++        LOG_ERROR(Service_PCTL, "Application does not have Status or Recovery capabilities!");
++        *out_restriction_enabled = false;
++        R_THROW(PCTL::ResultNoCapability);
++    }
++
++    *out_restriction_enabled = pin_code[0] != '\0';
++    R_SUCCEED();
++}
++
++Result IParentalControlService::GetSafetyLevel(Out<u32> out_safety_level) {
++    *out_safety_level = 0;
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, safety_level={}", *out_safety_level);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::GetCurrentSettings(Out<RestrictionSettings> out_settings) {
++    LOG_INFO(Service_PCTL, "called");
++    *out_settings = restriction_settings;
++    R_SUCCEED();
++}
++
++Result IParentalControlService::GetFreeCommunicationApplicationListCount(Out<s32> out_count) {
++    *out_count = 4;
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, count={}", *out_count);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::ConfirmStereoVisionRestrictionConfigurable() {
++    LOG_DEBUG(Service_PCTL, "called");
++
++    if (False(capability & Capability::StereoVision)) {
++        LOG_ERROR(Service_PCTL, "Application does not have StereoVision capability!");
++        R_THROW(PCTL::ResultNoCapability);
++    }
++
++    if (pin_code[0] == '\0') {
++        R_THROW(PCTL::ResultNoRestrictionEnabled);
++    }
++
++    R_SUCCEED();
++}
++
++Result IParentalControlService::IsStereoVisionPermitted(Out<bool> out_is_permitted) {
++    LOG_DEBUG(Service_PCTL, "called");
++
++    if (!ConfirmStereoVisionPermissionImpl()) {
++        *out_is_permitted = false;
++        R_THROW(PCTL::ResultStereoVisionRestricted);
++    } else {
++        *out_is_permitted = true;
++        R_SUCCEED();
++    }
++}
++
++Result IParentalControlService::GetPinCodeLength(Out<s32> out_length) {
++    *out_length = 0;
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, length={}", *out_length);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::IsPairingActive(Out<bool> out_is_pairing_active) {
++    *out_is_pairing_active = false;
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, is_pairing_active={}", *out_is_pairing_active);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::GetSynchronizationEvent(
++    OutCopyHandle<Kernel::KReadableEvent> out_event) {
++    LOG_INFO(Service_PCTL, "called");
++    *out_event = synchronization_event.GetHandle();
++    R_SUCCEED();
++}
++
++Result IParentalControlService::StartPlayTimer() {
++    LOG_WARNING(Service_PCTL, "(STUBBED) called");
++    R_SUCCEED();
++}
++
++Result IParentalControlService::StopPlayTimer() {
++    LOG_WARNING(Service_PCTL, "(STUBBED) called");
++    R_SUCCEED();
++}
++
++Result IParentalControlService::IsPlayTimerEnabled(Out<bool> out_is_play_timer_enabled) {
++    *out_is_play_timer_enabled = false;
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, enabled={}", *out_is_play_timer_enabled);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::IsRestrictedByPlayTimer(Out<bool> out_is_restricted_by_play_timer) {
++    *out_is_restricted_by_play_timer = false;
++    LOG_WARNING(Service_PCTL, "(STUBBED) called, restricted={}", *out_is_restricted_by_play_timer);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::GetPlayTimerSettings(
++    Out<PlayTimerSettings> out_play_timer_settings) {
++    LOG_WARNING(Service_PCTL, "(STUBBED) called");
++    *out_play_timer_settings = {};
++    R_SUCCEED();
++}
++
++Result IParentalControlService::GetPlayTimerEventToRequestSuspension(
++    OutCopyHandle<Kernel::KReadableEvent> out_event) {
++    LOG_INFO(Service_PCTL, "called");
++    *out_event = request_suspension_event.GetHandle();
++    R_SUCCEED();
++}
++
++Result IParentalControlService::IsPlayTimerAlarmDisabled(Out<bool> out_play_timer_alarm_disabled) {
++    *out_play_timer_alarm_disabled = false;
++    LOG_INFO(Service_PCTL, "called, is_play_timer_alarm_disabled={}",
++             *out_play_timer_alarm_disabled);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::GetUnlinkedEvent(OutCopyHandle<Kernel::KReadableEvent> out_event) {
++    LOG_INFO(Service_PCTL, "called");
++    *out_event = unlinked_event.GetHandle();
++    R_SUCCEED();
++}
++
++Result IParentalControlService::GetStereoVisionRestriction(
++    Out<bool> out_stereo_vision_restriction) {
++    LOG_DEBUG(Service_PCTL, "called");
++
++    if (False(capability & Capability::StereoVision)) {
++        LOG_ERROR(Service_PCTL, "Application does not have StereoVision capability!");
++        *out_stereo_vision_restriction = false;
++        R_THROW(PCTL::ResultNoCapability);
++    }
++
++    *out_stereo_vision_restriction = settings.is_stero_vision_restricted;
++    R_SUCCEED();
++}
++
++Result IParentalControlService::SetStereoVisionRestriction(bool stereo_vision_restriction) {
++    LOG_DEBUG(Service_PCTL, "called, can_use={}", stereo_vision_restriction);
++
++    if (False(capability & Capability::StereoVision)) {
++        LOG_ERROR(Service_PCTL, "Application does not have StereoVision capability!");
++        R_THROW(PCTL::ResultNoCapability);
++    }
++
++    SetStereoVisionRestrictionImpl(stereo_vision_restriction);
++    R_SUCCEED();
++}
++
++Result IParentalControlService::ResetConfirmedStereoVisionPermission() {
++    LOG_DEBUG(Service_PCTL, "called");
++
++    states.stereo_vision = false;
++
++    R_SUCCEED();
++}
++
++} // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/parental_control_service.h b/src/core/hle/service/pctl/parental_control_service.h
+new file mode 100644
+index 000000000000..03dbaa2e5f76
+--- /dev/null
++++ b/src/core/hle/service/pctl/parental_control_service.h
+@@ -0,0 +1,86 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/kernel_helpers.h"
++#include "core/hle/service/os/event.h"
++#include "core/hle/service/pctl/pctl_types.h"
++#include "core/hle/service/service.h"
++
++namespace Service::PCTL {
++
++class IParentalControlService final : public ServiceFramework<IParentalControlService> {
++public:
++    explicit IParentalControlService(Core::System& system_, Capability capability_);
++    ~IParentalControlService() override;
++
++private:
++    bool CheckFreeCommunicationPermissionImpl() const;
++    bool ConfirmStereoVisionPermissionImpl() const;
++    void SetStereoVisionRestrictionImpl(bool is_restricted);
++
++    Result Initialize();
++    Result CheckFreeCommunicationPermission();
++    Result ConfirmLaunchApplicationPermission(InBuffer<BufferAttr_HipcPointer> restriction_bitset,
++                                              u64 nacp_flag, u64 application_id);
++    Result ConfirmResumeApplicationPermission(InBuffer<BufferAttr_HipcPointer> restriction_bitset,
++                                              u64 nacp_flag, u64 application_id);
++    Result ConfirmSnsPostPermission();
++    Result IsRestrictionTemporaryUnlocked(Out<bool> out_is_temporary_unlocked);
++    Result IsRestrictedSystemSettingsEntered(Out<bool> out_is_restricted_system_settings_entered);
++    Result ConfirmStereoVisionPermission();
++    Result EndFreeCommunication();
++    Result IsFreeCommunicationAvailable();
++    Result IsRestrictionEnabled(Out<bool> out_restriction_enabled);
++    Result GetSafetyLevel(Out<u32> out_safety_level);
++    Result GetCurrentSettings(Out<RestrictionSettings> out_settings);
++    Result GetFreeCommunicationApplicationListCount(Out<s32> out_count);
++    Result ConfirmStereoVisionRestrictionConfigurable();
++    Result IsStereoVisionPermitted(Out<bool> out_is_permitted);
++    Result GetPinCodeLength(Out<s32> out_length);
++    Result IsPairingActive(Out<bool> out_is_pairing_active);
++    Result GetSynchronizationEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
++    Result StartPlayTimer();
++    Result StopPlayTimer();
++    Result IsPlayTimerEnabled(Out<bool> out_is_play_timer_enabled);
++    Result IsRestrictedByPlayTimer(Out<bool> out_is_restricted_by_play_timer);
++    Result GetPlayTimerSettings(Out<PlayTimerSettings> out_play_timer_settings);
++    Result GetPlayTimerEventToRequestSuspension(OutCopyHandle<Kernel::KReadableEvent> out_event);
++    Result IsPlayTimerAlarmDisabled(Out<bool> out_play_timer_alarm_disabled);
++    Result GetUnlinkedEvent(OutCopyHandle<Kernel::KReadableEvent> out_event);
++    Result GetStereoVisionRestriction(Out<bool> out_stereo_vision_restriction);
++    Result SetStereoVisionRestriction(bool stereo_vision_restriction);
++    Result ResetConfirmedStereoVisionPermission();
++
++    struct States {
++        u64 current_tid{};
++        ApplicationInfo application_info{};
++        u64 tid_from_event{};
++        bool launch_time_valid{};
++        bool is_suspended{};
++        bool temporary_unlocked{};
++        bool free_communication{};
++        bool stereo_vision{};
++    };
++
++    struct ParentalControlSettings {
++        bool is_stero_vision_restricted{};
++        bool is_free_communication_default_on{};
++        bool disabled{};
++    };
++
++    States states{};
++    ParentalControlSettings settings{};
++    RestrictionSettings restriction_settings{};
++    std::array<char, 8> pin_code{};
++    Capability capability{};
++
++    KernelHelpers::ServiceContext service_context;
++    Event synchronization_event;
++    Event unlinked_event;
++    Event request_suspension_event;
++};
++
++} // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/parental_control_service_factory.cpp b/src/core/hle/service/pctl/parental_control_service_factory.cpp
+new file mode 100644
+index 000000000000..7d8f361e95ba
+--- /dev/null
++++ b/src/core/hle/service/pctl/parental_control_service_factory.cpp
+@@ -0,0 +1,40 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/pctl/parental_control_service.h"
++#include "core/hle/service/pctl/parental_control_service_factory.h"
++
++namespace Service::PCTL {
++
++IParentalControlServiceFactory::IParentalControlServiceFactory(Core::System& system_,
++                                                               const char* name_,
++                                                               Capability capability_)
++    : ServiceFramework{system_, name_}, capability{capability_} {
++    static const FunctionInfo functions[] = {
++        {0, D<&IParentalControlServiceFactory::CreateService>, "CreateService"},
++        {1, D<&IParentalControlServiceFactory::CreateServiceWithoutInitialize>,
++         "CreateServiceWithoutInitialize"},
++    };
++    RegisterHandlers(functions);
++}
++
++IParentalControlServiceFactory::~IParentalControlServiceFactory() = default;
++
++Result IParentalControlServiceFactory::CreateService(
++    Out<SharedPointer<IParentalControlService>> out_service, ClientProcessId process_id) {
++    LOG_DEBUG(Service_PCTL, "called");
++    // TODO(ogniK): Get application id from process
++    *out_service = std::make_shared<IParentalControlService>(system, capability);
++    R_SUCCEED();
++}
++
++Result IParentalControlServiceFactory::CreateServiceWithoutInitialize(
++    Out<SharedPointer<IParentalControlService>> out_service, ClientProcessId process_id) {
++    LOG_DEBUG(Service_PCTL, "called");
++    // TODO(ogniK): Get application id from process
++    *out_service = std::make_shared<IParentalControlService>(system, capability);
++    R_SUCCEED();
++}
++
++} // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/parental_control_service_factory.h b/src/core/hle/service/pctl/parental_control_service_factory.h
+new file mode 100644
+index 000000000000..362988add126
+--- /dev/null
++++ b/src/core/hle/service/pctl/parental_control_service_factory.h
+@@ -0,0 +1,31 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/hle/service/cmif_types.h"
++#include "core/hle/service/pctl/pctl_types.h"
++#include "core/hle/service/service.h"
++
++namespace Service::PCTL {
++
++class IParentalControlService;
++
++class IParentalControlServiceFactory : public ServiceFramework<IParentalControlServiceFactory> {
++public:
++    explicit IParentalControlServiceFactory(Core::System& system_, const char* name_,
++                                            Capability capability_);
++    ~IParentalControlServiceFactory() override;
++
++    Result CreateService(Out<SharedPointer<IParentalControlService>> out_service,
++                         ClientProcessId process_id);
++    Result CreateServiceWithoutInitialize(Out<SharedPointer<IParentalControlService>> out_service,
++                                          ClientProcessId process_id);
++
++private:
++    Capability capability{};
++};
++
++void LoopProcess(Core::System& system);
++
++} // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/pctl.cpp b/src/core/hle/service/pctl/pctl.cpp
+index 3f47bf094f9b..d92dbe21696f 100644
+--- a/src/core/hle/service/pctl/pctl.cpp
++++ b/src/core/hle/service/pctl/pctl.cpp
+@@ -1,19 +1,28 @@
+ // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include "core/hle/service/pctl/parental_control_service_factory.h"
+ #include "core/hle/service/pctl/pctl.h"
++#include "core/hle/service/server_manager.h"
+ 
+ namespace Service::PCTL {
+ 
+-PCTL::PCTL(Core::System& system_, std::shared_ptr<Module> module_, const char* name,
+-           Capability capability_)
+-    : Interface{system_, std::move(module_), name, capability_} {
+-    static const FunctionInfo functions[] = {
+-        {0, &PCTL::CreateService, "CreateService"},
+-        {1, &PCTL::CreateServiceWithoutInitialize, "CreateServiceWithoutInitialize"},
+-    };
+-    RegisterHandlers(functions);
++void LoopProcess(Core::System& system) {
++    auto server_manager = std::make_unique<ServerManager>(system);
++
++    server_manager->RegisterNamedService("pctl",
++                                         std::make_shared<IParentalControlServiceFactory>(
++                                             system, "pctl",
++                                             Capability::Application | Capability::SnsPost |
++                                                 Capability::Status | Capability::StereoVision));
++    // TODO(ogniK): Implement remaining capabilities
++    server_manager->RegisterNamedService("pctl:a", std::make_shared<IParentalControlServiceFactory>(
++                                                       system, "pctl:a", Capability::None));
++    server_manager->RegisterNamedService("pctl:r", std::make_shared<IParentalControlServiceFactory>(
++                                                       system, "pctl:r", Capability::None));
++    server_manager->RegisterNamedService("pctl:s", std::make_shared<IParentalControlServiceFactory>(
++                                                       system, "pctl:s", Capability::None));
++    ServerManager::RunServer(std::move(server_manager));
+ }
+ 
+-PCTL::~PCTL() = default;
+ } // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/pctl.h b/src/core/hle/service/pctl/pctl.h
+index 87f93161e700..5f9d03d4dfdf 100644
+--- a/src/core/hle/service/pctl/pctl.h
++++ b/src/core/hle/service/pctl/pctl.h
+@@ -3,19 +3,12 @@
+ 
+ #pragma once
+ 
+-#include "core/hle/service/pctl/pctl_module.h"
+-
+ namespace Core {
+ class System;
+ }
+ 
+ namespace Service::PCTL {
+ 
+-class PCTL final : public Module::Interface {
+-public:
+-    explicit PCTL(Core::System& system_, std::shared_ptr<Module> module_, const char* name,
+-                  Capability capability_);
+-    ~PCTL() override;
+-};
++void LoopProcess(Core::System& system);
+ 
+ } // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/pctl_module.cpp b/src/core/hle/service/pctl/pctl_module.cpp
+deleted file mode 100644
+index 6a7fd72bcd9b..000000000000
+--- a/src/core/hle/service/pctl/pctl_module.cpp
++++ /dev/null
+@@ -1,550 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#include "common/logging/log.h"
+-#include "core/core.h"
+-#include "core/file_sys/control_metadata.h"
+-#include "core/file_sys/patch_manager.h"
+-#include "core/hle/service/ipc_helpers.h"
+-#include "core/hle/service/kernel_helpers.h"
+-#include "core/hle/service/pctl/pctl.h"
+-#include "core/hle/service/pctl/pctl_module.h"
+-#include "core/hle/service/server_manager.h"
+-
+-namespace Service::PCTL {
+-
+-namespace Error {
+-
+-constexpr Result ResultNoFreeCommunication{ErrorModule::PCTL, 101};
+-constexpr Result ResultStereoVisionRestricted{ErrorModule::PCTL, 104};
+-constexpr Result ResultNoCapability{ErrorModule::PCTL, 131};
+-constexpr Result ResultNoRestrictionEnabled{ErrorModule::PCTL, 181};
+-
+-} // namespace Error
+-
+-class IParentalControlService final : public ServiceFramework<IParentalControlService> {
+-public:
+-    explicit IParentalControlService(Core::System& system_, Capability capability_)
+-        : ServiceFramework{system_, "IParentalControlService"}, capability{capability_},
+-          service_context{system_, "IParentalControlService"} {
+-        // clang-format off
+-        static const FunctionInfo functions[] = {
+-            {1, &IParentalControlService::Initialize, "Initialize"},
+-            {1001, &IParentalControlService::CheckFreeCommunicationPermission, "CheckFreeCommunicationPermission"},
+-            {1002, nullptr, "ConfirmLaunchApplicationPermission"},
+-            {1003, nullptr, "ConfirmResumeApplicationPermission"},
+-            {1004, &IParentalControlService::ConfirmSnsPostPermission, "ConfirmSnsPostPermission"},
+-            {1005, nullptr, "ConfirmSystemSettingsPermission"},
+-            {1006, &IParentalControlService::IsRestrictionTemporaryUnlocked, "IsRestrictionTemporaryUnlocked"},
+-            {1007, nullptr, "RevertRestrictionTemporaryUnlocked"},
+-            {1008, nullptr, "EnterRestrictedSystemSettings"},
+-            {1009, nullptr, "LeaveRestrictedSystemSettings"},
+-            {1010, nullptr, "IsRestrictedSystemSettingsEntered"},
+-            {1011, nullptr, "RevertRestrictedSystemSettingsEntered"},
+-            {1012, nullptr, "GetRestrictedFeatures"},
+-            {1013, &IParentalControlService::ConfirmStereoVisionPermission, "ConfirmStereoVisionPermission"},
+-            {1014, nullptr, "ConfirmPlayableApplicationVideoOld"},
+-            {1015, nullptr, "ConfirmPlayableApplicationVideo"},
+-            {1016, nullptr, "ConfirmShowNewsPermission"},
+-            {1017, &IParentalControlService::EndFreeCommunication, "EndFreeCommunication"},
+-            {1018, &IParentalControlService::IsFreeCommunicationAvailable, "IsFreeCommunicationAvailable"},
+-            {1031, &IParentalControlService::IsRestrictionEnabled, "IsRestrictionEnabled"},
+-            {1032, &IParentalControlService::GetSafetyLevel, "GetSafetyLevel"},
+-            {1033, nullptr, "SetSafetyLevel"},
+-            {1034, nullptr, "GetSafetyLevelSettings"},
+-            {1035, &IParentalControlService::GetCurrentSettings, "GetCurrentSettings"},
+-            {1036, nullptr, "SetCustomSafetyLevelSettings"},
+-            {1037, nullptr, "GetDefaultRatingOrganization"},
+-            {1038, nullptr, "SetDefaultRatingOrganization"},
+-            {1039, &IParentalControlService::GetFreeCommunicationApplicationListCount, "GetFreeCommunicationApplicationListCount"},
+-            {1042, nullptr, "AddToFreeCommunicationApplicationList"},
+-            {1043, nullptr, "DeleteSettings"},
+-            {1044, nullptr, "GetFreeCommunicationApplicationList"},
+-            {1045, nullptr, "UpdateFreeCommunicationApplicationList"},
+-            {1046, nullptr, "DisableFeaturesForReset"},
+-            {1047, nullptr, "NotifyApplicationDownloadStarted"},
+-            {1048, nullptr, "NotifyNetworkProfileCreated"},
+-            {1049, nullptr, "ResetFreeCommunicationApplicationList"},
+-            {1061, &IParentalControlService::ConfirmStereoVisionRestrictionConfigurable, "ConfirmStereoVisionRestrictionConfigurable"},
+-            {1062, &IParentalControlService::GetStereoVisionRestriction, "GetStereoVisionRestriction"},
+-            {1063, &IParentalControlService::SetStereoVisionRestriction, "SetStereoVisionRestriction"},
+-            {1064, &IParentalControlService::ResetConfirmedStereoVisionPermission, "ResetConfirmedStereoVisionPermission"},
+-            {1065, &IParentalControlService::IsStereoVisionPermitted, "IsStereoVisionPermitted"},
+-            {1201, nullptr, "UnlockRestrictionTemporarily"},
+-            {1202, nullptr, "UnlockSystemSettingsRestriction"},
+-            {1203, nullptr, "SetPinCode"},
+-            {1204, nullptr, "GenerateInquiryCode"},
+-            {1205, nullptr, "CheckMasterKey"},
+-            {1206, nullptr, "GetPinCodeLength"},
+-            {1207, nullptr, "GetPinCodeChangedEvent"},
+-            {1208, nullptr, "GetPinCode"},
+-            {1403, &IParentalControlService::IsPairingActive, "IsPairingActive"},
+-            {1406, nullptr, "GetSettingsLastUpdated"},
+-            {1411, nullptr, "GetPairingAccountInfo"},
+-            {1421, nullptr, "GetAccountNickname"},
+-            {1424, nullptr, "GetAccountState"},
+-            {1425, nullptr, "RequestPostEvents"},
+-            {1426, nullptr, "GetPostEventInterval"},
+-            {1427, nullptr, "SetPostEventInterval"},
+-            {1432, &IParentalControlService::GetSynchronizationEvent, "GetSynchronizationEvent"},
+-            {1451, nullptr, "StartPlayTimer"},
+-            {1452, nullptr, "StopPlayTimer"},
+-            {1453, nullptr, "IsPlayTimerEnabled"},
+-            {1454, nullptr, "GetPlayTimerRemainingTime"},
+-            {1455, nullptr, "IsRestrictedByPlayTimer"},
+-            {1456, &IParentalControlService::GetPlayTimerSettings, "GetPlayTimerSettings"},
+-            {1457, &IParentalControlService::GetPlayTimerEventToRequestSuspension, "GetPlayTimerEventToRequestSuspension"},
+-            {1458, &IParentalControlService::IsPlayTimerAlarmDisabled, "IsPlayTimerAlarmDisabled"},
+-            {1471, nullptr, "NotifyWrongPinCodeInputManyTimes"},
+-            {1472, nullptr, "CancelNetworkRequest"},
+-            {1473, &IParentalControlService::GetUnlinkedEvent, "GetUnlinkedEvent"},
+-            {1474, nullptr, "ClearUnlinkedEvent"},
+-            {1601, nullptr, "DisableAllFeatures"},
+-            {1602, nullptr, "PostEnableAllFeatures"},
+-            {1603, nullptr, "IsAllFeaturesDisabled"},
+-            {1901, nullptr, "DeleteFromFreeCommunicationApplicationListForDebug"},
+-            {1902, nullptr, "ClearFreeCommunicationApplicationListForDebug"},
+-            {1903, nullptr, "GetExemptApplicationListCountForDebug"},
+-            {1904, nullptr, "GetExemptApplicationListForDebug"},
+-            {1905, nullptr, "UpdateExemptApplicationListForDebug"},
+-            {1906, nullptr, "AddToExemptApplicationListForDebug"},
+-            {1907, nullptr, "DeleteFromExemptApplicationListForDebug"},
+-            {1908, nullptr, "ClearExemptApplicationListForDebug"},
+-            {1941, nullptr, "DeletePairing"},
+-            {1951, nullptr, "SetPlayTimerSettingsForDebug"},
+-            {1952, nullptr, "GetPlayTimerSpentTimeForTest"},
+-            {1953, nullptr, "SetPlayTimerAlarmDisabledForDebug"},
+-            {2001, nullptr, "RequestPairingAsync"},
+-            {2002, nullptr, "FinishRequestPairing"},
+-            {2003, nullptr, "AuthorizePairingAsync"},
+-            {2004, nullptr, "FinishAuthorizePairing"},
+-            {2005, nullptr, "RetrievePairingInfoAsync"},
+-            {2006, nullptr, "FinishRetrievePairingInfo"},
+-            {2007, nullptr, "UnlinkPairingAsync"},
+-            {2008, nullptr, "FinishUnlinkPairing"},
+-            {2009, nullptr, "GetAccountMiiImageAsync"},
+-            {2010, nullptr, "FinishGetAccountMiiImage"},
+-            {2011, nullptr, "GetAccountMiiImageContentTypeAsync"},
+-            {2012, nullptr, "FinishGetAccountMiiImageContentType"},
+-            {2013, nullptr, "SynchronizeParentalControlSettingsAsync"},
+-            {2014, nullptr, "FinishSynchronizeParentalControlSettings"},
+-            {2015, nullptr, "FinishSynchronizeParentalControlSettingsWithLastUpdated"},
+-            {2016, nullptr, "RequestUpdateExemptionListAsync"},
+-        };
+-        // clang-format on
+-        RegisterHandlers(functions);
+-
+-        synchronization_event =
+-            service_context.CreateEvent("IParentalControlService::SynchronizationEvent");
+-        unlinked_event = service_context.CreateEvent("IParentalControlService::UnlinkedEvent");
+-        request_suspension_event =
+-            service_context.CreateEvent("IParentalControlService::RequestSuspensionEvent");
+-    }
+-
+-    ~IParentalControlService() {
+-        service_context.CloseEvent(synchronization_event);
+-        service_context.CloseEvent(unlinked_event);
+-        service_context.CloseEvent(request_suspension_event);
+-    };
+-
+-private:
+-    bool CheckFreeCommunicationPermissionImpl() const {
+-        if (states.temporary_unlocked) {
+-            return true;
+-        }
+-        if ((states.application_info.parental_control_flag & 1) == 0) {
+-            return true;
+-        }
+-        if (pin_code[0] == '\0') {
+-            return true;
+-        }
+-        if (!settings.is_free_communication_default_on) {
+-            return true;
+-        }
+-        // TODO(ogniK): Check for blacklisted/exempted applications. Return false can happen here
+-        // but as we don't have multiproceses support yet, we can just assume our application is
+-        // valid for the time being
+-        return true;
+-    }
+-
+-    bool ConfirmStereoVisionPermissionImpl() const {
+-        if (states.temporary_unlocked) {
+-            return true;
+-        }
+-        if (pin_code[0] == '\0') {
+-            return true;
+-        }
+-        if (!settings.is_stero_vision_restricted) {
+-            return false;
+-        }
+-        return true;
+-    }
+-
+-    void SetStereoVisionRestrictionImpl(bool is_restricted) {
+-        if (settings.disabled) {
+-            return;
+-        }
+-
+-        if (pin_code[0] == '\0') {
+-            return;
+-        }
+-        settings.is_stero_vision_restricted = is_restricted;
+-    }
+-
+-    void Initialize(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_PCTL, "called");
+-        IPC::ResponseBuilder rb{ctx, 2};
+-
+-        if (False(capability & (Capability::Application | Capability::System))) {
+-            LOG_ERROR(Service_PCTL, "Invalid capability! capability={:X}", capability);
+-            return;
+-        }
+-
+-        // TODO(ogniK): Recovery flag initialization for pctl:r
+-
+-        const auto tid = system.GetApplicationProcessProgramID();
+-        if (tid != 0) {
+-            const FileSys::PatchManager pm{tid, system.GetFileSystemController(),
+-                                           system.GetContentProvider()};
+-            const auto control = pm.GetControlMetadata();
+-            if (control.first) {
+-                states.tid_from_event = 0;
+-                states.launch_time_valid = false;
+-                states.is_suspended = false;
+-                states.free_communication = false;
+-                states.stereo_vision = false;
+-                states.application_info = ApplicationInfo{
+-                    .tid = tid,
+-                    .age_rating = control.first->GetRatingAge(),
+-                    .parental_control_flag = control.first->GetParentalControlFlag(),
+-                    .capability = capability,
+-                };
+-
+-                if (False(capability & (Capability::System | Capability::Recovery))) {
+-                    // TODO(ogniK): Signal application launch event
+-                }
+-            }
+-        }
+-
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void CheckFreeCommunicationPermission(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        if (!CheckFreeCommunicationPermissionImpl()) {
+-            rb.Push(Error::ResultNoFreeCommunication);
+-        } else {
+-            rb.Push(ResultSuccess);
+-        }
+-
+-        states.free_communication = true;
+-    }
+-
+-    void ConfirmSnsPostPermission(HLERequestContext& ctx) {
+-        LOG_WARNING(Service_PCTL, "(STUBBED) called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(Error::ResultNoFreeCommunication);
+-    }
+-
+-    void IsRestrictionTemporaryUnlocked(HLERequestContext& ctx) {
+-        const bool is_temporary_unlocked = false;
+-
+-        LOG_WARNING(Service_PCTL, "(STUBBED) called, is_temporary_unlocked={}",
+-                    is_temporary_unlocked);
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.Push<u8>(is_temporary_unlocked);
+-    }
+-
+-    void ConfirmStereoVisionPermission(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_PCTL, "called");
+-        states.stereo_vision = true;
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void EndFreeCommunication(HLERequestContext& ctx) {
+-        LOG_WARNING(Service_PCTL, "(STUBBED) called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void IsFreeCommunicationAvailable(HLERequestContext& ctx) {
+-        LOG_WARNING(Service_PCTL, "(STUBBED) called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        if (!CheckFreeCommunicationPermissionImpl()) {
+-            rb.Push(Error::ResultNoFreeCommunication);
+-        } else {
+-            rb.Push(ResultSuccess);
+-        }
+-    }
+-
+-    void IsRestrictionEnabled(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        if (False(capability & (Capability::Status | Capability::Recovery))) {
+-            LOG_ERROR(Service_PCTL, "Application does not have Status or Recovery capabilities!");
+-            rb.Push(Error::ResultNoCapability);
+-            rb.Push(false);
+-            return;
+-        }
+-
+-        rb.Push(pin_code[0] != '\0');
+-    }
+-
+-    void GetSafetyLevel(HLERequestContext& ctx) {
+-        const u32 safety_level = 0;
+-
+-        LOG_WARNING(Service_PCTL, "(STUBBED) called, safety_level={}", safety_level);
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.Push(safety_level);
+-    }
+-
+-    void GetCurrentSettings(HLERequestContext& ctx) {
+-        LOG_INFO(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.PushRaw(restriction_settings);
+-    }
+-
+-    void GetFreeCommunicationApplicationListCount(HLERequestContext& ctx) {
+-        const u32 count = 4;
+-
+-        LOG_WARNING(Service_PCTL, "(STUBBED) called, count={}", count);
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.Push(count);
+-    }
+-
+-    void ConfirmStereoVisionRestrictionConfigurable(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-
+-        if (False(capability & Capability::StereoVision)) {
+-            LOG_ERROR(Service_PCTL, "Application does not have StereoVision capability!");
+-            rb.Push(Error::ResultNoCapability);
+-            return;
+-        }
+-
+-        if (pin_code[0] == '\0') {
+-            rb.Push(Error::ResultNoRestrictionEnabled);
+-            return;
+-        }
+-
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void IsStereoVisionPermitted(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        if (!ConfirmStereoVisionPermissionImpl()) {
+-            rb.Push(Error::ResultStereoVisionRestricted);
+-            rb.Push(false);
+-        } else {
+-            rb.Push(ResultSuccess);
+-            rb.Push(true);
+-        }
+-    }
+-
+-    void IsPairingActive(HLERequestContext& ctx) {
+-        const bool is_pairing_active = false;
+-
+-        LOG_WARNING(Service_PCTL, "(STUBBED) called, is_pairing_active={}", is_pairing_active);
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.Push<u8>(is_pairing_active);
+-    }
+-
+-    void GetSynchronizationEvent(HLERequestContext& ctx) {
+-        LOG_INFO(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushCopyObjects(synchronization_event->GetReadableEvent());
+-    }
+-
+-    void GetPlayTimerSettings(HLERequestContext& ctx) {
+-        LOG_WARNING(Service_PCTL, "(STUBBED) called");
+-
+-        const PlayTimerSettings timer_settings{};
+-
+-        IPC::ResponseBuilder rb{ctx, 15};
+-        rb.Push(ResultSuccess);
+-        rb.PushRaw(timer_settings);
+-    }
+-
+-    void GetPlayTimerEventToRequestSuspension(HLERequestContext& ctx) {
+-        LOG_INFO(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushCopyObjects(request_suspension_event->GetReadableEvent());
+-    }
+-
+-    void IsPlayTimerAlarmDisabled(HLERequestContext& ctx) {
+-        const bool is_play_timer_alarm_disabled = false;
+-
+-        LOG_INFO(Service_PCTL, "called, is_play_timer_alarm_disabled={}",
+-                 is_play_timer_alarm_disabled);
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        rb.Push(ResultSuccess);
+-        rb.Push<u8>(is_play_timer_alarm_disabled);
+-    }
+-
+-    void GetUnlinkedEvent(HLERequestContext& ctx) {
+-        LOG_INFO(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 2, 1};
+-        rb.Push(ResultSuccess);
+-        rb.PushCopyObjects(unlinked_event->GetReadableEvent());
+-    }
+-
+-    void SetStereoVisionRestriction(HLERequestContext& ctx) {
+-        IPC::RequestParser rp{ctx};
+-        const auto can_use = rp.Pop<bool>();
+-        LOG_DEBUG(Service_PCTL, "called, can_use={}", can_use);
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        if (False(capability & Capability::StereoVision)) {
+-            LOG_ERROR(Service_PCTL, "Application does not have StereoVision capability!");
+-            rb.Push(Error::ResultNoCapability);
+-            return;
+-        }
+-
+-        SetStereoVisionRestrictionImpl(can_use);
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    void GetStereoVisionRestriction(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_PCTL, "called");
+-
+-        IPC::ResponseBuilder rb{ctx, 3};
+-        if (False(capability & Capability::StereoVision)) {
+-            LOG_ERROR(Service_PCTL, "Application does not have StereoVision capability!");
+-            rb.Push(Error::ResultNoCapability);
+-            rb.Push(false);
+-            return;
+-        }
+-
+-        rb.Push(ResultSuccess);
+-        rb.Push(settings.is_stero_vision_restricted);
+-    }
+-
+-    void ResetConfirmedStereoVisionPermission(HLERequestContext& ctx) {
+-        LOG_DEBUG(Service_PCTL, "called");
+-
+-        states.stereo_vision = false;
+-
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
+-    }
+-
+-    struct ApplicationInfo {
+-        u64 tid{};
+-        std::array<u8, 32> age_rating{};
+-        u32 parental_control_flag{};
+-        Capability capability{};
+-    };
+-
+-    struct States {
+-        u64 current_tid{};
+-        ApplicationInfo application_info{};
+-        u64 tid_from_event{};
+-        bool launch_time_valid{};
+-        bool is_suspended{};
+-        bool temporary_unlocked{};
+-        bool free_communication{};
+-        bool stereo_vision{};
+-    };
+-
+-    struct ParentalControlSettings {
+-        bool is_stero_vision_restricted{};
+-        bool is_free_communication_default_on{};
+-        bool disabled{};
+-    };
+-
+-    // This is nn::pctl::RestrictionSettings
+-    struct RestrictionSettings {
+-        u8 rating_age;
+-        bool sns_post_restriction;
+-        bool free_communication_restriction;
+-    };
+-    static_assert(sizeof(RestrictionSettings) == 0x3, "RestrictionSettings has incorrect size.");
+-
+-    // This is nn::pctl::PlayTimerSettings
+-    struct PlayTimerSettings {
+-        std::array<u32, 13> settings;
+-    };
+-    static_assert(sizeof(PlayTimerSettings) == 0x34, "PlayTimerSettings has incorrect size.");
+-
+-    States states{};
+-    ParentalControlSettings settings{};
+-    RestrictionSettings restriction_settings{};
+-    std::array<char, 8> pin_code{};
+-    Capability capability{};
+-
+-    Kernel::KEvent* synchronization_event;
+-    Kernel::KEvent* unlinked_event;
+-    Kernel::KEvent* request_suspension_event;
+-    KernelHelpers::ServiceContext service_context;
+-};
+-
+-void Module::Interface::CreateService(HLERequestContext& ctx) {
+-    LOG_DEBUG(Service_PCTL, "called");
+-
+-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-    rb.Push(ResultSuccess);
+-    // TODO(ogniK): Get TID from process
+-
+-    rb.PushIpcInterface<IParentalControlService>(system, capability);
+-}
+-
+-void Module::Interface::CreateServiceWithoutInitialize(HLERequestContext& ctx) {
+-    LOG_DEBUG(Service_PCTL, "called");
+-
+-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+-    rb.Push(ResultSuccess);
+-    rb.PushIpcInterface<IParentalControlService>(system, capability);
+-}
+-
+-Module::Interface::Interface(Core::System& system_, std::shared_ptr<Module> module_,
+-                             const char* name_, Capability capability_)
+-    : ServiceFramework{system_, name_}, module{std::move(module_)}, capability{capability_} {}
+-
+-Module::Interface::~Interface() = default;
+-
+-void LoopProcess(Core::System& system) {
+-    auto server_manager = std::make_unique<ServerManager>(system);
+-
+-    auto module = std::make_shared<Module>();
+-    server_manager->RegisterNamedService(
+-        "pctl", std::make_shared<PCTL>(system, module, "pctl",
+-                                       Capability::Application | Capability::SnsPost |
+-                                           Capability::Status | Capability::StereoVision));
+-    // TODO(ogniK): Implement remaining capabilities
+-    server_manager->RegisterNamedService(
+-        "pctl:a", std::make_shared<PCTL>(system, module, "pctl:a", Capability::None));
+-    server_manager->RegisterNamedService(
+-        "pctl:r", std::make_shared<PCTL>(system, module, "pctl:r", Capability::None));
+-    server_manager->RegisterNamedService(
+-        "pctl:s", std::make_shared<PCTL>(system, module, "pctl:s", Capability::None));
+-    ServerManager::RunServer(std::move(server_manager));
+-}
+-
+-} // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/pctl_module.h b/src/core/hle/service/pctl/pctl_module.h
+deleted file mode 100644
+index dff0d3f08753..000000000000
+--- a/src/core/hle/service/pctl/pctl_module.h
++++ /dev/null
+@@ -1,47 +0,0 @@
+-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+-// SPDX-License-Identifier: GPL-2.0-or-later
+-
+-#pragma once
+-
+-#include "common/common_funcs.h"
+-#include "core/hle/service/service.h"
+-
+-namespace Core {
+-class System;
+-}
+-
+-namespace Service::PCTL {
+-
+-enum class Capability : u32 {
+-    None = 0,
+-    Application = 1 << 0,
+-    SnsPost = 1 << 1,
+-    Recovery = 1 << 6,
+-    Status = 1 << 8,
+-    StereoVision = 1 << 9,
+-    System = 1 << 15,
+-};
+-DECLARE_ENUM_FLAG_OPERATORS(Capability);
+-
+-class Module final {
+-public:
+-    class Interface : public ServiceFramework<Interface> {
+-    public:
+-        explicit Interface(Core::System& system_, std::shared_ptr<Module> module_,
+-                           const char* name_, Capability capability_);
+-        ~Interface() override;
+-
+-        void CreateService(HLERequestContext& ctx);
+-        void CreateServiceWithoutInitialize(HLERequestContext& ctx);
+-
+-    protected:
+-        std::shared_ptr<Module> module;
+-
+-    private:
+-        Capability capability{};
+-    };
+-};
+-
+-void LoopProcess(Core::System& system);
+-
+-} // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/pctl_results.h b/src/core/hle/service/pctl/pctl_results.h
+new file mode 100644
+index 000000000000..1fc54727b7af
+--- /dev/null
++++ b/src/core/hle/service/pctl/pctl_results.h
+@@ -0,0 +1,15 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "core/hle/result.h"
++
++namespace Service::PCTL {
++
++constexpr Result ResultNoFreeCommunication{ErrorModule::PCTL, 101};
++constexpr Result ResultStereoVisionRestricted{ErrorModule::PCTL, 104};
++constexpr Result ResultNoCapability{ErrorModule::PCTL, 131};
++constexpr Result ResultNoRestrictionEnabled{ErrorModule::PCTL, 181};
++
++} // namespace Service::PCTL
+diff --git a/src/core/hle/service/pctl/pctl_types.h b/src/core/hle/service/pctl/pctl_types.h
+new file mode 100644
+index 000000000000..daaecdf48f54
+--- /dev/null
++++ b/src/core/hle/service/pctl/pctl_types.h
+@@ -0,0 +1,43 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "common/common_funcs.h"
++
++namespace Service::PCTL {
++
++enum class Capability : u32 {
++    None = 0,
++    Application = 1 << 0,
++    SnsPost = 1 << 1,
++    Recovery = 1 << 6,
++    Status = 1 << 8,
++    StereoVision = 1 << 9,
++    System = 1 << 15,
++};
++DECLARE_ENUM_FLAG_OPERATORS(Capability);
++
++struct ApplicationInfo {
++    u64 application_id{};
++    std::array<u8, 32> age_rating{};
++    u32 parental_control_flag{};
++    Capability capability{};
++};
++static_assert(sizeof(ApplicationInfo) == 0x30, "ApplicationInfo has incorrect size.");
++
++// This is nn::pctl::RestrictionSettings
++struct RestrictionSettings {
++    u8 rating_age;
++    bool sns_post_restriction;
++    bool free_communication_restriction;
++};
++static_assert(sizeof(RestrictionSettings) == 0x3, "RestrictionSettings has incorrect size.");
++
++// This is nn::pctl::PlayTimerSettings
++struct PlayTimerSettings {
++    std::array<u32, 13> settings;
++};
++static_assert(sizeof(PlayTimerSettings) == 0x34, "PlayTimerSettings has incorrect size.");
++
++} // namespace Service::PCTL
+diff --git a/src/core/hle/service/services.cpp b/src/core/hle/service/services.cpp
+index d6c6eff5008c..1aa85ea5458d 100644
+--- a/src/core/hle/service/services.cpp
++++ b/src/core/hle/service/services.cpp
+@@ -46,7 +46,7 @@
+ #include "core/hle/service/olsc/olsc.h"
+ #include "core/hle/service/omm/omm.h"
+ #include "core/hle/service/pcie/pcie.h"
+-#include "core/hle/service/pctl/pctl_module.h"
++#include "core/hle/service/pctl/pctl.h"
+ #include "core/hle/service/pcv/pcv.h"
+ #include "core/hle/service/pm/pm.h"
+ #include "core/hle/service/prepo/prepo.h"

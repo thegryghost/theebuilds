@@ -1,0 +1,20 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d460f1f7d353..6a846ecd09a6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -319,7 +319,7 @@ if (ENABLE_LIBUSB)
+ endif()
+ 
+ if (ARCHITECTURE_x86 OR ARCHITECTURE_x86_64)
+-    find_package(xbyak 6 CONFIG)
++    find_package(xbyak 7 CONFIG)
+ endif()
+ 
+ if (ARCHITECTURE_arm64)
+diff --git a/externals/xbyak b/externals/xbyak
+index a1ac3750f9a6..9c0f5d3ecb06 160000
+--- a/externals/xbyak
++++ b/externals/xbyak
+@@ -1 +1 @@
+-Subproject commit a1ac3750f9a639b5a6c6d6c7da4259b8d6790989
++Subproject commit 9c0f5d3ecb06d2c93c2b59becb9b3b763213e74e

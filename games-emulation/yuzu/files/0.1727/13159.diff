@@ -1,0 +1,882 @@
+diff --git a/src/common/settings.h b/src/common/settings.h
+index b2b071e7e81a..1dbdcd8a6962 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -140,7 +140,7 @@ struct Values {
+                                                Category::LibraryApplet};
+     Setting<AppletMode> data_erase_applet_mode{linkage, AppletMode::HLE, "data_erase_applet_mode",
+                                                Category::LibraryApplet};
+-    Setting<AppletMode> error_applet_mode{linkage, AppletMode::HLE, "error_applet_mode",
++    Setting<AppletMode> error_applet_mode{linkage, AppletMode::LLE, "error_applet_mode",
+                                           Category::LibraryApplet};
+     Setting<AppletMode> net_connect_applet_mode{linkage, AppletMode::HLE, "net_connect_applet_mode",
+                                                 Category::LibraryApplet};
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 1eb43d816ef9..63a6da12e682 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -1047,9 +1047,12 @@ add_library(core STATIC
+     hle/service/spl/spl_module.h
+     hle/service/spl/spl_results.h
+     hle/service/spl/spl_types.h
++    hle/service/ssl/cert_store.cpp
++    hle/service/ssl/cert_store.h
+     hle/service/ssl/ssl.cpp
+     hle/service/ssl/ssl.h
+     hle/service/ssl/ssl_backend.h
++    hle/service/ssl/ssl_types.h
+     hle/service/usb/usb.cpp
+     hle/service/usb/usb.h
+     hle/service/vi/application_display_service.cpp
+diff --git a/src/core/hle/service/acc/acc.cpp b/src/core/hle/service/acc/acc.cpp
+index f21553644639..fad111d44d03 100644
+--- a/src/core/hle/service/acc/acc.cpp
++++ b/src/core/hle/service/acc/acc.cpp
+@@ -25,8 +25,8 @@
+ #include "core/hle/service/acc/async_context.h"
+ #include "core/hle/service/acc/errors.h"
+ #include "core/hle/service/acc/profile_manager.h"
++#include "core/hle/service/cmif_serialization.h"
+ #include "core/hle/service/glue/glue_manager.h"
+-#include "core/hle/service/ipc_helpers.h"
+ #include "core/hle/service/server_manager.h"
+ #include "core/loader/loader.h"
+ 
+@@ -74,12 +74,12 @@ static void SanitizeJPEGImageSize(std::vector<u8>& image) {
+ 
+ class IManagerForSystemService final : public ServiceFramework<IManagerForSystemService> {
+ public:
+-    explicit IManagerForSystemService(Core::System& system_, Common::UUID)
+-        : ServiceFramework{system_, "IManagerForSystemService"} {
++    explicit IManagerForSystemService(Core::System& system_, Common::UUID uuid)
++        : ServiceFramework{system_, "IManagerForSystemService"}, account_id{uuid} {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+-            {0, &IManagerForSystemService::CheckAvailability, "CheckAvailability"},
+-            {1, nullptr, "GetAccountId"},
++            {0, D<&IManagerForSystemService::CheckAvailability>, "CheckAvailability"},
++            {1, D<&IManagerForSystemService::GetAccountId>, "GetAccountId"},
+             {2, nullptr, "EnsureIdTokenCacheAsync"},
+             {3, nullptr, "LoadIdTokenCache"},
+             {100, nullptr, "SetSystemProgramIdentification"},
+@@ -109,11 +109,18 @@ class IManagerForSystemService final : public ServiceFramework<IManagerForSystem
+     }
+ 
+ private:
+-    void CheckAvailability(HLERequestContext& ctx) {
++    Result CheckAvailability() {
+         LOG_WARNING(Service_ACC, "(STUBBED) called");
+-        IPC::ResponseBuilder rb{ctx, 2};
+-        rb.Push(ResultSuccess);
++        R_SUCCEED();
+     }
++
++    Result GetAccountId(Out<u64> out_account_id) {
++        LOG_WARNING(Service_ACC, "(STUBBED) called");
++        *out_account_id = account_id.Hash();
++        R_SUCCEED();
++    }
++
++    Common::UUID account_id;
+ };
+ 
+ // 3.0.0+
+diff --git a/src/core/hle/service/acc/acc_u1.cpp b/src/core/hle/service/acc/acc_u1.cpp
+index 92f704c2f694..eecc94387b61 100644
+--- a/src/core/hle/service/acc/acc_u1.cpp
++++ b/src/core/hle/service/acc/acc_u1.cpp
+@@ -23,7 +23,7 @@ ACC_U1::ACC_U1(std::shared_ptr<Module> module_, std::shared_ptr<ProfileManager>
+         {99, nullptr, "DebugActivateOpenContextRetention"},
+         {100, nullptr, "GetUserRegistrationNotifier"},
+         {101, nullptr, "GetUserStateChangeNotifier"},
+-        {102, nullptr, "GetBaasAccountManagerForSystemService"},
++        {102, &ACC_U1::GetBaasAccountManagerForSystemService, "GetBaasAccountManagerForSystemService"},
+         {103, nullptr, "GetBaasUserAvailabilityChangeNotifier"},
+         {104, nullptr, "GetProfileUpdateNotifier"},
+         {105, nullptr, "CheckNetworkServiceAvailabilityAsync"},
+diff --git a/src/core/hle/service/am/am_types.h b/src/core/hle/service/am/am_types.h
+index 46afb3996162..a14defb40307 100644
+--- a/src/core/hle/service/am/am_types.h
++++ b/src/core/hle/service/am/am_types.h
+@@ -48,11 +48,6 @@ enum class SystemButtonType {
+     CaptureButtonLongPressing,
+ };
+ 
+-enum class SysPlatformRegion : s32 {
+-    Global = 1,
+-    Terra = 2,
+-};
+-
+ struct AppletProcessLaunchReason {
+     u8 flag;
+     INSERT_PADDING_BYTES(3);
+diff --git a/src/core/hle/service/am/service/common_state_getter.cpp b/src/core/hle/service/am/service/common_state_getter.cpp
+index 548498e83507..a32855ffa30c 100644
+--- a/src/core/hle/service/am/service/common_state_getter.cpp
++++ b/src/core/hle/service/am/service/common_state_getter.cpp
+@@ -260,9 +260,9 @@ Result ICommonStateGetter::GetAppletLaunchedHistory(
+ }
+ 
+ Result ICommonStateGetter::GetSettingsPlatformRegion(
+-    Out<SysPlatformRegion> out_settings_platform_region) {
++    Out<Set::PlatformRegion> out_settings_platform_region) {
+     LOG_INFO(Service_AM, "called");
+-    *out_settings_platform_region = SysPlatformRegion::Global;
++    *out_settings_platform_region = Set::PlatformRegion::Global;
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/am/service/common_state_getter.h b/src/core/hle/service/am/service/common_state_getter.h
+index 5a8dca3d6ed2..59a46fa94f67 100644
+--- a/src/core/hle/service/am/service/common_state_getter.h
++++ b/src/core/hle/service/am/service/common_state_getter.h
+@@ -8,6 +8,7 @@
+ #include "core/hle/service/cmif_types.h"
+ #include "core/hle/service/pm/pm.h"
+ #include "core/hle/service/service.h"
++#include "core/hle/service/set/settings_types.h"
+ 
+ namespace Kernel {
+ class KReadableEvent;
+@@ -50,7 +51,7 @@ class ICommonStateGetter final : public ServiceFramework<ICommonStateGetter> {
+     Result GetOperationModeSystemInfo(Out<u32> out_operation_mode_system_info);
+     Result GetAppletLaunchedHistory(Out<s32> out_count,
+                                     OutArray<AppletId, BufferAttr_HipcMapAlias> out_applet_ids);
+-    Result GetSettingsPlatformRegion(Out<SysPlatformRegion> out_settings_platform_region);
++    Result GetSettingsPlatformRegion(Out<Set::PlatformRegion> out_settings_platform_region);
+     Result SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled();
+ 
+     void SetCpuBoostMode(HLERequestContext& ctx);
+diff --git a/src/core/hle/service/erpt/erpt.cpp b/src/core/hle/service/erpt/erpt.cpp
+index 39ae3a723791..6b7eab5efda1 100644
+--- a/src/core/hle/service/erpt/erpt.cpp
++++ b/src/core/hle/service/erpt/erpt.cpp
+@@ -18,7 +18,7 @@ class ErrorReportContext final : public ServiceFramework<ErrorReportContext> {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+             {0, C<&ErrorReportContext::SubmitContext>, "SubmitContext"},
+-            {1, nullptr, "CreateReportV0"},
++            {1, C<&ErrorReportContext::CreateReportV0>, "CreateReportV0"},
+             {2, nullptr, "SetInitialLaunchSettingsCompletionTime"},
+             {3, nullptr, "ClearInitialLaunchSettingsCompletionTime"},
+             {4, nullptr, "UpdatePowerOnTime"},
+@@ -28,7 +28,8 @@ class ErrorReportContext final : public ServiceFramework<ErrorReportContext> {
+             {8, nullptr, "ClearApplicationLaunchTime"},
+             {9, nullptr, "SubmitAttachment"},
+             {10, nullptr, "CreateReportWithAttachments"},
+-            {11, nullptr, "CreateReport"},
++            {11, C<&ErrorReportContext::CreateReportV1>, "CreateReportV1"},
++            {12, C<&ErrorReportContext::CreateReport>, "CreateReport"},
+             {20, nullptr, "RegisterRunningApplet"},
+             {21, nullptr, "UnregisterRunningApplet"},
+             {22, nullptr, "UpdateAppletSuspendedDuration"},
+@@ -40,10 +41,37 @@ class ErrorReportContext final : public ServiceFramework<ErrorReportContext> {
+     }
+ 
+ private:
+-    Result SubmitContext(InBuffer<BufferAttr_HipcMapAlias> buffer_a,
+-                         InBuffer<BufferAttr_HipcMapAlias> buffer_b) {
+-        LOG_WARNING(Service_SET, "(STUBBED) called, buffer_a_size={}, buffer_b_size={}",
+-                    buffer_a.size(), buffer_b.size());
++    Result SubmitContext(InBuffer<BufferAttr_HipcMapAlias> context_entry,
++                         InBuffer<BufferAttr_HipcMapAlias> field_list) {
++        LOG_WARNING(Service_SET, "(STUBBED) called, context_entry_size={}, field_list_size={}",
++                    context_entry.size(), field_list.size());
++        R_SUCCEED();
++    }
++
++    Result CreateReportV0(u32 report_type, InBuffer<BufferAttr_HipcMapAlias> context_entry,
++                          InBuffer<BufferAttr_HipcMapAlias> report_list,
++                          InBuffer<BufferAttr_HipcMapAlias> report_meta_data) {
++        LOG_WARNING(Service_SET, "(STUBBED) called, report_type={:#x}", report_type);
++        R_SUCCEED();
++    }
++
++    Result CreateReportV1(u32 report_type, u32 unknown,
++                          InBuffer<BufferAttr_HipcMapAlias> context_entry,
++                          InBuffer<BufferAttr_HipcMapAlias> report_list,
++                          InBuffer<BufferAttr_HipcMapAlias> report_meta_data) {
++        LOG_WARNING(Service_SET, "(STUBBED) called, report_type={:#x}, unknown={:#x}", report_type,
++                    unknown);
++        R_SUCCEED();
++    }
++
++    Result CreateReport(u32 report_type, u32 unknown, u32 create_report_option_flag,
++                        InBuffer<BufferAttr_HipcMapAlias> context_entry,
++                        InBuffer<BufferAttr_HipcMapAlias> report_list,
++                        InBuffer<BufferAttr_HipcMapAlias> report_meta_data) {
++        LOG_WARNING(
++            Service_SET,
++            "(STUBBED) called, report_type={:#x}, unknown={:#x}, create_report_option_flag={:#x}",
++            report_type, unknown, create_report_option_flag);
+         R_SUCCEED();
+     }
+ };
+diff --git a/src/core/hle/service/filesystem/fsp/fsp_srv.cpp b/src/core/hle/service/filesystem/fsp/fsp_srv.cpp
+index 2232842554aa..60290f1a6e86 100644
+--- a/src/core/hle/service/filesystem/fsp/fsp_srv.cpp
++++ b/src/core/hle/service/filesystem/fsp/fsp_srv.cpp
+@@ -71,7 +71,7 @@ FSP_SRV::FSP_SRV(Core::System& system_)
+         {28, nullptr, "DeleteSaveDataFileSystemBySaveDataAttribute"},
+         {30, nullptr, "OpenGameCardStorage"},
+         {31, nullptr, "OpenGameCardFileSystem"},
+-        {32, nullptr, "ExtendSaveDataFileSystem"},
++        {32, D<&FSP_SRV::ExtendSaveDataFileSystem>, "ExtendSaveDataFileSystem"},
+         {33, nullptr, "DeleteCacheStorage"},
+         {34, D<&FSP_SRV::GetCacheStorageSize>, "GetCacheStorageSize"},
+         {35, nullptr, "CreateSaveDataFileSystemByHashSalt"},
+@@ -79,9 +79,9 @@ FSP_SRV::FSP_SRV(Core::System& system_)
+         {51, D<&FSP_SRV::OpenSaveDataFileSystem>, "OpenSaveDataFileSystem"},
+         {52, D<&FSP_SRV::OpenSaveDataFileSystemBySystemSaveDataId>, "OpenSaveDataFileSystemBySystemSaveDataId"},
+         {53, D<&FSP_SRV::OpenReadOnlySaveDataFileSystem>, "OpenReadOnlySaveDataFileSystem"},
+-        {57, nullptr, "ReadSaveDataFileSystemExtraDataBySaveDataSpaceId"},
+-        {58, nullptr, "ReadSaveDataFileSystemExtraData"},
+-        {59, nullptr, "WriteSaveDataFileSystemExtraData"},
++        {57, D<&FSP_SRV::ReadSaveDataFileSystemExtraDataBySaveDataSpaceId>, "ReadSaveDataFileSystemExtraDataBySaveDataSpaceId"},
++        {58, D<&FSP_SRV::ReadSaveDataFileSystemExtraData>, "ReadSaveDataFileSystemExtraData"},
++        {59, D<&FSP_SRV::WriteSaveDataFileSystemExtraData>, "WriteSaveDataFileSystemExtraData"},
+         {60, nullptr, "OpenSaveDataInfoReader"},
+         {61, D<&FSP_SRV::OpenSaveDataInfoReaderBySaveDataSpaceId>, "OpenSaveDataInfoReaderBySaveDataSpaceId"},
+         {62, D<&FSP_SRV::OpenSaveDataInfoReaderOnlyCacheStorage>, "OpenSaveDataInfoReaderOnlyCacheStorage"},
+@@ -90,8 +90,8 @@ FSP_SRV::FSP_SRV(Core::System& system_)
+         {66, nullptr, "WriteSaveDataFileSystemExtraData2"},
+         {67, D<&FSP_SRV::FindSaveDataWithFilter>, "FindSaveDataWithFilter"},
+         {68, nullptr, "OpenSaveDataInfoReaderBySaveDataFilter"},
+-        {69, nullptr, "ReadSaveDataFileSystemExtraDataBySaveDataAttribute"},
+-        {70, D<&FSP_SRV::WriteSaveDataFileSystemExtraDataBySaveDataAttribute>, "WriteSaveDataFileSystemExtraDataBySaveDataAttribute"},
++        {69, D<&FSP_SRV::ReadSaveDataFileSystemExtraDataBySaveDataAttribute>, "ReadSaveDataFileSystemExtraDataBySaveDataAttribute"},
++        {70, D<&FSP_SRV::WriteSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute>, "WriteSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute"},
+         {71, D<&FSP_SRV::ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute>, "ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute"},
+         {80, nullptr, "OpenSaveDataMetaFile"},
+         {81, nullptr, "OpenSaveDataTransferManager"},
+@@ -317,9 +317,23 @@ Result FSP_SRV::FindSaveDataWithFilter(Out<s64> out_count,
+     R_THROW(FileSys::ResultTargetNotFound);
+ }
+ 
+-Result FSP_SRV::WriteSaveDataFileSystemExtraDataBySaveDataAttribute() {
+-    LOG_WARNING(Service_FS, "(STUBBED) called.");
++Result FSP_SRV::WriteSaveDataFileSystemExtraData(InBuffer<BufferAttr_HipcMapAlias> buffer,
++                                                 FileSys::SaveDataSpaceId space_id,
++                                                 u64 save_data_id) {
++    LOG_WARNING(Service_FS, "(STUBBED) called, space_id={}, save_data_id={:016X}", space_id,
++                save_data_id);
++    R_SUCCEED();
++}
+ 
++Result FSP_SRV::WriteSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute(
++    InBuffer<BufferAttr_HipcMapAlias> buffer, InBuffer<BufferAttr_HipcMapAlias> mask_buffer,
++    FileSys::SaveDataSpaceId space_id, FileSys::SaveDataAttribute attribute) {
++    LOG_WARNING(Service_FS,
++                "(STUBBED) called, space_id={}, attribute.program_id={:016X}\n"
++                "attribute.user_id={:016X}{:016X}, attribute.save_id={:016X}\n"
++                "attribute.type={}, attribute.rank={}, attribute.index={}",
++                space_id, attribute.program_id, attribute.user_id[1], attribute.user_id[0],
++                attribute.system_save_data_id, attribute.type, attribute.rank, attribute.index);
+     R_SUCCEED();
+ }
+ 
+@@ -341,6 +355,38 @@ Result FSP_SRV::ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute(
+     R_SUCCEED();
+ }
+ 
++Result FSP_SRV::ReadSaveDataFileSystemExtraData(OutBuffer<BufferAttr_HipcMapAlias> out_buffer,
++                                                u64 save_data_id) {
++    // Stub, backend needs an impl to read/write the SaveDataExtraData
++    LOG_WARNING(Service_FS, "(STUBBED) called, save_data_id={:016X}", save_data_id);
++    std::memset(out_buffer.data(), 0, out_buffer.size());
++    R_SUCCEED();
++}
++
++Result FSP_SRV::ReadSaveDataFileSystemExtraDataBySaveDataAttribute(
++    OutBuffer<BufferAttr_HipcMapAlias> out_buffer, FileSys::SaveDataSpaceId space_id,
++    FileSys::SaveDataAttribute attribute) {
++    // Stub, backend needs an impl to read/write the SaveDataExtraData
++    LOG_WARNING(Service_FS,
++                "(STUBBED) called, space_id={}, attribute.program_id={:016X}\n"
++                "attribute.user_id={:016X}{:016X}, attribute.save_id={:016X}\n"
++                "attribute.type={}, attribute.rank={}, attribute.index={}",
++                space_id, attribute.program_id, attribute.user_id[1], attribute.user_id[0],
++                attribute.system_save_data_id, attribute.type, attribute.rank, attribute.index);
++    std::memset(out_buffer.data(), 0, out_buffer.size());
++    R_SUCCEED();
++}
++
++Result FSP_SRV::ReadSaveDataFileSystemExtraDataBySaveDataSpaceId(
++    OutBuffer<BufferAttr_HipcMapAlias> out_buffer, FileSys::SaveDataSpaceId space_id,
++    u64 save_data_id) {
++    // Stub, backend needs an impl to read/write the SaveDataExtraData
++    LOG_WARNING(Service_FS, "(STUBBED) called, space_id={}, save_data_id={:016X}", space_id,
++                save_data_id);
++    std::memset(out_buffer.data(), 0, out_buffer.size());
++    R_SUCCEED();
++}
++
+ Result FSP_SRV::OpenSaveDataTransferProhibiter(
+     OutInterface<ISaveDataTransferProhibiter> out_prohibiter, u64 id) {
+     LOG_WARNING(Service_FS, "(STUBBED) called, id={:016X}", id);
+@@ -476,6 +522,16 @@ Result FSP_SRV::FlushAccessLogOnSdCard() {
+     R_SUCCEED();
+ }
+ 
++Result FSP_SRV::ExtendSaveDataFileSystem(FileSys::SaveDataSpaceId space_id, u64 save_data_id,
++                                         s64 available_size, s64 journal_size) {
++    // We don't have an index of save data ids, so we can't implement this.
++    LOG_WARNING(Service_FS,
++                "(STUBBED) called, space_id={}, save_data_id={:016X}, available_size={:#x}, "
++                "journal_size={:#x}",
++                space_id, save_data_id, available_size, journal_size);
++    R_SUCCEED();
++}
++
+ Result FSP_SRV::GetCacheStorageSize(s32 index, Out<s64> out_data_size, Out<s64> out_journal_size) {
+     LOG_WARNING(Service_FS, "(STUBBED) called with index={}", index);
+ 
+diff --git a/src/core/hle/service/filesystem/fsp/fsp_srv.h b/src/core/hle/service/filesystem/fsp/fsp_srv.h
+index 83d9cb51c760..b565cace04ea 100644
+--- a/src/core/hle/service/filesystem/fsp/fsp_srv.h
++++ b/src/core/hle/service/filesystem/fsp/fsp_srv.h
+@@ -70,7 +70,19 @@ class FSP_SRV final : public ServiceFramework<FSP_SRV> {
+     Result FindSaveDataWithFilter(Out<s64> out_count, OutBuffer<BufferAttr_HipcMapAlias> out_buffer,
+                                   FileSys::SaveDataSpaceId space_id,
+                                   FileSys::SaveDataFilter filter);
+-    Result WriteSaveDataFileSystemExtraDataBySaveDataAttribute();
++    Result WriteSaveDataFileSystemExtraData(InBuffer<BufferAttr_HipcMapAlias> buffer,
++                                            FileSys::SaveDataSpaceId space_id, u64 save_data_id);
++    Result WriteSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute(
++        InBuffer<BufferAttr_HipcMapAlias> buffer, InBuffer<BufferAttr_HipcMapAlias> mask_buffer,
++        FileSys::SaveDataSpaceId space_id, FileSys::SaveDataAttribute attribute);
++    Result ReadSaveDataFileSystemExtraData(OutBuffer<BufferAttr_HipcMapAlias> out_buffer,
++                                           u64 save_data_id);
++    Result ReadSaveDataFileSystemExtraDataBySaveDataAttribute(
++        OutBuffer<BufferAttr_HipcMapAlias> out_buffer, FileSys::SaveDataSpaceId space_id,
++        FileSys::SaveDataAttribute attribute);
++    Result ReadSaveDataFileSystemExtraDataBySaveDataSpaceId(
++        OutBuffer<BufferAttr_HipcMapAlias> out_buffer, FileSys::SaveDataSpaceId space_id,
++        u64 save_data_id);
+     Result ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute(
+         FileSys::SaveDataSpaceId space_id, FileSys::SaveDataAttribute attribute,
+         InBuffer<BufferAttr_HipcMapAlias> mask_buffer,
+@@ -91,6 +103,8 @@ class FSP_SRV final : public ServiceFramework<FSP_SRV> {
+     Result GetProgramIndexForAccessLog(Out<AccessLogVersion> out_access_log_version,
+                                        Out<u32> out_access_log_program_index);
+     Result OpenMultiCommitManager(OutInterface<IMultiCommitManager> out_interface);
++    Result ExtendSaveDataFileSystem(FileSys::SaveDataSpaceId space_id, u64 save_data_id,
++                                    s64 available_size, s64 journal_size);
+     Result GetCacheStorageSize(s32 index, Out<s64> out_data_size, Out<s64> out_journal_size);
+ 
+     FileSystemController& fsc;
+diff --git a/src/core/hle/service/ldn/monitor_service.cpp b/src/core/hle/service/ldn/monitor_service.cpp
+index 3471f69da42e..ea6ac4d5dd59 100644
+--- a/src/core/hle/service/ldn/monitor_service.cpp
++++ b/src/core/hle/service/ldn/monitor_service.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ 
+ #include "core/hle/service/cmif_serialization.h"
++#include "core/hle/service/ldn/ldn_results.h"
+ #include "core/hle/service/ldn/monitor_service.h"
+ 
+ namespace Service::LDN {
+@@ -17,7 +18,7 @@ IMonitorService::IMonitorService(Core::System& system_)
+         {4, nullptr, "GetSecurityParameterForMonitor"},
+         {5, nullptr, "GetNetworkConfigForMonitor"},
+         {100, C<&IMonitorService::InitializeMonitor>, "InitializeMonitor"},
+-        {101, nullptr, "FinalizeMonitor"},
++        {101, C<&IMonitorService::FinalizeMonitor>, "FinalizeMonitor"},
+     };
+     // clang-format on
+ 
+@@ -27,16 +28,18 @@ IMonitorService::IMonitorService(Core::System& system_)
+ IMonitorService::~IMonitorService() = default;
+ 
+ Result IMonitorService::GetStateForMonitor(Out<State> out_state) {
+-    LOG_INFO(Service_LDN, "called");
+-
+-    *out_state = state;
++    LOG_WARNING(Service_LDN, "(STUBBED) called");
++    *out_state = State::None;
+     R_SUCCEED();
+ }
+ 
+ Result IMonitorService::InitializeMonitor() {
+     LOG_INFO(Service_LDN, "called");
++    R_SUCCEED();
++}
+ 
+-    state = State::Initialized;
++Result IMonitorService::FinalizeMonitor() {
++    LOG_INFO(Service_LDN, "called");
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/ldn/monitor_service.h b/src/core/hle/service/ldn/monitor_service.h
+index 61aacef30822..e663145b4fe1 100644
+--- a/src/core/hle/service/ldn/monitor_service.h
++++ b/src/core/hle/service/ldn/monitor_service.h
+@@ -21,6 +21,7 @@ class IMonitorService final : public ServiceFramework<IMonitorService> {
+ private:
+     Result GetStateForMonitor(Out<State> out_state);
+     Result InitializeMonitor();
++    Result FinalizeMonitor();
+ 
+     State state{State::None};
+ };
+diff --git a/src/core/hle/service/set/settings_types.h b/src/core/hle/service/set/settings_types.h
+index 4fd34f46bcaa..92c2948b00f5 100644
+--- a/src/core/hle/service/set/settings_types.h
++++ b/src/core/hle/service/set/settings_types.h
+@@ -243,6 +243,11 @@ enum class TvResolution : u32 {
+     Resolution480p,
+ };
+ 
++enum class PlatformRegion : s32 {
++    Global = 1,
++    Terra = 2,
++};
++
+ constexpr std::array<LanguageCode, 18> available_language_codes = {{
+     LanguageCode::JA,
+     LanguageCode::EN_US,
+diff --git a/src/core/hle/service/set/system_settings_server.cpp b/src/core/hle/service/set/system_settings_server.cpp
+index 900d5408f4f6..0dc8db82126a 100644
+--- a/src/core/hle/service/set/system_settings_server.cpp
++++ b/src/core/hle/service/set/system_settings_server.cpp
+@@ -272,8 +272,8 @@ ISystemSettingsServer::ISystemSettingsServer(Core::System& system_)
+         {180, nullptr, "SetZoomFlag"},
+         {181, nullptr, "GetT"},
+         {182, nullptr, "SetT"},
+-        {183, nullptr, "GetPlatformRegion"},
+-        {184, nullptr, "SetPlatformRegion"},
++        {183, C<&ISystemSettingsServer::GetPlatformRegion>, "GetPlatformRegion"},
++        {184, C<&ISystemSettingsServer::SetPlatformRegion>, "SetPlatformRegion"},
+         {185, C<&ISystemSettingsServer::GetHomeMenuSchemeModel>, "GetHomeMenuSchemeModel"},
+         {186, nullptr, "GetMemoryUsageRateFlag"},
+         {187, C<&ISystemSettingsServer::GetTouchScreenMode>, "GetTouchScreenMode"},
+@@ -1250,6 +1250,18 @@ Result ISystemSettingsServer::GetHomeMenuScheme(Out<HomeMenuScheme> out_home_men
+     R_SUCCEED();
+ }
+ 
++Result ISystemSettingsServer::GetPlatformRegion(Out<PlatformRegion> out_platform_region) {
++    LOG_WARNING(Service_SET, "(STUBBED) called");
++
++    *out_platform_region = PlatformRegion::Global;
++    R_SUCCEED();
++}
++
++Result ISystemSettingsServer::SetPlatformRegion(PlatformRegion platform_region) {
++    LOG_WARNING(Service_SET, "(STUBBED) called");
++    R_SUCCEED();
++}
++
+ Result ISystemSettingsServer::GetHomeMenuSchemeModel(Out<u32> out_home_menu_scheme_model) {
+     LOG_WARNING(Service_SET, "(STUBBED) called");
+ 
+diff --git a/src/core/hle/service/set/system_settings_server.h b/src/core/hle/service/set/system_settings_server.h
+index 9a1154ad6561..993e5de7d005 100644
+--- a/src/core/hle/service/set/system_settings_server.h
++++ b/src/core/hle/service/set/system_settings_server.h
+@@ -149,6 +149,8 @@ class ISystemSettingsServer final : public ServiceFramework<ISystemSettingsServe
+     Result GetHomeMenuScheme(Out<HomeMenuScheme> out_home_menu_scheme);
+     Result GetHomeMenuSchemeModel(Out<u32> out_home_menu_scheme_model);
+     Result GetTouchScreenMode(Out<TouchScreenMode> out_touch_screen_mode);
++    Result GetPlatformRegion(Out<PlatformRegion> out_platform_region);
++    Result SetPlatformRegion(PlatformRegion platform_region);
+     Result SetTouchScreenMode(TouchScreenMode touch_screen_mode);
+     Result GetFieldTestingFlag(Out<bool> out_field_testing_flag);
+     Result GetPanelCrcMode(Out<s32> out_panel_crc_mode);
+diff --git a/src/core/hle/service/ssl/cert_store.cpp b/src/core/hle/service/ssl/cert_store.cpp
+new file mode 100644
+index 000000000000..b321e5d32b64
+--- /dev/null
++++ b/src/core/hle/service/ssl/cert_store.cpp
+@@ -0,0 +1,156 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#include "common/alignment.h"
++#include "core/core.h"
++#include "core/file_sys/content_archive.h"
++#include "core/file_sys/nca_metadata.h"
++#include "core/file_sys/registered_cache.h"
++#include "core/file_sys/romfs.h"
++#include "core/hle/service/filesystem/filesystem.h"
++#include "core/hle/service/ssl/cert_store.h"
++
++namespace Service::SSL {
++
++// https://switchbrew.org/wiki/SSL_services#CertStore
++
++CertStore::CertStore(Core::System& system) {
++    constexpr u64 CertStoreDataId = 0x0100000000000800ULL;
++
++    auto& fsc = system.GetFileSystemController();
++
++    // Attempt to load certificate data from storage
++    const auto nca =
++        fsc.GetSystemNANDContents()->GetEntry(CertStoreDataId, FileSys::ContentRecordType::Data);
++    if (!nca) {
++        return;
++    }
++    const auto romfs = nca->GetRomFS();
++    if (!romfs) {
++        return;
++    }
++    const auto extracted = FileSys::ExtractRomFS(romfs);
++    if (!extracted) {
++        LOG_ERROR(Service_SSL, "CertStore could not be extracted, corrupt RomFS?");
++        return;
++    }
++    const auto cert_store_file = extracted->GetFile("ssl_TrustedCerts.bdf");
++    if (!cert_store_file) {
++        LOG_ERROR(Service_SSL, "Failed to find trusted certificates in CertStore");
++        return;
++    }
++
++    // Read and verify the header.
++    CertStoreHeader header;
++    cert_store_file->ReadObject(std::addressof(header));
++
++    if (header.magic != Common::MakeMagic('s', 's', 'l', 'T')) {
++        LOG_ERROR(Service_SSL, "Invalid certificate store magic");
++        return;
++    }
++
++    // Ensure the file can contains the number of entries it says it does.
++    const u64 expected_size = sizeof(header) + sizeof(CertStoreEntry) * header.num_entries;
++    const u64 actual_size = cert_store_file->GetSize();
++    if (actual_size < expected_size) {
++        LOG_ERROR(Service_SSL, "Size mismatch, expected at least {} bytes, got {}", expected_size,
++                  actual_size);
++        return;
++    }
++
++    // Read entries.
++    std::vector<CertStoreEntry> entries(header.num_entries);
++    cert_store_file->ReadArray(entries.data(), header.num_entries, sizeof(header));
++
++    // Insert into memory store.
++    for (const auto& entry : entries) {
++        m_certs.emplace(entry.certificate_id,
++                        Certificate{
++                            .status = entry.certificate_status,
++                            .der_data = cert_store_file->ReadBytes(
++                                entry.der_size, entry.der_offset + sizeof(header)),
++                        });
++    }
++}
++
++CertStore::~CertStore() = default;
++
++template <typename F>
++void CertStore::ForEachCertificate(std::span<const CaCertificateId> certificate_ids, F&& f) {
++    if (certificate_ids.size() == 1 && certificate_ids.front() == CaCertificateId::All) {
++        for (const auto& entry : m_certs) {
++            f(entry);
++        }
++    } else {
++        for (const auto certificate_id : certificate_ids) {
++            const auto entry = m_certs.find(certificate_id);
++            if (entry == m_certs.end()) {
++                continue;
++            }
++            f(*entry);
++        }
++    }
++}
++
++Result CertStore::GetCertificates(u32* out_num_entries, std::span<u8> out_data,
++                                  std::span<const CaCertificateId> certificate_ids) {
++    // Ensure the buffer is large enough to hold the output.
++    u32 required_size;
++    R_TRY(this->GetCertificateBufSize(std::addressof(required_size), out_num_entries,
++                                      certificate_ids));
++    R_UNLESS(out_data.size_bytes() >= required_size, ResultUnknown);
++
++    // Make parallel arrays.
++    std::vector<BuiltInCertificateInfo> cert_infos;
++    std::vector<u8> der_datas;
++
++    const u32 der_data_offset = (*out_num_entries + 1) * sizeof(BuiltInCertificateInfo);
++    u32 cur_der_offset = der_data_offset;
++
++    // Fill output.
++    this->ForEachCertificate(certificate_ids, [&](auto& entry) {
++        const auto& [status, cur_der_data] = entry.second;
++        BuiltInCertificateInfo cert_info{
++            .cert_id = entry.first,
++            .status = status,
++            .der_size = cur_der_data.size(),
++            .der_offset = cur_der_offset,
++        };
++
++        cert_infos.push_back(cert_info);
++        der_datas.insert(der_datas.end(), cur_der_data.begin(), cur_der_data.end());
++        cur_der_offset += static_cast<u32>(cur_der_data.size());
++    });
++
++    // Append terminator entry.
++    cert_infos.push_back(BuiltInCertificateInfo{
++        .cert_id = CaCertificateId::All,
++        .status = TrustedCertStatus::Invalid,
++        .der_size = 0,
++        .der_offset = 0,
++    });
++
++    // Write to output span.
++    std::memcpy(out_data.data(), cert_infos.data(),
++                cert_infos.size() * sizeof(BuiltInCertificateInfo));
++    std::memcpy(out_data.data() + der_data_offset, der_datas.data(), der_datas.size());
++
++    R_SUCCEED();
++}
++
++Result CertStore::GetCertificateBufSize(u32* out_size, u32* out_num_entries,
++                                        std::span<const CaCertificateId> certificate_ids) {
++    // Output size is at least the size of the terminator entry.
++    *out_size = sizeof(BuiltInCertificateInfo);
++    *out_num_entries = 0;
++
++    this->ForEachCertificate(certificate_ids, [&](auto& entry) {
++        *out_size += sizeof(BuiltInCertificateInfo);
++        *out_size += Common::AlignUp(static_cast<u32>(entry.second.der_data.size()), 4);
++        (*out_num_entries)++;
++    });
++
++    R_SUCCEED();
++}
++
++} // namespace Service::SSL
+diff --git a/src/core/hle/service/ssl/cert_store.h b/src/core/hle/service/ssl/cert_store.h
+new file mode 100644
+index 000000000000..613d7b02aff3
+--- /dev/null
++++ b/src/core/hle/service/ssl/cert_store.h
+@@ -0,0 +1,42 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include <map>
++#include <span>
++#include <vector>
++
++#include "core/hle/result.h"
++#include "core/hle/service/ssl/ssl_types.h"
++
++namespace Core {
++class System;
++}
++
++namespace Service::SSL {
++
++class CertStore {
++public:
++    explicit CertStore(Core::System& system);
++    ~CertStore();
++
++    Result GetCertificates(u32* out_num_entries, std::span<u8> out_data,
++                           std::span<const CaCertificateId> certificate_ids);
++    Result GetCertificateBufSize(u32* out_size, u32* out_num_entries,
++                                 std::span<const CaCertificateId> certificate_ids);
++
++private:
++    template <typename F>
++    void ForEachCertificate(std::span<const CaCertificateId> certs, F&& f);
++
++private:
++    struct Certificate {
++        TrustedCertStatus status;
++        std::vector<u8> der_data;
++    };
++
++    std::map<CaCertificateId, Certificate> m_certs;
++};
++
++} // namespace Service::SSL
+diff --git a/src/core/hle/service/ssl/ssl.cpp b/src/core/hle/service/ssl/ssl.cpp
+index 0fbb43057f15..008ee449238b 100644
+--- a/src/core/hle/service/ssl/ssl.cpp
++++ b/src/core/hle/service/ssl/ssl.cpp
+@@ -5,11 +5,13 @@
+ 
+ #include "core/core.h"
+ #include "core/hle/result.h"
++#include "core/hle/service/cmif_serialization.h"
+ #include "core/hle/service/ipc_helpers.h"
+ #include "core/hle/service/server_manager.h"
+ #include "core/hle/service/service.h"
+ #include "core/hle/service/sm/sm.h"
+ #include "core/hle/service/sockets/bsd.h"
++#include "core/hle/service/ssl/cert_store.h"
+ #include "core/hle/service/ssl/ssl.h"
+ #include "core/hle/service/ssl/ssl_backend.h"
+ #include "core/internal_network/network.h"
+@@ -492,13 +494,14 @@ class ISslContext final : public ServiceFramework<ISslContext> {
+ 
+ class ISslService final : public ServiceFramework<ISslService> {
+ public:
+-    explicit ISslService(Core::System& system_) : ServiceFramework{system_, "ssl"} {
++    explicit ISslService(Core::System& system_)
++        : ServiceFramework{system_, "ssl"}, cert_store{system} {
+         // clang-format off
+         static const FunctionInfo functions[] = {
+             {0, &ISslService::CreateContext, "CreateContext"},
+             {1, nullptr, "GetContextCount"},
+-            {2, nullptr, "GetCertificates"},
+-            {3, nullptr, "GetCertificateBufSize"},
++            {2, D<&ISslService::GetCertificates>, "GetCertificates"},
++            {3, D<&ISslService::GetCertificateBufSize>, "GetCertificateBufSize"},
+             {4, nullptr, "DebugIoctl"},
+             {5, &ISslService::SetInterfaceVersion, "SetInterfaceVersion"},
+             {6, nullptr, "FlushSessionCache"},
+@@ -540,6 +543,22 @@ class ISslService final : public ServiceFramework<ISslService> {
+         IPC::ResponseBuilder rb{ctx, 2};
+         rb.Push(ResultSuccess);
+     }
++
++    Result GetCertificateBufSize(
++        Out<u32> out_size, InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
++        LOG_INFO(Service_SSL, "called");
++        u32 num_entries;
++        R_RETURN(cert_store.GetCertificateBufSize(out_size, &num_entries, certificate_ids));
++    }
++
++    Result GetCertificates(Out<u32> out_num_entries, OutBuffer<BufferAttr_HipcMapAlias> out_buffer,
++                           InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
++        LOG_INFO(Service_SSL, "called");
++        R_RETURN(cert_store.GetCertificates(out_num_entries, out_buffer, certificate_ids));
++    }
++
++private:
++    CertStore cert_store;
+ };
+ 
+ void LoopProcess(Core::System& system) {
+diff --git a/src/core/hle/service/ssl/ssl_types.h b/src/core/hle/service/ssl/ssl_types.h
+new file mode 100644
+index 000000000000..dbc3dbf64c86
+--- /dev/null
++++ b/src/core/hle/service/ssl/ssl_types.h
+@@ -0,0 +1,107 @@
++// SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++#pragma once
++
++#include "common/common_types.h"
++
++namespace Service::SSL {
++
++enum class CaCertificateId : s32 {
++    All = -1,
++    NintendoCAG3 = 1,
++    NintendoClass2CAG3 = 2,
++    NintendoRootCAG4 = 3,
++    AmazonRootCA1 = 1000,
++    StarfieldServicesRootCertificateAuthorityG2 = 1001,
++    AddTrustExternalCARoot = 1002,
++    COMODOCertificationAuthority = 1003,
++    UTNDATACorpSGC = 1004,
++    UTNUSERFirstHardware = 1005,
++    BaltimoreCyberTrustRoot = 1006,
++    CybertrustGlobalRoot = 1007,
++    VerizonGlobalRootCA = 1008,
++    DigiCertAssuredIDRootCA = 1009,
++    DigiCertAssuredIDRootG2 = 1010,
++    DigiCertGlobalRootCA = 1011,
++    DigiCertGlobalRootG2 = 1012,
++    DigiCertHighAssuranceEVRootCA = 1013,
++    EntrustnetCertificationAuthority2048 = 1014,
++    EntrustRootCertificationAuthority = 1015,
++    EntrustRootCertificationAuthorityG2 = 1016,
++    GeoTrustGlobalCA2 = 1017,
++    GeoTrustGlobalCA = 1018,
++    GeoTrustPrimaryCertificationAuthorityG3 = 1019,
++    GeoTrustPrimaryCertificationAuthority = 1020,
++    GlobalSignRootCA = 1021,
++    GlobalSignRootCAR2 = 1022,
++    GlobalSignRootCAR3 = 1023,
++    GoDaddyClass2CertificationAuthority = 1024,
++    GoDaddyRootCertificateAuthorityG2 = 1025,
++    StarfieldClass2CertificationAuthority = 1026,
++    StarfieldRootCertificateAuthorityG2 = 1027,
++    thawtePrimaryRootCAG3 = 1028,
++    thawtePrimaryRootCA = 1029,
++    VeriSignClass3PublicPrimaryCertificationAuthorityG3 = 1030,
++    VeriSignClass3PublicPrimaryCertificationAuthorityG5 = 1031,
++    VeriSignUniversalRootCertificationAuthority = 1032,
++    DSTRootCAX3 = 1033,
++    USERTrustRsaCertificationAuthority = 1034,
++    ISRGRootX10 = 1035,
++    USERTrustEccCertificationAuthority = 1036,
++    COMODORsaCertificationAuthority = 1037,
++    COMODOEccCertificationAuthority = 1038,
++    AmazonRootCA2 = 1039,
++    AmazonRootCA3 = 1040,
++    AmazonRootCA4 = 1041,
++    DigiCertAssuredIDRootG3 = 1042,
++    DigiCertGlobalRootG3 = 1043,
++    DigiCertTrustedRootG4 = 1044,
++    EntrustRootCertificationAuthorityEC1 = 1045,
++    EntrustRootCertificationAuthorityG4 = 1046,
++    GlobalSignECCRootCAR4 = 1047,
++    GlobalSignECCRootCAR5 = 1048,
++    GlobalSignECCRootCAR6 = 1049,
++    GTSRootR1 = 1050,
++    GTSRootR2 = 1051,
++    GTSRootR3 = 1052,
++    GTSRootR4 = 1053,
++    SecurityCommunicationRootCA = 1054,
++    GlobalSignRootE4 = 1055,
++    GlobalSignRootR4 = 1056,
++    TTeleSecGlobalRootClass2 = 1057,
++    DigiCertTLSECCP384RootG5 = 1058,
++    DigiCertTLSRSA4096RootG5 = 1059,
++};
++
++enum class TrustedCertStatus : s32 {
++    Invalid = -1,
++    Removed = 0,
++    EnabledTrusted = 1,
++    EnabledNotTrusted = 2,
++    Revoked = 3,
++};
++
++struct BuiltInCertificateInfo {
++    CaCertificateId cert_id;
++    TrustedCertStatus status;
++    u64 der_size;
++    u64 der_offset;
++};
++static_assert(sizeof(BuiltInCertificateInfo) == 0x18, "BuiltInCertificateInfo has incorrect size.");
++
++struct CertStoreHeader {
++    u32 magic;
++    u32 num_entries;
++};
++static_assert(sizeof(CertStoreHeader) == 0x8, "CertStoreHeader has incorrect size.");
++
++struct CertStoreEntry {
++    CaCertificateId certificate_id;
++    TrustedCertStatus certificate_status;
++    u32 der_size;
++    u32 der_offset;
++};
++static_assert(sizeof(CertStoreEntry) == 0x10, "CertStoreEntry has incorrect size.");
++
++} // namespace Service::SSL
+diff --git a/src/yuzu/configuration/configure_applets.cpp b/src/yuzu/configuration/configure_applets.cpp
+index 513ecb548e7c..139bfa9da3cd 100644
+--- a/src/yuzu/configuration/configure_applets.cpp
++++ b/src/yuzu/configuration/configure_applets.cpp
+@@ -59,9 +59,7 @@ void ConfigureApplets::Setup(const ConfigurationShared::Builder& builder) {
+ 
+         // Untested applets
+         if (setting->Id() == Settings::values.data_erase_applet_mode.Id() ||
+-            setting->Id() == Settings::values.error_applet_mode.Id() ||
+             setting->Id() == Settings::values.net_connect_applet_mode.Id() ||
+-            setting->Id() == Settings::values.web_applet_mode.Id() ||
+             setting->Id() == Settings::values.shop_applet_mode.Id() ||
+             setting->Id() == Settings::values.login_share_applet_mode.Id() ||
+             setting->Id() == Settings::values.wifi_web_auth_applet_mode.Id() ||

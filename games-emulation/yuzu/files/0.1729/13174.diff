@@ -1,0 +1,824 @@
+diff --git a/src/common/logging/backend.cpp b/src/common/logging/backend.cpp
+index 7a267f8c06a8..f9f7df74e415 100644
+--- a/src/common/logging/backend.cpp
++++ b/src/common/logging/backend.cpp
+@@ -343,7 +343,7 @@ void SetColorConsoleBackendEnabled(bool enabled) {
+ }
+ 
+ void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename,
+-                       unsigned int line_num, const char* function, const char* format,
++                       unsigned int line_num, const char* function, fmt::string_view format,
+                        const fmt::format_args& args) {
+     if (!initialization_in_progress_suppress_logging) {
+         Impl::Instance().PushEntry(log_class, log_level, filename, line_num, function,
+diff --git a/src/common/logging/log.h b/src/common/logging/log.h
+index c00c01a9e281..79f710265aa4 100644
+--- a/src/common/logging/log.h
++++ b/src/common/logging/log.h
+@@ -24,12 +24,12 @@ constexpr const char* TrimSourcePath(std::string_view source) {
+ 
+ /// Logs a message to the global logger, using fmt
+ void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename,
+-                       unsigned int line_num, const char* function, const char* format,
++                       unsigned int line_num, const char* function, fmt::string_view format,
+                        const fmt::format_args& args);
+ 
+ template <typename... Args>
+ void FmtLogMessage(Class log_class, Level log_level, const char* filename, unsigned int line_num,
+-                   const char* function, const char* format, const Args&... args) {
++                   const char* function, fmt::format_string<Args...> format, const Args&... args) {
+     FmtLogMessageImpl(log_class, log_level, filename, line_num, function, format,
+                       fmt::make_format_args(args...));
+ }
+diff --git a/src/core/file_sys/partition_filesystem.cpp b/src/core/file_sys/partition_filesystem.cpp
+index dd8de9d8aafa..8ad2307cb5a5 100644
+--- a/src/core/file_sys/partition_filesystem.cpp
++++ b/src/core/file_sys/partition_filesystem.cpp
+@@ -105,12 +105,4 @@ VirtualDir PartitionFilesystem::GetParentDirectory() const {
+     return nullptr;
+ }
+ 
+-void PartitionFilesystem::PrintDebugInfo() const {
+-    LOG_DEBUG(Service_FS, "Magic:                  {:.4}", pfs_header.magic);
+-    LOG_DEBUG(Service_FS, "Files:                  {}", pfs_header.num_entries);
+-    for (u32 i = 0; i < pfs_header.num_entries; i++) {
+-        LOG_DEBUG(Service_FS, " > File {}:              {} (0x{:X} bytes)", i,
+-                  pfs_files[i]->GetName(), pfs_files[i]->GetSize());
+-    }
+-}
+ } // namespace FileSys
+diff --git a/src/core/file_sys/partition_filesystem.h b/src/core/file_sys/partition_filesystem.h
+index 777b9ead94dd..c64b29b5dab5 100644
+--- a/src/core/file_sys/partition_filesystem.h
++++ b/src/core/file_sys/partition_filesystem.h
+@@ -35,7 +35,6 @@ class PartitionFilesystem : public ReadOnlyVfsDirectory {
+     std::vector<VirtualDir> GetSubdirectories() const override;
+     std::string GetName() const override;
+     VirtualDir GetParentDirectory() const override;
+-    void PrintDebugInfo() const;
+ 
+ private:
+     struct Header {
+diff --git a/src/core/hle/service/glue/time/manager.cpp b/src/core/hle/service/glue/time/manager.cpp
+index cb88486dd5bf..77bf8896cd5a 100644
+--- a/src/core/hle/service/glue/time/manager.cpp
++++ b/src/core/hle/service/glue/time/manager.cpp
+@@ -11,7 +11,6 @@
+ #include "core/file_sys/vfs/vfs.h"
+ #include "core/hle/kernel/svc.h"
+ #include "core/hle/service/glue/time/manager.h"
+-#include "core/hle/service/glue/time/time_zone_binary.h"
+ #include "core/hle/service/psc/time/service_manager.h"
+ #include "core/hle/service/psc/time/static.h"
+ #include "core/hle/service/psc/time/system_clock.h"
+@@ -20,8 +19,8 @@
+ #include "core/hle/service/sm/sm.h"
+ 
+ namespace Service::Glue::Time {
+-namespace {
+-s64 CalendarTimeToEpoch(Service::PSC::Time::CalendarTime calendar) {
++
++static s64 CalendarTimeToEpoch(Service::PSC::Time::CalendarTime calendar) {
+     constexpr auto is_leap = [](s32 year) -> bool {
+         return (((year) % 4) == 0 && (((year) % 100) != 0 || ((year) % 400) == 0));
+     };
+@@ -50,7 +49,8 @@ s64 CalendarTimeToEpoch(Service::PSC::Time::CalendarTime calendar) {
+     return epoch_s - 62135683200ll;
+ }
+ 
+-s64 GetEpochTimeFromInitialYear(std::shared_ptr<Service::Set::ISystemSettingsServer>& set_sys) {
++static s64 GetEpochTimeFromInitialYear(
++    std::shared_ptr<Service::Set::ISystemSettingsServer>& set_sys) {
+     s32 year{2000};
+     set_sys->GetSettingsItemValueImpl(year, "time", "standard_user_clock_initial_year");
+ 
+@@ -65,31 +65,32 @@ s64 GetEpochTimeFromInitialYear(std::shared_ptr<Service::Set::ISystemSettingsSer
+     return CalendarTimeToEpoch(calendar);
+ }
+ 
+-Service::PSC::Time::LocationName GetTimeZoneString(Service::PSC::Time::LocationName& in_name) {
++static Service::PSC::Time::LocationName GetTimeZoneString(
++    TimeZoneBinary& time_zone_binary, Service::PSC::Time::LocationName& in_name) {
+     auto configured_zone = Settings::GetTimeZoneString(Settings::values.time_zone_index.GetValue());
+ 
+     Service::PSC::Time::LocationName configured_name{};
+     std::memcpy(configured_name.data(), configured_zone.data(),
+                 std::min(configured_name.size(), configured_zone.size()));
+ 
+-    if (!IsTimeZoneBinaryValid(configured_name)) {
++    if (!time_zone_binary.IsValid(configured_name)) {
+         configured_zone = Common::TimeZone::FindSystemTimeZone();
+         configured_name = {};
+         std::memcpy(configured_name.data(), configured_zone.data(),
+                     std::min(configured_name.size(), configured_zone.size()));
+     }
+ 
+-    ASSERT_MSG(IsTimeZoneBinaryValid(configured_name), "Invalid time zone {}!",
++    ASSERT_MSG(time_zone_binary.IsValid(configured_name), "Invalid time zone {}!",
+                configured_name.data());
+ 
+     return configured_name;
+ }
+ 
+-} // namespace
+-
+ TimeManager::TimeManager(Core::System& system)
+-    : m_steady_clock_resource{system}, m_worker{system, m_steady_clock_resource,
+-                                                m_file_timestamp_worker} {
++    : m_steady_clock_resource{system}, m_time_zone_binary{system}, m_worker{
++                                                                       system,
++                                                                       m_steady_clock_resource,
++                                                                       m_file_timestamp_worker} {
+     m_time_m =
+         system.ServiceManager().GetService<Service::PSC::Time::ServiceManager>("time:m", true);
+ 
+@@ -99,7 +100,7 @@ TimeManager::TimeManager(Core::System& system)
+     m_set_sys =
+         system.ServiceManager().GetService<Service::Set::ISystemSettingsServer>("set:sys", true);
+ 
+-    res = MountTimeZoneBinary(system);
++    res = m_time_zone_binary.Mount();
+     ASSERT(res == ResultSuccess);
+ 
+     m_worker.Initialize(m_time_sm, m_set_sys);
+@@ -187,10 +188,6 @@ TimeManager::TimeManager(Core::System& system)
+     }
+ }
+ 
+-TimeManager::~TimeManager() {
+-    ResetTimeZoneBinary();
+-}
+-
+ Result TimeManager::SetupStandardSteadyClockCore() {
+     Common::UUID external_clock_source_id{};
+     auto res = m_set_sys->GetExternalSteadyClockSourceId(&external_clock_source_id);
+@@ -236,7 +233,7 @@ Result TimeManager::SetupTimeZoneServiceCore() {
+     auto res = m_set_sys->GetDeviceTimeZoneLocationName(&name);
+     ASSERT(res == ResultSuccess);
+ 
+-    auto configured_zone = GetTimeZoneString(name);
++    auto configured_zone = GetTimeZoneString(m_time_zone_binary, name);
+ 
+     if (configured_zone != name) {
+         m_set_sys->SetDeviceTimeZoneLocationName(configured_zone);
+@@ -254,13 +251,13 @@ Result TimeManager::SetupTimeZoneServiceCore() {
+     res = m_set_sys->GetDeviceTimeZoneLocationUpdatedTime(&time_point);
+     ASSERT(res == ResultSuccess);
+ 
+-    auto location_count = GetTimeZoneCount();
++    auto location_count = m_time_zone_binary.GetTimeZoneCount();
+     Service::PSC::Time::RuleVersion rule_version{};
+-    GetTimeZoneVersion(rule_version);
++    m_time_zone_binary.GetTimeZoneVersion(rule_version);
+ 
+     std::span<const u8> rule_buffer{};
+     size_t rule_size{};
+-    res = GetTimeZoneRule(rule_buffer, rule_size, name);
++    res = m_time_zone_binary.GetTimeZoneRule(rule_buffer, rule_size, name);
+     ASSERT(res == ResultSuccess);
+ 
+     res = m_time_m->SetupTimeZoneServiceCore(name, rule_version, location_count, time_point,
+diff --git a/src/core/hle/service/glue/time/manager.h b/src/core/hle/service/glue/time/manager.h
+index bb4b6504920f..87e6a21fd5a3 100644
+--- a/src/core/hle/service/glue/time/manager.h
++++ b/src/core/hle/service/glue/time/manager.h
+@@ -10,6 +10,7 @@
+ #include "core/file_sys/vfs/vfs_types.h"
+ #include "core/hle/service/glue/time/file_timestamp_worker.h"
+ #include "core/hle/service/glue/time/standard_steady_clock_resource.h"
++#include "core/hle/service/glue/time/time_zone_binary.h"
+ #include "core/hle/service/glue/time/worker.h"
+ #include "core/hle/service/service.h"
+ 
+@@ -26,7 +27,7 @@ namespace Service::Glue::Time {
+ class TimeManager {
+ public:
+     explicit TimeManager(Core::System& system);
+-    ~TimeManager();
++    ~TimeManager() = default;
+ 
+     std::shared_ptr<Service::Set::ISystemSettingsServer> m_set_sys;
+ 
+@@ -34,6 +35,7 @@ class TimeManager {
+     std::shared_ptr<Service::PSC::Time::StaticService> m_time_sm{};
+     StandardSteadyClockResource m_steady_clock_resource;
+     FileTimestampWorker m_file_timestamp_worker;
++    TimeZoneBinary m_time_zone_binary;
+     TimeWorker m_worker;
+ 
+ private:
+diff --git a/src/core/hle/service/glue/time/static.cpp b/src/core/hle/service/glue/time/static.cpp
+index b801faef2951..d8672b72484f 100644
+--- a/src/core/hle/service/glue/time/static.cpp
++++ b/src/core/hle/service/glue/time/static.cpp
+@@ -26,8 +26,9 @@ StaticService::StaticService(Core::System& system_,
+                              std::shared_ptr<TimeManager> time, const char* name)
+     : ServiceFramework{system_, name}, m_system{system_}, m_time_m{time->m_time_m},
+       m_setup_info{setup_info}, m_time_sm{time->m_time_sm},
+-      m_file_timestamp_worker{time->m_file_timestamp_worker}, m_standard_steady_clock_resource{
+-                                                                  time->m_steady_clock_resource} {
++      m_file_timestamp_worker{time->m_file_timestamp_worker},
++      m_standard_steady_clock_resource{time->m_steady_clock_resource},
++      m_time_zone_binary{time->m_time_zone_binary} {
+     // clang-format off
+         static const FunctionInfo functions[] = {
+             {0,   D<&StaticService::GetStandardUserSystemClock>, "GetStandardUserSystemClock"},
+@@ -106,7 +107,7 @@ Result StaticService::GetTimeZoneService(OutInterface<TimeZoneService> out_servi
+ 
+     *out_service = std::make_shared<TimeZoneService>(
+         m_system, m_file_timestamp_worker, m_setup_info.can_write_timezone_device_location,
+-        m_time_zone);
++        m_time_zone_binary, m_time_zone);
+     R_SUCCEED();
+ }
+ 
+diff --git a/src/core/hle/service/glue/time/static.h b/src/core/hle/service/glue/time/static.h
+index 5d3623182fc4..7bb0e0b36e72 100644
+--- a/src/core/hle/service/glue/time/static.h
++++ b/src/core/hle/service/glue/time/static.h
+@@ -80,5 +80,6 @@ class StaticService final : public ServiceFramework<StaticService> {
+     std::shared_ptr<Service::PSC::Time::TimeZoneService> m_time_zone;
+     FileTimestampWorker& m_file_timestamp_worker;
+     StandardSteadyClockResource& m_standard_steady_clock_resource;
++    TimeZoneBinary& m_time_zone_binary;
+ };
+ } // namespace Service::Glue::Time
+diff --git a/src/core/hle/service/glue/time/time_zone.cpp b/src/core/hle/service/glue/time/time_zone.cpp
+index f4d0c87d5f00..b2e815965344 100644
+--- a/src/core/hle/service/glue/time/time_zone.cpp
++++ b/src/core/hle/service/glue/time/time_zone.cpp
+@@ -15,19 +15,16 @@
+ #include "core/hle/service/sm/sm.h"
+ 
+ namespace Service::Glue::Time {
+-namespace {
+-static std::mutex g_list_mutex;
+-static Common::IntrusiveListBaseTraits<Service::PSC::Time::OperationEvent>::ListType g_list_nodes{};
+-} // namespace
+ 
+ TimeZoneService::TimeZoneService(
+     Core::System& system_, FileTimestampWorker& file_timestamp_worker,
+-    bool can_write_timezone_device_location,
++    bool can_write_timezone_device_location, TimeZoneBinary& time_zone_binary,
+     std::shared_ptr<Service::PSC::Time::TimeZoneService> time_zone_service)
+     : ServiceFramework{system_, "ITimeZoneService"}, m_system{system},
+       m_can_write_timezone_device_location{can_write_timezone_device_location},
+-      m_file_timestamp_worker{file_timestamp_worker},
+-      m_wrapped_service{std::move(time_zone_service)}, m_operation_event{m_system} {
++      m_file_timestamp_worker{file_timestamp_worker}, m_wrapped_service{std::move(
++                                                          time_zone_service)},
++      m_operation_event{m_system}, m_time_zone_binary{time_zone_binary} {
+     // clang-format off
+     static const FunctionInfo functions[] = {
+         {0,   D<&TimeZoneService::GetDeviceLocationName>, "GetDeviceLocationName"},
+@@ -48,7 +45,6 @@ TimeZoneService::TimeZoneService(
+     // clang-format on
+     RegisterHandlers(functions);
+ 
+-    g_list_nodes.clear();
+     m_set_sys =
+         m_system.ServiceManager().GetService<Service::Set::ISystemSettingsServer>("set:sys", true);
+ }
+@@ -69,13 +65,13 @@ Result TimeZoneService::SetDeviceLocationName(
+     LOG_DEBUG(Service_Time, "called. location_name={}", location_name);
+ 
+     R_UNLESS(m_can_write_timezone_device_location, Service::PSC::Time::ResultPermissionDenied);
+-    R_UNLESS(IsTimeZoneBinaryValid(location_name), Service::PSC::Time::ResultTimeZoneNotFound);
++    R_UNLESS(m_time_zone_binary.IsValid(location_name), Service::PSC::Time::ResultTimeZoneNotFound);
+ 
+     std::scoped_lock l{m_mutex};
+ 
+     std::span<const u8> binary{};
+     size_t binary_size{};
+-    R_TRY(GetTimeZoneRule(binary, binary_size, location_name))
++    R_TRY(m_time_zone_binary.GetTimeZoneRule(binary, binary_size, location_name))
+ 
+     R_TRY(m_wrapped_service->SetDeviceLocationNameWithTimeZoneRule(location_name, binary));
+ 
+@@ -88,8 +84,8 @@ Result TimeZoneService::SetDeviceLocationName(
+     m_set_sys->SetDeviceTimeZoneLocationName(name);
+     m_set_sys->SetDeviceTimeZoneLocationUpdatedTime(time_point);
+ 
+-    std::scoped_lock m{g_list_mutex};
+-    for (auto& operation_event : g_list_nodes) {
++    std::scoped_lock m{m_list_mutex};
++    for (auto& operation_event : m_list_nodes) {
+         operation_event.m_event->Signal();
+     }
+     R_SUCCEED();
+@@ -112,7 +108,8 @@ Result TimeZoneService::LoadLocationNameList(
+     };
+ 
+     std::scoped_lock l{m_mutex};
+-    R_RETURN(GetTimeZoneLocationList(*out_count, out_names, out_names.size(), index));
++    R_RETURN(
++        m_time_zone_binary.GetTimeZoneLocationList(*out_count, out_names, out_names.size(), index));
+ }
+ 
+ Result TimeZoneService::LoadTimeZoneRule(OutRule out_rule,
+@@ -122,7 +119,7 @@ Result TimeZoneService::LoadTimeZoneRule(OutRule out_rule,
+     std::scoped_lock l{m_mutex};
+     std::span<const u8> binary{};
+     size_t binary_size{};
+-    R_TRY(GetTimeZoneRule(binary, binary_size, name))
++    R_TRY(m_time_zone_binary.GetTimeZoneRule(binary, binary_size, name))
+     R_RETURN(m_wrapped_service->ParseTimeZoneBinary(out_rule, binary));
+ }
+ 
+@@ -174,7 +171,7 @@ Result TimeZoneService::GetDeviceLocationNameOperationEventReadableHandle(
+             m_operation_event.m_ctx.CreateEvent("Psc:TimeZoneService:OperationEvent");
+         operation_event_initialized = true;
+         std::scoped_lock l{m_mutex};
+-        g_list_nodes.push_back(m_operation_event);
++        m_list_nodes.push_back(m_operation_event);
+     }
+ 
+     *out_event = &m_operation_event.m_event->GetReadableEvent();
+diff --git a/src/core/hle/service/glue/time/time_zone.h b/src/core/hle/service/glue/time/time_zone.h
+index beb54ddde479..2b130b275d7b 100644
+--- a/src/core/hle/service/glue/time/time_zone.h
++++ b/src/core/hle/service/glue/time/time_zone.h
+@@ -32,6 +32,7 @@ class TimeZoneService;
+ 
+ namespace Service::Glue::Time {
+ class FileTimestampWorker;
++class TimeZoneBinary;
+ 
+ class TimeZoneService final : public ServiceFramework<TimeZoneService> {
+     using InRule = InLargeData<Tz::Rule, BufferAttr_HipcMapAlias>;
+@@ -40,7 +41,7 @@ class TimeZoneService final : public ServiceFramework<TimeZoneService> {
+ public:
+     explicit TimeZoneService(
+         Core::System& system, FileTimestampWorker& file_timestamp_worker,
+-        bool can_write_timezone_device_location,
++        bool can_write_timezone_device_location, TimeZoneBinary& time_zone_binary,
+         std::shared_ptr<Service::PSC::Time::TimeZoneService> time_zone_service);
+ 
+     ~TimeZoneService() override;
+@@ -85,6 +86,10 @@ class TimeZoneService final : public ServiceFramework<TimeZoneService> {
+     std::mutex m_mutex;
+     bool operation_event_initialized{};
+     Service::PSC::Time::OperationEvent m_operation_event;
++    TimeZoneBinary& m_time_zone_binary;
++
++    std::mutex m_list_mutex;
++    Common::IntrusiveListBaseTraits<Service::PSC::Time::OperationEvent>::ListType m_list_nodes{};
+ };
+ 
+ } // namespace Service::Glue::Time
+diff --git a/src/core/hle/service/glue/time/time_zone_binary.cpp b/src/core/hle/service/glue/time/time_zone_binary.cpp
+index 18c6abd6bb02..3cc1a62afd31 100644
+--- a/src/core/hle/service/glue/time/time_zone_binary.cpp
++++ b/src/core/hle/service/glue/time/time_zone_binary.cpp
+@@ -12,41 +12,17 @@
+ #include "core/hle/service/glue/time/time_zone_binary.h"
+ 
+ namespace Service::Glue::Time {
+-namespace {
+ constexpr u64 TimeZoneBinaryId = 0x10000000000080E;
+ 
+-static FileSys::VirtualDir g_time_zone_binary_romfs{};
+-static Result g_time_zone_binary_mount_result{ResultUnknown};
+-static std::vector<u8> g_time_zone_scratch_space(0x2800, 0);
+-
+-Result TimeZoneReadBinary(size_t& out_read_size, std::span<u8> out_buffer, size_t out_buffer_size,
+-                          std::string_view path) {
+-    R_UNLESS(g_time_zone_binary_mount_result == ResultSuccess, g_time_zone_binary_mount_result);
+-
+-    auto vfs_file{g_time_zone_binary_romfs->GetFileRelative(path)};
+-    R_UNLESS(vfs_file, ResultUnknown);
+-
+-    auto file_size{vfs_file->GetSize()};
+-    R_UNLESS(file_size > 0, ResultUnknown);
+-
+-    R_UNLESS(file_size <= out_buffer_size, Service::PSC::Time::ResultFailed);
+-
+-    out_read_size = vfs_file->Read(out_buffer.data(), file_size);
+-    R_UNLESS(out_read_size > 0, ResultUnknown);
+-
+-    R_SUCCEED();
+-}
+-} // namespace
+-
+-void ResetTimeZoneBinary() {
+-    g_time_zone_binary_romfs = {};
+-    g_time_zone_binary_mount_result = ResultUnknown;
+-    g_time_zone_scratch_space.clear();
+-    g_time_zone_scratch_space.resize(0x2800, 0);
++void TimeZoneBinary::Reset() {
++    time_zone_binary_romfs = {};
++    time_zone_binary_mount_result = ResultUnknown;
++    time_zone_scratch_space.clear();
++    time_zone_scratch_space.resize(0x2800, 0);
+ }
+ 
+-Result MountTimeZoneBinary(Core::System& system) {
+-    ResetTimeZoneBinary();
++Result TimeZoneBinary::Mount() {
++    Reset();
+ 
+     auto& fsc{system.GetFileSystemController()};
+     std::unique_ptr<FileSys::NCA> nca{};
+@@ -58,60 +34,79 @@ Result MountTimeZoneBinary(Core::System& system) {
+     nca = bis_system->GetEntry(TimeZoneBinaryId, FileSys::ContentRecordType::Data);
+ 
+     if (nca) {
+-        g_time_zone_binary_romfs = FileSys::ExtractRomFS(nca->GetRomFS());
++        time_zone_binary_romfs = FileSys::ExtractRomFS(nca->GetRomFS());
+     }
+ 
+-    if (g_time_zone_binary_romfs) {
++    if (time_zone_binary_romfs) {
+         // Validate that the romfs is readable, using invalid firmware keys can cause this to get
+         // set but the files to be garbage. In that case, we want to hit the next path and
+         // synthesise them instead.
+-        g_time_zone_binary_mount_result = ResultSuccess;
++        time_zone_binary_mount_result = ResultSuccess;
+         Service::PSC::Time::LocationName name{"Etc/GMT"};
+-        if (!IsTimeZoneBinaryValid(name)) {
+-            ResetTimeZoneBinary();
++        if (!IsValid(name)) {
++            Reset();
+         }
+     }
+ 
+-    if (!g_time_zone_binary_romfs) {
+-        g_time_zone_binary_romfs = FileSys::ExtractRomFS(
++    if (!time_zone_binary_romfs) {
++        time_zone_binary_romfs = FileSys::ExtractRomFS(
+             FileSys::SystemArchive::SynthesizeSystemArchive(TimeZoneBinaryId));
+     }
+ 
+-    R_UNLESS(g_time_zone_binary_romfs, ResultUnknown);
++    R_UNLESS(time_zone_binary_romfs, ResultUnknown);
++
++    time_zone_binary_mount_result = ResultSuccess;
++    R_SUCCEED();
++}
++
++Result TimeZoneBinary::Read(size_t& out_read_size, std::span<u8> out_buffer, size_t out_buffer_size,
++                            std::string_view path) {
++    R_UNLESS(time_zone_binary_mount_result == ResultSuccess, time_zone_binary_mount_result);
++
++    auto vfs_file{time_zone_binary_romfs->GetFileRelative(path)};
++    R_UNLESS(vfs_file, ResultUnknown);
++
++    auto file_size{vfs_file->GetSize()};
++    R_UNLESS(file_size > 0, ResultUnknown);
++
++    R_UNLESS(file_size <= out_buffer_size, Service::PSC::Time::ResultFailed);
++
++    out_read_size = vfs_file->Read(out_buffer.data(), file_size);
++    R_UNLESS(out_read_size > 0, ResultUnknown);
+ 
+-    g_time_zone_binary_mount_result = ResultSuccess;
+     R_SUCCEED();
+ }
+ 
+-void GetTimeZoneBinaryListPath(std::string& out_path) {
+-    if (g_time_zone_binary_mount_result != ResultSuccess) {
++void TimeZoneBinary::GetListPath(std::string& out_path) {
++    if (time_zone_binary_mount_result != ResultSuccess) {
+         return;
+     }
+     // out_path = fmt::format("{}:/binaryList.txt", "TimeZoneBinary");
+     out_path = "/binaryList.txt";
+ }
+ 
+-void GetTimeZoneBinaryVersionPath(std::string& out_path) {
+-    if (g_time_zone_binary_mount_result != ResultSuccess) {
++void TimeZoneBinary::GetVersionPath(std::string& out_path) {
++    if (time_zone_binary_mount_result != ResultSuccess) {
+         return;
+     }
+     // out_path = fmt::format("{}:/version.txt", "TimeZoneBinary");
+     out_path = "/version.txt";
+ }
+ 
+-void GetTimeZoneZonePath(std::string& out_path, const Service::PSC::Time::LocationName& name) {
+-    if (g_time_zone_binary_mount_result != ResultSuccess) {
++void TimeZoneBinary::GetTimeZonePath(std::string& out_path,
++                                     const Service::PSC::Time::LocationName& name) {
++    if (time_zone_binary_mount_result != ResultSuccess) {
+         return;
+     }
+     // out_path = fmt::format("{}:/zoneinfo/{}", "TimeZoneBinary", name);
+     out_path = fmt::format("/zoneinfo/{}", name.data());
+ }
+ 
+-bool IsTimeZoneBinaryValid(const Service::PSC::Time::LocationName& name) {
++bool TimeZoneBinary::IsValid(const Service::PSC::Time::LocationName& name) {
+     std::string path{};
+-    GetTimeZoneZonePath(path, name);
++    GetTimeZonePath(path, name);
+ 
+-    auto vfs_file{g_time_zone_binary_romfs->GetFileRelative(path)};
++    auto vfs_file{time_zone_binary_romfs->GetFileRelative(path)};
+     if (!vfs_file) {
+         LOG_INFO(Service_Time, "Could not find timezone file {}", path);
+         return false;
+@@ -119,19 +114,19 @@ bool IsTimeZoneBinaryValid(const Service::PSC::Time::LocationName& name) {
+     return vfs_file->GetSize() != 0;
+ }
+ 
+-u32 GetTimeZoneCount() {
++u32 TimeZoneBinary::GetTimeZoneCount() {
+     std::string path{};
+-    GetTimeZoneBinaryListPath(path);
++    GetListPath(path);
+ 
+     size_t bytes_read{};
+-    if (TimeZoneReadBinary(bytes_read, g_time_zone_scratch_space, 0x2800, path) != ResultSuccess) {
++    if (Read(bytes_read, time_zone_scratch_space, 0x2800, path) != ResultSuccess) {
+         return 0;
+     }
+     if (bytes_read == 0) {
+         return 0;
+     }
+ 
+-    auto chars = std::span(reinterpret_cast<char*>(g_time_zone_scratch_space.data()), bytes_read);
++    auto chars = std::span(reinterpret_cast<char*>(time_zone_scratch_space.data()), bytes_read);
+     u32 count{};
+     for (auto chr : chars) {
+         if (chr == '\n') {
+@@ -141,50 +136,47 @@ u32 GetTimeZoneCount() {
+     return count;
+ }
+ 
+-Result GetTimeZoneVersion(Service::PSC::Time::RuleVersion& out_rule_version) {
++Result TimeZoneBinary::GetTimeZoneVersion(Service::PSC::Time::RuleVersion& out_rule_version) {
+     std::string path{};
+-    GetTimeZoneBinaryVersionPath(path);
++    GetVersionPath(path);
+ 
+     auto rule_version_buffer{std::span(reinterpret_cast<u8*>(&out_rule_version),
+                                        sizeof(Service::PSC::Time::RuleVersion))};
+     size_t bytes_read{};
+-    R_TRY(TimeZoneReadBinary(bytes_read, rule_version_buffer, rule_version_buffer.size_bytes(),
+-                             path));
++    R_TRY(Read(bytes_read, rule_version_buffer, rule_version_buffer.size_bytes(), path));
+ 
+     rule_version_buffer[bytes_read] = 0;
+     R_SUCCEED();
+ }
+ 
+-Result GetTimeZoneRule(std::span<const u8>& out_rule, size_t& out_rule_size,
+-                       const Service::PSC::Time::LocationName& name) {
++Result TimeZoneBinary::GetTimeZoneRule(std::span<const u8>& out_rule, size_t& out_rule_size,
++                                       const Service::PSC::Time::LocationName& name) {
+     std::string path{};
+-    GetTimeZoneZonePath(path, name);
++    GetTimeZonePath(path, name);
+ 
+     size_t bytes_read{};
+-    R_TRY(TimeZoneReadBinary(bytes_read, g_time_zone_scratch_space,
+-                             g_time_zone_scratch_space.size(), path));
++    R_TRY(Read(bytes_read, time_zone_scratch_space, time_zone_scratch_space.size(), path));
+ 
+-    out_rule = std::span(g_time_zone_scratch_space.data(), bytes_read);
++    out_rule = std::span(time_zone_scratch_space.data(), bytes_read);
+     out_rule_size = bytes_read;
+     R_SUCCEED();
+ }
+ 
+-Result GetTimeZoneLocationList(u32& out_count,
+-                               std::span<Service::PSC::Time::LocationName> out_names,
+-                               size_t max_names, u32 index) {
++Result TimeZoneBinary::GetTimeZoneLocationList(
++    u32& out_count, std::span<Service::PSC::Time::LocationName> out_names, size_t max_names,
++    u32 index) {
+     std::string path{};
+-    GetTimeZoneBinaryListPath(path);
++    GetListPath(path);
+ 
+     size_t bytes_read{};
+-    R_TRY(TimeZoneReadBinary(bytes_read, g_time_zone_scratch_space,
+-                             g_time_zone_scratch_space.size(), path));
++    R_TRY(Read(bytes_read, time_zone_scratch_space, time_zone_scratch_space.size(), path));
+ 
+     out_count = 0;
+     R_SUCCEED_IF(bytes_read == 0);
+ 
+     Service::PSC::Time::LocationName current_name{};
+     size_t current_name_len{};
+-    std::span<const u8> chars{g_time_zone_scratch_space};
++    std::span<const u8> chars{time_zone_scratch_space};
+     u32 name_count{};
+ 
+     for (auto chr : chars) {
+diff --git a/src/core/hle/service/glue/time/time_zone_binary.h b/src/core/hle/service/glue/time/time_zone_binary.h
+index 9d0a8dfe951b..135da631f238 100644
+--- a/src/core/hle/service/glue/time/time_zone_binary.h
++++ b/src/core/hle/service/glue/time/time_zone_binary.h
+@@ -6,6 +6,7 @@
+ #include <span>
+ #include <string>
+ #include <string_view>
++#include <vector>
+ 
+ #include "core/hle/service/psc/time/common.h"
+ 
+@@ -15,18 +16,34 @@ class System;
+ 
+ namespace Service::Glue::Time {
+ 
+-void ResetTimeZoneBinary();
+-Result MountTimeZoneBinary(Core::System& system);
+-void GetTimeZoneBinaryListPath(std::string& out_path);
+-void GetTimeZoneBinaryVersionPath(std::string& out_path);
+-void GetTimeZoneZonePath(std::string& out_path, const Service::PSC::Time::LocationName& name);
+-bool IsTimeZoneBinaryValid(const Service::PSC::Time::LocationName& name);
+-u32 GetTimeZoneCount();
+-Result GetTimeZoneVersion(Service::PSC::Time::RuleVersion& out_rule_version);
+-Result GetTimeZoneRule(std::span<const u8>& out_rule, size_t& out_rule_size,
+-                       const Service::PSC::Time::LocationName& name);
+-Result GetTimeZoneLocationList(u32& out_count,
+-                               std::span<Service::PSC::Time::LocationName> out_names,
+-                               size_t max_names, u32 index);
++class TimeZoneBinary {
++public:
++    explicit TimeZoneBinary(Core::System& system_)
++        : time_zone_scratch_space(0x2800, 0), system{system_} {}
++
++    Result Mount();
++    bool IsValid(const Service::PSC::Time::LocationName& name);
++    u32 GetTimeZoneCount();
++    Result GetTimeZoneVersion(Service::PSC::Time::RuleVersion& out_rule_version);
++    Result GetTimeZoneRule(std::span<const u8>& out_rule, size_t& out_rule_size,
++                           const Service::PSC::Time::LocationName& name);
++    Result GetTimeZoneLocationList(u32& out_count,
++                                   std::span<Service::PSC::Time::LocationName> out_names,
++                                   size_t max_names, u32 index);
++
++private:
++    void Reset();
++    Result Read(size_t& out_read_size, std::span<u8> out_buffer, size_t out_buffer_size,
++                std::string_view path);
++    void GetListPath(std::string& out_path);
++    void GetVersionPath(std::string& out_path);
++    void GetTimeZonePath(std::string& out_path, const Service::PSC::Time::LocationName& name);
++
++    FileSys::VirtualDir time_zone_binary_romfs{};
++    Result time_zone_binary_mount_result{ResultUnknown};
++    std::vector<u8> time_zone_scratch_space;
++
++    Core::System& system;
++};
+ 
+ } // namespace Service::Glue::Time
+diff --git a/src/core/hle/service/glue/time/worker.cpp b/src/core/hle/service/glue/time/worker.cpp
+index b6bbd7965a69..1dab3e9dcb8b 100644
+--- a/src/core/hle/service/glue/time/worker.cpp
++++ b/src/core/hle/service/glue/time/worker.cpp
+@@ -16,23 +16,6 @@
+ #include "core/hle/service/sm/sm.h"
+ 
+ namespace Service::Glue::Time {
+-namespace {
+-
+-bool g_ig_report_network_clock_context_set{};
+-Service::PSC::Time::SystemClockContext g_report_network_clock_context{};
+-bool g_ig_report_ephemeral_clock_context_set{};
+-Service::PSC::Time::SystemClockContext g_report_ephemeral_clock_context{};
+-
+-template <typename T>
+-T GetSettingsItemValue(std::shared_ptr<Service::Set::ISystemSettingsServer>& set_sys,
+-                       const char* category, const char* name) {
+-    T v{};
+-    auto res = set_sys->GetSettingsItemValueImpl(v, category, name);
+-    ASSERT(res == ResultSuccess);
+-    return v;
+-}
+-
+-} // namespace
+ 
+ TimeWorker::TimeWorker(Core::System& system, StandardSteadyClockResource& steady_clock_resource,
+                        FileTimestampWorker& file_timestamp_worker)
+@@ -43,11 +26,6 @@ TimeWorker::TimeWorker(Core::System& system, StandardSteadyClockResource& steady
+                                                           "Glue:TimeWorker:SteadyClockTimerEvent")},
+       m_timer_file_system{m_ctx.CreateEvent("Glue:TimeWorker:FileTimeTimerEvent")},
+       m_alarm_worker{m_system, m_steady_clock_resource}, m_pm_state_change_handler{m_alarm_worker} {
+-    g_ig_report_network_clock_context_set = false;
+-    g_report_network_clock_context = {};
+-    g_ig_report_ephemeral_clock_context_set = false;
+-    g_report_ephemeral_clock_context = {};
+-
+     m_timer_steady_clock_timing_event = Core::Timing::CreateEvent(
+         "Time::SteadyClockEvent",
+         [this](s64 time,
+@@ -82,6 +60,14 @@ TimeWorker::~TimeWorker() {
+     m_ctx.CloseEvent(m_timer_file_system);
+ }
+ 
++template <typename T>
++T TimeWorker::GetSettingsItemValue(const std::string& category, const std::string& name) {
++    T v{};
++    auto res = m_set_sys->GetSettingsItemValueImpl(v, category, name);
++    ASSERT(res == ResultSuccess);
++    return v;
++}
++
+ void TimeWorker::Initialize(std::shared_ptr<Service::PSC::Time::StaticService> time_sm,
+                             std::shared_ptr<Service::Set::ISystemSettingsServer> set_sys) {
+     m_set_sys = std::move(set_sys);
+@@ -91,8 +77,8 @@ void TimeWorker::Initialize(std::shared_ptr<Service::PSC::Time::StaticService> t
+ 
+     m_alarm_worker.Initialize(m_time_m);
+ 
+-    auto steady_clock_interval_m = GetSettingsItemValue<s32>(
+-        m_set_sys, "time", "standard_steady_clock_rtc_update_interval_minutes");
++    auto steady_clock_interval_m =
++        GetSettingsItemValue<s32>("time", "standard_steady_clock_rtc_update_interval_minutes");
+ 
+     auto one_minute_ns{
+         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::minutes(1)).count()};
+@@ -102,8 +88,7 @@ void TimeWorker::Initialize(std::shared_ptr<Service::PSC::Time::StaticService> t
+                                                std::chrono::nanoseconds(steady_clock_interval_ns),
+                                                m_timer_steady_clock_timing_event);
+ 
+-    auto fs_notify_time_s =
+-        GetSettingsItemValue<s32>(m_set_sys, "time", "notify_time_to_fs_interval_seconds");
++    auto fs_notify_time_s = GetSettingsItemValue<s32>("time", "notify_time_to_fs_interval_seconds");
+     auto one_second_ns{
+         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(1)).count()};
+     s64 fs_notify_time_ns{fs_notify_time_s * one_second_ns};
+@@ -218,14 +203,14 @@ void TimeWorker::ThreadFunc(std::stop_token stop_token) {
+             }
+ 
+             [[maybe_unused]] auto offset_before{
+-                g_ig_report_network_clock_context_set ? g_report_network_clock_context.offset : 0};
++                m_ig_report_network_clock_context_set ? m_report_network_clock_context.offset : 0};
+             // TODO system report "standard_netclock_operation"
+             //              "clock_time" = time
+             //              "context_offset_before" = offset_before
+             //              "context_offset_after"  = context.offset
+-            g_report_network_clock_context = context;
+-            if (!g_ig_report_network_clock_context_set) {
+-                g_ig_report_network_clock_context_set = true;
++            m_report_network_clock_context = context;
++            if (!m_ig_report_network_clock_context_set) {
++                m_ig_report_network_clock_context_set = true;
+             }
+ 
+             m_file_timestamp_worker.SetFilesystemPosixTime();
+@@ -247,16 +232,16 @@ void TimeWorker::ThreadFunc(std::stop_token stop_token) {
+                 break;
+             }
+ 
+-            [[maybe_unused]] auto offset_before{g_ig_report_ephemeral_clock_context_set
+-                                                    ? g_report_ephemeral_clock_context.offset
++            [[maybe_unused]] auto offset_before{m_ig_report_ephemeral_clock_context_set
++                                                    ? m_report_ephemeral_clock_context.offset
+                                                     : 0};
+             // TODO system report "ephemeral_netclock_operation"
+             //              "clock_time" = time
+             //              "context_offset_before" = offset_before
+             //              "context_offset_after"  = context.offset
+-            g_report_ephemeral_clock_context = context;
+-            if (!g_ig_report_ephemeral_clock_context_set) {
+-                g_ig_report_ephemeral_clock_context_set = true;
++            m_report_ephemeral_clock_context = context;
++            if (!m_ig_report_ephemeral_clock_context_set) {
++                m_ig_report_ephemeral_clock_context_set = true;
+             }
+             break;
+         }
+diff --git a/src/core/hle/service/glue/time/worker.h b/src/core/hle/service/glue/time/worker.h
+index 75e5c4d0f148..69904e67485b 100644
+--- a/src/core/hle/service/glue/time/worker.h
++++ b/src/core/hle/service/glue/time/worker.h
+@@ -34,6 +34,9 @@ class TimeWorker {
+     void StartThread();
+ 
+ private:
++    template <typename T>
++    T GetSettingsItemValue(const std::string& category, const std::string& name);
++
+     void ThreadFunc(std::stop_token stop_token);
+ 
+     Core::System& m_system;
+@@ -59,6 +62,11 @@ class TimeWorker {
+     std::shared_ptr<Core::Timing::EventType> m_timer_file_system_timing_event;
+     AlarmWorker m_alarm_worker;
+     PmStateChangeHandler m_pm_state_change_handler;
++
++    bool m_ig_report_network_clock_context_set{};
++    Service::PSC::Time::SystemClockContext m_report_network_clock_context{};
++    bool m_ig_report_ephemeral_clock_context_set{};
++    Service::PSC::Time::SystemClockContext m_report_ephemeral_clock_context{};
+ };
+ 
+ } // namespace Service::Glue::Time
+diff --git a/src/video_core/renderer_opengl/renderer_opengl.cpp b/src/video_core/renderer_opengl/renderer_opengl.cpp
+index 5fb54635d08a..452af27872ce 100644
+--- a/src/video_core/renderer_opengl/renderer_opengl.cpp
++++ b/src/video_core/renderer_opengl/renderer_opengl.cpp
+@@ -71,7 +71,7 @@ const char* GetType(GLenum type) {
+ 
+ void APIENTRY DebugHandler(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length,
+                            const GLchar* message, const void* user_param) {
+-    const char format[] = "{} {} {}: {}";
++    constexpr std::string_view format = "{} {} {}: {}";
+     const char* const str_source = GetSource(source);
+     const char* const str_type = GetType(type);
+ 

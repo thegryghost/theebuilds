@@ -1,0 +1,55 @@
+diff --git a/src/video_core/buffer_cache/buffer_cache.h b/src/video_core/buffer_cache/buffer_cache.h
+index b4bf369d1687..8446f34cce0d 100644
+--- a/src/video_core/buffer_cache/buffer_cache.h
++++ b/src/video_core/buffer_cache/buffer_cache.h
+@@ -1546,7 +1546,10 @@ void BufferCache<P>::ImmediateUploadMemory([[maybe_unused]] Buffer& buffer,
+             std::span<const u8> upload_span;
+             const DAddr device_addr = buffer.CpuAddr() + copy.dst_offset;
+             if (IsRangeGranular(device_addr, copy.size)) {
+-                upload_span = std::span(device_memory.GetPointer<u8>(device_addr), copy.size);
++                auto* const ptr = device_memory.GetPointer<u8>(device_addr);
++                if (ptr != nullptr) {
++                    upload_span = std::span(ptr, copy.size);
++                }
+             } else {
+                 if (immediate_buffer.empty()) {
+                     immediate_buffer = ImmediateBuffer(largest_copy);
+diff --git a/src/video_core/renderer_vulkan/vk_query_cache.cpp b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+index 7cbc9c73c524..a28296bdafae 100644
+--- a/src/video_core/renderer_vulkan/vk_query_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_query_cache.cpp
+@@ -1064,8 +1064,6 @@ class PrimitivesSucceededStreamer : public VideoCommon::SimpleStreamer<Primitive
+                 }
+             });
+         }
+-        auto* ptr = device_memory.GetPointer<u8>(new_query->dependant_address);
+-        ASSERT(ptr != nullptr);
+ 
+         new_query->dependant_manage = must_manage_dependance;
+         pending_flush_queries.push_back(index);
+@@ -1104,9 +1102,11 @@ class PrimitivesSucceededStreamer : public VideoCommon::SimpleStreamer<Primitive
+                 tfb_streamer.Free(query->dependant_index);
+             } else {
+                 u8* pointer = device_memory.GetPointer<u8>(query->dependant_address);
+-                u32 result;
+-                std::memcpy(&result, pointer, sizeof(u32));
+-                num_vertices = static_cast<u64>(result) / query->stride;
++                if (pointer != nullptr) {
++                    u32 result;
++                    std::memcpy(&result, pointer, sizeof(u32));
++                    num_vertices = static_cast<u64>(result) / query->stride;
++                }
+             }
+             query->value = [&]() -> u64 {
+                 switch (query->topology) {
+@@ -1360,7 +1360,9 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
+     const auto check_value = [&](DAddr address) {
+         u8* ptr = impl->device_memory.GetPointer<u8>(address);
+         u64 value{};
+-        std::memcpy(&value, ptr, sizeof(value));
++        if (ptr != nullptr) {
++            std::memcpy(&value, ptr, sizeof(value));
++        }
+         return value == 0;
+     };
+     std::array<VideoCommon::LookupData*, 2> objects{&object_1, &object_2};

@@ -1,0 +1,172 @@
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 435ef6793487..bd5f11d5359e 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -242,7 +242,7 @@ struct System::Impl {
+     void Run() {
+         std::unique_lock<std::mutex> lk(suspend_guard);
+ 
+-        kernel.SuspendApplication(false);
++        kernel.SuspendEmulation(false);
+         core_timing.SyncPause(false);
+         is_paused.store(false, std::memory_order_relaxed);
+     }
+@@ -251,7 +251,7 @@ struct System::Impl {
+         std::unique_lock<std::mutex> lk(suspend_guard);
+ 
+         core_timing.SyncPause(true);
+-        kernel.SuspendApplication(true);
++        kernel.SuspendEmulation(true);
+         is_paused.store(true, std::memory_order_relaxed);
+     }
+ 
+@@ -261,7 +261,7 @@ struct System::Impl {
+ 
+     std::unique_lock<std::mutex> StallApplication() {
+         std::unique_lock<std::mutex> lk(suspend_guard);
+-        kernel.SuspendApplication(true);
++        kernel.SuspendEmulation(true);
+         core_timing.SyncPause(true);
+         return lk;
+     }
+@@ -269,7 +269,7 @@ struct System::Impl {
+     void UnstallApplication() {
+         if (!IsPaused()) {
+             core_timing.SyncPause(false);
+-            kernel.SuspendApplication(false);
++            kernel.SuspendEmulation(false);
+         }
+     }
+ 
+@@ -459,7 +459,7 @@ struct System::Impl {
+         }
+ 
+         Network::CancelPendingSocketOperations();
+-        kernel.SuspendApplication(true);
++        kernel.SuspendEmulation(true);
+         if (services) {
+             services->KillNVNFlinger();
+         }
+diff --git a/src/core/hle/kernel/k_thread.h b/src/core/hle/kernel/k_thread.h
+index f13e232b24f4..e928cfebc921 100644
+--- a/src/core/hle/kernel/k_thread.h
++++ b/src/core/hle/kernel/k_thread.h
+@@ -66,6 +66,7 @@ enum class SuspendType : u32 {
+     Debug = 2,
+     Backtrace = 3,
+     Init = 4,
++    System = 5,
+ 
+     Count,
+ };
+@@ -84,8 +85,9 @@ enum class ThreadState : u16 {
+     DebugSuspended = (1 << (2 + SuspendShift)),
+     BacktraceSuspended = (1 << (3 + SuspendShift)),
+     InitSuspended = (1 << (4 + SuspendShift)),
++    SystemSuspended = (1 << (5 + SuspendShift)),
+ 
+-    SuspendFlagMask = ((1 << 5) - 1) << SuspendShift,
++    SuspendFlagMask = ((1 << 6) - 1) << SuspendShift,
+ };
+ DECLARE_ENUM_FLAG_OPERATORS(ThreadState);
+ 
+diff --git a/src/core/hle/kernel/kernel.cpp b/src/core/hle/kernel/kernel.cpp
+index 34b25be66557..4f4b02fac7ba 100644
+--- a/src/core/hle/kernel/kernel.cpp
++++ b/src/core/hle/kernel/kernel.cpp
+@@ -1204,39 +1204,48 @@ const Kernel::KSharedMemory& KernelCore::GetHidBusSharedMem() const {
+     return *impl->hidbus_shared_mem;
+ }
+ 
+-void KernelCore::SuspendApplication(bool suspended) {
++void KernelCore::SuspendEmulation(bool suspended) {
+     const bool should_suspend{exception_exited || suspended};
+-    const auto activity =
+-        should_suspend ? Svc::ProcessActivity::Paused : Svc::ProcessActivity::Runnable;
++    auto processes = GetProcessList();
+ 
+-    // Get the application process.
+-    KScopedAutoObject<KProcess> process = ApplicationProcess();
+-    if (process.IsNull()) {
+-        return;
++    for (auto& process : processes) {
++        KScopedLightLock ll{process->GetListLock()};
++
++        for (auto& thread : process->GetThreadList()) {
++            if (should_suspend) {
++                thread.RequestSuspend(SuspendType::System);
++            } else {
++                thread.Resume(SuspendType::System);
++            }
++        }
+     }
+ 
+-    // Set the new activity.
+-    process->SetActivity(activity);
++    if (!should_suspend) {
++        return;
++    }
+ 
+     // Wait for process execution to stop.
+-    bool must_wait{should_suspend};
+-
+-    // KernelCore::SuspendApplication must be called from locked context,
+-    // or we could race another call to SetActivity, interfering with waiting.
+-    while (must_wait) {
++    // KernelCore::SuspendEmulation must be called from locked context,
++    // or we could race another call, interfering with waiting.
++    const auto TryWait = [&]() {
+         KScopedSchedulerLock sl{*this};
+ 
+-        // Assume that all threads have finished running.
+-        must_wait = false;
+-
+-        for (auto i = 0; i < static_cast<s32>(Core::Hardware::NUM_CPU_CORES); ++i) {
+-            if (Scheduler(i).GetSchedulerCurrentThread()->GetOwnerProcess() ==
+-                process.GetPointerUnsafe()) {
+-                // A thread has not finished running yet.
+-                // Continue waiting.
+-                must_wait = true;
++        for (auto& process : processes) {
++            for (auto i = 0; i < static_cast<s32>(Core::Hardware::NUM_CPU_CORES); ++i) {
++                if (Scheduler(i).GetSchedulerCurrentThread()->GetOwnerProcess() ==
++                    process.GetPointerUnsafe()) {
++                    // A thread has not finished running yet.
++                    // Continue waiting.
++                    return false;
++                }
+             }
+         }
++
++        return true;
++    };
++
++    while (!TryWait()) {
++        // ...
+     }
+ }
+ 
+@@ -1260,7 +1269,7 @@ bool KernelCore::IsShuttingDown() const {
+ 
+ void KernelCore::ExceptionalExitApplication() {
+     exception_exited = true;
+-    SuspendApplication(true);
++    SuspendEmulation(true);
+ }
+ 
+ void KernelCore::EnterSVCProfile() {
+diff --git a/src/core/hle/kernel/kernel.h b/src/core/hle/kernel/kernel.h
+index 8ea5bed1c6bd..57182c0c8d46 100644
+--- a/src/core/hle/kernel/kernel.h
++++ b/src/core/hle/kernel/kernel.h
+@@ -258,8 +258,8 @@ class KernelCore {
+     /// Gets the shared memory object for HIDBus services.
+     const Kernel::KSharedMemory& GetHidBusSharedMem() const;
+ 
+-    /// Suspend/unsuspend application process.
+-    void SuspendApplication(bool suspend);
++    /// Suspend/unsuspend emulated processes.
++    void SuspendEmulation(bool suspend);
+ 
+     /// Exceptional exit application process.
+     void ExceptionalExitApplication();

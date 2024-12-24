@@ -1,0 +1,354 @@
+--- a/src/common/logging/formatter.h	2024-12-22 14:18:04.898262412 -0500
++++ b/src/common/logging/formatter.h	2024-12-22 14:16:00.750913339 -0500
+@@ -14,7 +14,7 @@
+ struct fmt::formatter<T, std::enable_if_t<std::is_enum_v<T>, char>>
+     : formatter<std::underlying_type_t<T>> {
+     template <typename FormatContext>
+-    auto format(const T& value, FormatContext& ctx) -> decltype(ctx.out()) {
++    auto format(const T& value, FormatContext& ctx) const -> decltype(ctx.out()) {
+         return fmt::formatter<std::underlying_type_t<T>>::format(
+             static_cast<std::underlying_type_t<T>>(value), ctx);
+     }
+--- a/src/video_core/texture_cache/formatter.h	2024-12-22 15:31:48.946250808 -0500
++++ b/src/video_core/texture_cache/formatter.h	2024-12-22 15:32:10.439757900 -0500
+@@ -13,7 +13,7 @@
+ template <>
+ struct fmt::formatter<VideoCore::Surface::PixelFormat> : fmt::formatter<fmt::string_view> {
+     template <typename FormatContext>
+-    auto format(VideoCore::Surface::PixelFormat format, FormatContext& ctx) {
++    auto format(VideoCore::Surface::PixelFormat format, FormatContext& ctx) const {
+         using VideoCore::Surface::PixelFormat;
+         const string_view name = [format] {
+             switch (format) {
+@@ -234,7 +234,7 @@
+ template <>
+ struct fmt::formatter<VideoCommon::ImageType> : fmt::formatter<fmt::string_view> {
+     template <typename FormatContext>
+-    auto format(VideoCommon::ImageType type, FormatContext& ctx) {
++    auto format(VideoCommon::ImageType type, FormatContext& ctx) const {
+         const string_view name = [type] {
+             using VideoCommon::ImageType;
+             switch (type) {
+--- a/src/core/hle/service/psc/time/common.h	2024-12-22 15:31:52.966283393 -0500
++++ b/src/core/hle/service/psc/time/common.h	2024-12-22 15:32:24.779873208 -0500
+@@ -167,7 +167,7 @@
+ template <>
+ struct fmt::formatter<Service::PSC::Time::TimeType> : fmt::formatter<fmt::string_view> {
+     template <typename FormatContext>
+-    auto format(Service::PSC::Time::TimeType type, FormatContext& ctx) {
++    auto format(Service::PSC::Time::TimeType type, FormatContext& ctx) const {
+         const string_view name = [type] {
+             using Service::PSC::Time::TimeType;
+             switch (type) {
+@@ -270,4 +270,4 @@
+                               time_point.rtc_offset, time_point.diff_scale, time_point.shift_amount,
+                               time_point.lower, time_point.upper);
+     }
+-};
+\ No newline at end of file
++};
+--- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp	2024-12-22 14:55:52.923509463 -0500
++++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp	2024-12-22 14:59:59.095395615 -0500
+@@ -10,6 +10,7 @@
+ #include <vector>
+ 
+ #include <fmt/format.h>
++#include <fmt/ranges.h>
+ 
+ #include "common/logging/log.h"
+ #include "common/polyfill_ranges.h"
+--- a/src/yuzu/main.cpp	2024-12-22 15:00:30.928966003 -0500
++++ b/src/yuzu/main.cpp	2024-12-22 15:02:44.026610863 -0500
+@@ -64,6 +64,7 @@
+     return dir->CreateFile(path);
+ }
+ 
++#include <fmt/ranges.h>
+ #include <fmt/ostream.h>
+ #include <glad/glad.h>
+ 
+--- a/src/core/frontend/applets/cabinet.h	2024-12-22 15:05:40.614549422 -0500
++++ b/src/core/frontend/applets/cabinet.h	2024-12-22 15:06:03.548046196 -0500
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <memory>
+ #include <functional>
+ #include "core/frontend/applets/applet.h"
+ #include "core/hle/service/nfp/nfp_types.h"
+--- a/src/core/debugger/gdbstub.cpp	2024-12-22 15:00:37.295679924 -0500
++++ b/src/core/debugger/gdbstub.cpp	2024-12-22 15:03:12.456817423 -0500
+@@ -8,6 +8,8 @@
+ #include <optional>
+ #include <thread>
+ 
++#include <fmt/ranges.h>
++
+ #include <boost/algorithm/string.hpp>
+ 
+ #include "common/hex_util.h"
+--- a/src/core/arm/dynarmic/dynarmic_cp15.cpp	2024-12-22 15:16:46.939200236 -0500
++++ b/src/core/arm/dynarmic/dynarmic_cp15.cpp	2024-12-22 15:15:11.668543962 -0500
+@@ -22,7 +22,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Dynarmic::A32::CoprocReg& reg, FormatContext& ctx) {
++    auto format(const Dynarmic::A32::CoprocReg& reg, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "cp{}", static_cast<size_t>(reg));
+     }
+ };
+--- a/src/core/memory/dmnt_cheat_vm.h	2024-12-22 15:09:20.652771492 -0500
++++ b/src/core/memory/dmnt_cheat_vm.h	2024-12-22 15:09:28.259491484 -0500
+@@ -5,6 +5,7 @@
+ 
+ #include <variant>
+ #include <vector>
++#include <memory>
+ #include <fmt/printf.h>
+ #include "common/common_types.h"
+ #include "core/memory/dmnt_cheat_types.h"
+--- a/src/core/hle/service/nfc/common/device.cpp	2024-12-22 15:00:41.822380160 -0500
++++ b/src/core/hle/service/nfc/common/device.cpp	2024-12-22 15:03:31.520288846 -0500
+@@ -15,6 +15,7 @@
+ #endif
+ 
+ #include <fmt/format.h>
++#include <fmt/ranges.h>
+ 
+ #include "common/fs/file.h"
+ #include "common/fs/fs.h"
+--- a/src/hid_core/resources/applet_resource.h	2024-12-22 14:45:37.848830513 -0500
++++ b/src/hid_core/resources/applet_resource.h	2024-12-22 14:45:51.248920850 -0500
+@@ -5,6 +5,7 @@
+ 
+ #include <array>
+ #include <mutex>
++#include <memory>
+ 
+ #include "common/bit_field.h"
+ #include "common/common_types.h"
+--- a/src/hid_core/resources/touch_screen/touch_screen.h	2024-12-22 14:49:39.323817705 -0500
++++ b/src/hid_core/resources/touch_screen/touch_screen.h	2024-12-22 14:49:46.017197271 -0500
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <mutex>
++#include <memory>
+ 
+ #include "common/common_types.h"
+ #include "core/hle/result.h"
+--- a/src/hid_core/resources/touch_screen/gesture.h	2024-12-22 14:47:29.199585163 -0500
++++ b/src/hid_core/resources/touch_screen/gesture.h	2024-12-22 14:47:38.269647865 -0500
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <mutex>
++#include <memory>
+ 
+ #include "common/common_types.h"
+ #include "core/hle/result.h"
+--- a/src/hid_core/resources/npad/npad_vibration.h	2024-12-22 14:49:02.576897177 -0500
++++ b/src/hid_core/resources/npad/npad_vibration.h	2024-12-22 14:49:11.093622686 -0500
+@@ -4,6 +4,7 @@
+ #pragma once
+ 
+ #include <mutex>
++#include <memory>
+ 
+ #include "common/common_types.h"
+ #include "core/hle/result.h"
+--- a/src/shader_recompiler/frontend/maxwell/opcodes.h	2024-12-22 15:22:10.011414711 -0500
++++ b/src/shader_recompiler/frontend/maxwell/opcodes.h	2024-12-22 14:44:03.628195316 -0500
+@@ -23,7 +23,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::Maxwell::Opcode& opcode, FormatContext& ctx) {
++    auto format(const Shader::Maxwell::Opcode& opcode, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{}", NameOf(opcode));
+     }
+ };
+--- a/src/shader_recompiler/frontend/maxwell/location.h	2024-12-22 15:22:25.841522889 -0500
++++ b/src/shader_recompiler/frontend/maxwell/location.h	2024-12-22 14:44:19.878304871 -0500
+@@ -102,7 +102,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::Maxwell::Location& location, FormatContext& ctx) {
++    auto format(const Shader::Maxwell::Location& location, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{:04x}", location.Offset());
+     }
+ };
+--- a/src/shader_recompiler/frontend/ir/reg.h	2024-12-22 15:24:53.945930984 -0500
++++ b/src/shader_recompiler/frontend/ir/reg.h	2024-12-22 14:42:52.627716640 -0500
+@@ -319,7 +319,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::IR::Reg& reg, FormatContext& ctx) {
++    auto format(const Shader::IR::Reg& reg, FormatContext& ctx) const {
+         if (reg == Shader::IR::Reg::RZ) {
+             return fmt::format_to(ctx.out(), "RZ");
+         } else if (static_cast<int>(reg) >= 0 && static_cast<int>(reg) < 255) {
+--- a/src/shader_recompiler/frontend/ir/attribute.h	2024-12-22 15:23:54.675482667 -0500
++++ b/src/shader_recompiler/frontend/ir/attribute.h	2024-12-22 14:42:52.627716640 -0500
+@@ -250,7 +250,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::IR::Attribute& attribute, FormatContext& ctx) {
++    auto format(const Shader::IR::Attribute& attribute, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{}", Shader::IR::NameOf(attribute));
+     }
+ };
+--- a/src/shader_recompiler/frontend/ir/opcodes.h	2024-12-22 15:24:17.298978425 -0500
++++ b/src/shader_recompiler/frontend/ir/opcodes.h	2024-12-22 14:42:52.627716640 -0500
+@@ -103,7 +103,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::IR::Opcode& op, FormatContext& ctx) {
++    auto format(const Shader::IR::Opcode& op, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{}", Shader::IR::NameOf(op));
+     }
+ };
+--- a/src/shader_recompiler/frontend/ir/type.h	2024-12-22 15:25:00.122657511 -0500
++++ b/src/shader_recompiler/frontend/ir/type.h	2024-12-22 14:42:52.627716640 -0500
+@@ -54,7 +54,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::IR::Type& type, FormatContext& ctx) {
++    auto format(const Shader::IR::Type& type, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{}", NameOf(type));
+     }
+ };
+--- a/src/shader_recompiler/frontend/ir/flow_test.h	2024-12-22 15:24:09.255587350 -0500
++++ b/src/shader_recompiler/frontend/ir/flow_test.h	2024-12-22 14:42:52.627716640 -0500
+@@ -55,7 +55,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::IR::FlowTest& flow_test, FormatContext& ctx) {
++    auto format(const Shader::IR::FlowTest& flow_test, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{}", Shader::IR::NameOf(flow_test));
+     }
+ };
+--- a/src/shader_recompiler/frontend/ir/pred.h	2024-12-22 15:24:23.565690076 -0500
++++ b/src/shader_recompiler/frontend/ir/pred.h	2024-12-22 14:42:52.627716640 -0500
+@@ -33,7 +33,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::IR::Pred& pred, FormatContext& ctx) {
++    auto format(const Shader::IR::Pred& pred, FormatContext& ctx) const {
+         if (pred == Shader::IR::Pred::PT) {
+             return fmt::format_to(ctx.out(), "PT");
+         } else {
+--- a/src/shader_recompiler/frontend/ir/condition.h	2024-12-22 15:24:04.112217090 -0500
++++ b/src/shader_recompiler/frontend/ir/condition.h	2024-12-22 14:42:52.627716640 -0500
+@@ -52,7 +52,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::IR::Condition& cond, FormatContext& ctx) {
++    auto format(const Shader::IR::Condition& cond, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{}", Shader::IR::NameOf(cond));
+     }
+ };
+--- a/src/shader_recompiler/backend/glasm/reg_alloc.h	2024-12-22 14:36:41.828549804 -0500
++++ b/src/shader_recompiler/backend/glasm/reg_alloc.h	2024-12-22 14:37:27.348856757 -0500
+@@ -184,7 +184,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(Shader::Backend::GLASM::Id id, FormatContext& ctx) {
++    auto format(Shader::Backend::GLASM::Id id, FormatContext& ctx) const  {
+         return Shader::Backend::GLASM::FormatTo<true>(ctx, id);
+     }
+ };
+@@ -195,7 +195,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::Backend::GLASM::Register& value, FormatContext& ctx) {
++    auto format(const Shader::Backend::GLASM::Register& value, FormatContext& ctx) const  {
+         if (value.type != Shader::Backend::GLASM::Type::Register) {
+             throw Shader::InvalidArgument("Register value type is not register");
+         }
+@@ -209,7 +209,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::Backend::GLASM::ScalarRegister& value, FormatContext& ctx) {
++    auto format(const Shader::Backend::GLASM::ScalarRegister& value, FormatContext& ctx) const  {
+         if (value.type != Shader::Backend::GLASM::Type::Register) {
+             throw Shader::InvalidArgument("Register value type is not register");
+         }
+@@ -223,7 +223,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::Backend::GLASM::ScalarU32& value, FormatContext& ctx) {
++    auto format(const Shader::Backend::GLASM::ScalarU32& value, FormatContext& ctx) const  {
+         switch (value.type) {
+         case Shader::Backend::GLASM::Type::Void:
+             break;
+@@ -244,7 +244,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::Backend::GLASM::ScalarS32& value, FormatContext& ctx) {
++    auto format(const Shader::Backend::GLASM::ScalarS32& value, FormatContext& ctx) const  {
+         switch (value.type) {
+         case Shader::Backend::GLASM::Type::Void:
+             break;
+@@ -265,7 +265,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::Backend::GLASM::ScalarF32& value, FormatContext& ctx) {
++    auto format(const Shader::Backend::GLASM::ScalarF32& value, FormatContext& ctx) const  {
+         switch (value.type) {
+         case Shader::Backend::GLASM::Type::Void:
+             break;
+@@ -286,7 +286,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Shader::Backend::GLASM::ScalarF64& value, FormatContext& ctx) {
++    auto format(const Shader::Backend::GLASM::ScalarF64& value, FormatContext& ctx) const  {
+         switch (value.type) {
+         case Shader::Backend::GLASM::Type::Void:
+             break;
+--- a/src/common/typed_address.h	2024-12-22 15:57:35.034192088 -0500
++++ b/src/common/typed_address.h	2024-12-22 15:58:47.791374014 -0500
+@@ -262,7 +262,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Common::PhysicalAddress& addr, FormatContext& ctx) {
++    auto format(const Common::PhysicalAddress& addr, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{:#x}", static_cast<u64>(addr.GetValue()));
+     }
+ };
+@@ -273,7 +273,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Common::ProcessAddress& addr, FormatContext& ctx) {
++    auto format(const Common::ProcessAddress& addr, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{:#x}", static_cast<u64>(addr.GetValue()));
+     }
+ };
+@@ -284,7 +284,7 @@
+         return ctx.begin();
+     }
+     template <typename FormatContext>
+-    auto format(const Common::VirtualAddress& addr, FormatContext& ctx) {
++    auto format(const Common::VirtualAddress& addr, FormatContext& ctx) const {
+         return fmt::format_to(ctx.out(), "{:#x}", static_cast<u64>(addr.GetValue()));
+     }
+ };

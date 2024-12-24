@@ -1,0 +1,12 @@
+diff --git a/es-app/src/guis/GuiThemeDownloader.h b/es-app/src/guis/GuiThemeDownloader.h
+index f56a2fe6..abf36713 100644
+--- a/es-app/src/guis/GuiThemeDownloader.h
++++ b/es-app/src/guis/GuiThemeDownloader.h
+@@ -23,6 +23,7 @@
+ 
+ #include <git2/clone.h>
+ #include <git2/errors.h>
++#include <git2/sys/errors.h>
+ #include <git2/global.h>
+ #include <git2/merge.h>
+ #include <git2/reset.h>

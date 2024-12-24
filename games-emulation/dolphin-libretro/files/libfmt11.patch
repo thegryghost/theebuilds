@@ -1,0 +1,21 @@
+--- a/Source/Core/Core/Debugger/PPCDebugInterface.cpp	2024-12-22 17:24:26.344219685 -0500
++++ b/Source/Core/Core/Debugger/PPCDebugInterface.cpp	2024-12-22 17:24:34.407565625 -0500
+@@ -7,6 +7,7 @@
+ #include <array>
+ #include <cstddef>
+ #include <string>
++#include <algorithm>
+ 
+ #include <fmt/format.h>
+ 
+--- a/Source/Core/Core/IOS/FS/FileSystemProxy.cpp	2024-12-22 17:24:01.687514507 -0500
++++ b/Source/Core/Core/IOS/FS/FileSystemProxy.cpp	2024-12-22 17:27:39.587856207 -0500
+@@ -272,7 +272,7 @@
+ 
+   const Result<u32> result =
+       m_ios.GetFS()->SeekFile(handle.fs_fd, request.offset, IOS::HLE::FS::SeekMode(request.mode));
+-  LogResult(result, "Seek({}, 0x{:08x}, {})", handle.name.data(), request.offset, request.mode);
++  LogResult(result, "Seek({}, 0x{:08x}, {})", handle.name.data(), request.offset, (s32)request.mode);
+   if (!result)
+     return GetFSReply(ConvertResult(result.Error()));
+   return GetFSReply(*result);

@@ -1,0 +1,33 @@
+--- a/custom/dependencies/libzlib/gzguts.h	2024-06-08 00:21:30.250392510 -0400
++++ b/custom/dependencies/libzlib/gzguts.h	2024-06-08 00:22:02.963775652 -0400
+@@ -19,6 +19,8 @@
+ #endif
+ 
+ #include <stdio.h>
++#include <fcntl.h>
++#include <unistd.h>
+ #include "zlib.h"
+ #ifdef STDC
+ #  include <string.h>
+--- a/libretro/libretro.c	2024-06-08 00:23:00.750520590 -0400
++++ b/libretro/libretro.c	2024-06-08 00:23:17.910543950 -0400
+@@ -719,7 +719,7 @@
+         initializing = true;
+ 
+         retro_thread = co_active();
+-        game_thread = co_create(65536 * sizeof(void*) * 16, EmuThreadFunction);
++        game_thread = co_create(65536 * sizeof(void*) * 16, (void (*)(void))EmuThreadFunction);
+     }
+ 
+     m64p_error ret = CoreStartup(FRONTEND_API_VERSION, ".", ".", NULL, n64DebugCallback, 0, n64StateCallback);
+--- a/mupen64plus-core/subprojects/minizip/zip.c	2024-06-08 00:18:32.006663033 -0400
++++ b/mupen64plus-core/subprojects/minizip/zip.c	2024-06-08 00:19:05.700071021 -0400
+@@ -1246,7 +1246,7 @@
+         unsigned char bufHead[RAND_HEAD_LEN];
+         unsigned int sizeHead;
+         zi->ci.encrypt = 1;
+-        zi->ci.pcrc_32_tab = get_crc_table();
++        zi->ci.pcrc_32_tab = (const long unsigned int *)get_crc_table();
+         /*init_keys(password,zi->ci.keys,zi->ci.pcrc_32_tab);*/
+ 
+         sizeHead=crypthead(password,bufHead,RAND_HEAD_LEN,zi->ci.keys,zi->ci.pcrc_32_tab,crcForCrypting);

@@ -34,6 +34,7 @@ IUSE="test"
 
 COMMON_DEPEND="
 	dev-libs/expat
+	dev-libs/pugixml
 	=media-tv/kodi-21*
 	"
 DEPEND="

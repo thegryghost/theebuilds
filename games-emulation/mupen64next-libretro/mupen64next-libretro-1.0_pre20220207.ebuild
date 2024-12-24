@@ -18,7 +18,7 @@ SLOT="0"
 IUSE="rpi rpi2 rpi3 rpi4 gles2 gles3"
 
 RDEPEND="media-libs/mesa:0=
-	gles2? ( media-libs/mesa[gles2] )
+	gles2? ( media-libs/mesa[opengl] )
 	media-libs/libpng:0="
 DEPEND="${RDEPEND}
 	dev-lang/nasm:0=

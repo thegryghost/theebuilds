@@ -36,6 +36,7 @@ DOCS=( README.md THEMES.md CREDITS.md USERGUIDE.md )
 
 PATCHES=(
         "${FILESDIR}/2.1.1_lunasvg.patch"
+        "${FILESDIR}/libgit.patch"
 )
 
 

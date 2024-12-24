@@ -107,6 +107,10 @@ BDEPEND="dev-cpp/catch
 
 S="${WORKDIR}/${PN}-mainline-${MY_PV}"
 
+PATCHES=(
+	"${FILESDIR}/${PN}-0002-boost-fix.patch"
+	"${FILESDIR}/libfmt11.patch"
+)
 
 src_prepare() {
 	rm .gitmodules || die

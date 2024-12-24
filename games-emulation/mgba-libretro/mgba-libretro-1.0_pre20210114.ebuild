@@ -27,7 +27,7 @@ DEPEND="
 	ffmpeg? ( virtual/ffmpeg:0= )
 	lzma? ( app-arch/xz-utils:0= )
 	png? ( media-libs/libpng:0= )
-	opengl? ( media-libs/mesa:0=[gles2?] )
+	opengl? ( media-libs/mesa:0=[opengl?] )
 	png? ( media-libs/libpng:0= )
 	zlib? ( sys-libs/zlib:0= )
 "

@@ -36,7 +36,7 @@ COMMON_DEPEND="
 	media-video/ffmpeg[encode,libxml2,zlib]
 	virtual/libiconv
 	app-arch/bzip2
-	=media-tv/kodi-19*
+	=media-tv/kodi-21*
 	"
 
 DEPEND="

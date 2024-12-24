@@ -25,7 +25,8 @@ XBYAK_SHA="a1ac3750f9a639b5a6c6d6c7da4259b8d6790989"
 CPP_JWT_SHA="e12ef06218596b52d9b5d6e1639484866a8e7067"
 LIBRESSL_SHA="8929f818fd748fd31a34fec7c04558399e13014a"
 SANITIZERS_CMAKE_SHA="aab6948fa863bc1cbe5d0850bc46b9ef02ed4c1a"
-SOUNDTOUCH_SHA="060181eaf273180d3a7e87349895bd0cb6ccbf4a"
+#SOUNDTOUCH_SHA="060181eaf273180d3a7e87349895bd0cb6ccbf4a"
+SOUNDTOUCH_SHA="dd2252e9af3f2d6b749378173a4ae89551e06faf"
 TEAKRA_SHA="01db7cdd00aabcce559a8dddce8798dabb71949b"
 DYNARMIC_SHA="c08c5a9362bb224dc343c2f616c24df027dfdf13"
 DISCORD_RPC_SHA="963aa9f3e5ce81a4682c6ca3d136cddda614db33"
@@ -97,6 +98,7 @@ PATCHES=(
 	"${FILESDIR}/citra-inih.patch"
 	"${FILESDIR}/citra-gcc13.patch"
 	"${FILESDIR}/tmp.patch"
+	"${FILESDIR}/soundtouch.patch"
 )
 
 src_prepare() {
@@ -134,6 +136,7 @@ src_prepare() {
 	mv "${WORKDIR}/ext-libressl-portable-${LIBRESSL_SHA}" "${S}/externals/libressl" || die
 	rmdir "${S}/externals/soundtouch"
 	mv "${WORKDIR}/ext-soundtouch-${SOUNDTOUCH_SHA}" "${S}/externals/soundtouch" || die
+	#mv "${WORKDIR}/soundtouch" "${S}/externals/soundtouch" || die
 	rmdir "${S}/externals/teakra"
 	mv "${WORKDIR}/teakra-${TEAKRA_SHA}" "${S}/externals/teakra" || die
 	rmdir "${S}/externals/dynarmic"

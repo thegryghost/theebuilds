@@ -1,0 +1,27 @@
+--- a/externals/nx_tzdb/tzdb_to_nx/externals/tz/CMakeLists.txt
++++ b/externals/nx_tzdb/tzdb_to_nx/externals/tz/CMakeLists.txt
+@@ -1,6 +1,6 @@
+ set(TZ_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tz" CACHE PATH "Time zone source directory")
+ set(TZ_DIR "${CMAKE_CURRENT_BINARY_DIR}/tz")
+-set(TZ_TMP_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/tmpsrc")
++set(TZ_TMP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tz")
+ set(TZIF_LIST_FILE "${CMAKE_CURRENT_BINARY_DIR}/tzif_list.txt" CACHE PATH "List of zone info files")
+ if (TZDB2NX_ZONEINFO_DIR)
+     set(TZ_ZONEINFO_DIR "${TZDB2NX_ZONEINFO_DIR}" CACHE PATH "Time zone info data directory")
+@@ -22,11 +22,11 @@
+     if (NOT TZDB2NX_ZONEINFO_DIR) # If a custom zoneinfo directory was specified
+         # tz's makefile can only build in-tree, so copy the whole source tree to a
+         # separate directory before building.
+-        execute_process(
+-            COMMAND
+-                ${GIT_PROGRAM} clone --depth 1 "file://${TZ_SOURCE_DIR}" "${TZ_TMP_SOURCE_DIR}"
+-            COMMAND_ERROR_IS_FATAL ANY
+-        )
++        #execute_process(
++        #    COMMAND
++        #        ${GIT_PROGRAM} clone --depth 1 "file://${TZ_SOURCE_DIR}" "${TZ_TMP_SOURCE_DIR}"
++        #    COMMAND_ERROR_IS_FATAL ANY
++        #)
+ 
+         if (APPLE)
+             set(TZ_MAKEFLAGS "LDLIBS=${Intl_LIBRARY}")

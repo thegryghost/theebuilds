@@ -1,0 +1,12 @@
+--- a/es-core/src/utils/StringUtil.cpp	2025-01-28 20:43:11.866283017 -0500
++++ b/es-core/src/utils/StringUtil.cpp	2025-01-28 20:46:29.736732488 -0500
+@@ -219,7 +219,8 @@
+             icu::UnicodeString iterateString {
+                 icu::UnicodeString::fromUTF8(stringArg.c_str()).toLower()};
+ 
+-            if (iterateString != nullptr) {
++            //if (iterateString != std::nullptr) {
++            if (!iterateString.isEmpty()) {
+                 iterator->setText(iterateString);
+                 int32_t pos {iterator->first()};
+                 int32_t lastPos {pos};

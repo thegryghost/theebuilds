@@ -10,3 +10,86 @@ index f56a2fe6..abf36713 100644
  #include <git2/global.h>
  #include <git2/merge.h>
  #include <git2/reset.h>
+--- a/es-app/src/guis/GuiThemeDownloader.cpp	2025-01-28 21:00:59.431964161 -0500
++++ b/es-app/src/guis/GuiThemeDownloader.cpp	2025-01-28 21:03:42.815642531 -0500
+@@ -256,7 +256,7 @@
+             throw std::runtime_error("Couldn't get information about origin, ");
+         }
+ 
+-#if LIBGIT2_VER_MAJOR >= 1
++#if LIBGIT2_VERSION_MAJOR >= 1
+         git_fetch_options fetchOptions;
+         git_fetch_options_init(&fetchOptions, GIT_FETCH_OPTIONS_VERSION);
+ #else
+@@ -285,7 +285,7 @@
+ 
+                 const std::string branchName {buffer.ptr, buffer.size};
+                 errorCode = git_revparse_single(&object, repository, branchName.c_str());
+-#if LIBGIT2_VER_MAJOR >= 1
++#if LIBGIT2_VERSION_MAJOR >= 1
+                 git_checkout_options checkoutOptions;
+                 git_checkout_options_init(&checkoutOptions, GIT_CHECKOUT_OPTIONS_VERSION);
+ #else
+@@ -375,7 +375,7 @@
+         git_object_lookup(&object, repository, objectID, GIT_OBJECT_COMMIT);
+         git_reference* newTargetRef {nullptr};
+ 
+-#if LIBGIT2_VER_MAJOR >= 1
++#if LIBGIT2_VERSION_MAJOR >= 1
+         git_checkout_options checkoutOptions;
+         git_checkout_options_init(&checkoutOptions, GIT_CHECKOUT_OPTIONS_VERSION);
+ #else
+@@ -404,7 +404,7 @@
+         LOG(LogError) << "GuiThemeDownloader: " << runtimeError.what() << gitError->message;
+         mRepositoryError = RepositoryError::FETCH_ERROR;
+         mMessage = gitError->message;
+-#if LIBGIT2_VER_MAJOR < 2 && LIBGIT2_VER_MINOR < 8
++#if LIBGIT2_VERSION_MAJOR < 2 && LIBGIT2_VERSION_MINOR < 8
+         git_error_clear();
+ #endif
+         git_remote_free(gitRemote);
+@@ -430,7 +430,7 @@
+     size_t statusEntryCount {0};
+     int errorCode {0};
+ 
+-#if LIBGIT2_VER_MAJOR >= 1
++#if LIBGIT2_VERSION_MAJOR >= 1
+     git_status_options statusOptions;
+     git_status_options_init(&statusOptions, GIT_STATUS_OPTIONS_VERSION);
+ #else
+@@ -462,7 +462,7 @@
+     size_t statusEntryCount {0};
+     int errorCode {0};
+ 
+-#if LIBGIT2_VER_MAJOR >= 1
++#if LIBGIT2_VERSION_MAJOR >= 1
+     git_status_options statusOptions;
+     git_status_options_init(&statusOptions, GIT_STATUS_OPTIONS_VERSION);
+ #else
+@@ -1494,7 +1494,7 @@
+     git_repository* repository {nullptr};
+     const std::string path {mThemeDirectory + repositoryName};
+ 
+-#if LIBGIT2_VER_MAJOR >= 1
++#if LIBGIT2_VERSION_MAJOR >= 1
+     auto fetchProgressFunc = [](const git_indexer_progress* stats, void* payload) -> int {
+ #else
+     auto fetchProgressFunc = [](const git_transfer_progress* stats, void* payload) -> int {
+@@ -1526,7 +1526,7 @@
+         return 0;
+     };
+ 
+-#if LIBGIT2_VER_MAJOR >= 1
++#if LIBGIT2_VERSION_MAJOR >= 1
+     git_clone_options cloneOptions;
+     git_clone_options_init(&cloneOptions, GIT_CLONE_OPTIONS_VERSION);
+ #else
+@@ -1550,7 +1550,7 @@
+                       << gitError->message << "\"";
+         mRepositoryError = RepositoryError::CLONE_ERROR;
+         mMessage = gitError->message;
+-#if LIBGIT2_VER_MAJOR < 2 && LIBGIT2_VER_MINOR < 8
++#if LIBGIT2_VERSION_MAJOR < 2 && LIBGIT2_VERSION_MINOR < 8
+         git_error_clear();
+ #endif
+         mPromise.set_value(true);

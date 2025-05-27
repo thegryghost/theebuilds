@@ -109,6 +109,7 @@ S="${WORKDIR}/${PN}-mainline-${MY_PV}"
 
 PATCHES=(
 	"${FILESDIR}/${PN}-0002-boost-fix.patch"
+	"${FILESDIR}/${PN}-0005-boost-1.87.patch"
 	"${FILESDIR}/libfmt11.patch"
 )
 

@@ -3,6 +3,7 @@
 
 EAPI=7
 
+CMAKE_MAKEFILE_GENERATOR=emake
 inherit cmake desktop
 
 DESCRIPTION="EmulationStation Desktop Edition"
@@ -37,6 +38,7 @@ DOCS=( README.md THEMES.md CREDITS.md USERGUIDE.md )
 PATCHES=(
         "${FILESDIR}/2.1.1_lunasvg.patch"
         "${FILESDIR}/libgit.patch"
+        "${FILESDIR}/str.patch"
 )
 
 

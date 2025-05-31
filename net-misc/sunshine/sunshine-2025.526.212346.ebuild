@@ -65,10 +65,12 @@ IUSE="cuda debug libdrm svt-av1 trayicon vaapi wayland X x264 x265"
 
 
 CDEPEND="
+	!net-misc/sunshine
 	sys-process/numactl
 	dev-libs/libevdev
 	dev-libs/openssl:=
 	media-libs/opus
+	dev-cpp/nlohmann_json
 	net-libs/miniupnpc:=
 	net-misc/curl
 	|| (

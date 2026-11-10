@@ -1,0 +1,11 @@
+--- a/src/CMakeLists.txt	2026-07-06 19:28:51.105721458 -0400
++++ b/src/CMakeLists.txt	2026-07-06 19:28:58.929159790 -0400
+@@ -112,8 +112,6 @@
+     add_compile_options(
+         -fwrapv
+ 
+-        -Werror=all
+-        -Werror=extra
+         -Werror=missing-declarations
+         -Werror=shadow
+         -Werror=unused

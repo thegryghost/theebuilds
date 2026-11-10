@@ -1,0 +1,333 @@
+diff --git a/src/actions.rs b/src/actions.rs
+index 4e44fd3bdbca6061ed0b0e63d48eb574a0c89c95..e4afb48b63ac73adbff2d4e0a2771675d095027b 100644
+--- a/src/actions.rs
++++ b/src/actions.rs
+@@ -18,7 +18,7 @@ use zbus::zvariant::Type;
+ use zbus::Connection;
+ 
+ use crate::{
+-    config::{create_modprobe_conf, GfxConfig},
++    config::{create_modprobe_conf, check_vulkan_icd, GfxConfig},
+     do_driver_action,
+     error::GfxError,
+     kill_nvidia_lsof,
+@@ -184,6 +184,8 @@ pub enum StagedAction {
+     AsusMuxDgpu,
+     /// Write a modprobe conf according to mode (e.g, hybrid, vfio)
+     WriteModprobeConf,
++    /// Checks for correct Vulkan ICD (remove nvidia_icd.json if not on "nvidia" or "vfio")
++    CheckVulkanIcd,
+     /// Placeholder, used to indicate the dgpu is not Nvidia (for example when deciding if KillNvidia should be used)
+     NotNvidia,
+     None,
+@@ -229,6 +231,7 @@ impl StagedAction {
+         match mode {
+             GfxMode::Hybrid => vec![
+                 Self::WriteModprobeConf,
++                Self::CheckVulkanIcd,
+                 hotplug_add_type,
+                 Self::RescanPci,
+                 Self::LoadGpuDrivers,
+@@ -240,6 +243,7 @@ impl StagedAction {
+                 Self::UnloadGpuDrivers,
+                 Self::UnbindRemoveGpu,
+                 Self::WriteModprobeConf,
++                Self::CheckVulkanIcd,
+                 hotplug_rm_type,
+             ],
+             GfxMode::Vfio => vec![
+@@ -247,16 +251,19 @@ impl StagedAction {
+                 kill_gpu_use,
+                 Self::UnloadGpuDrivers,
+                 Self::WriteModprobeConf,
++                Self::CheckVulkanIcd,
+                 Self::LoadVfioDrivers,
+             ],
+             GfxMode::AsusEgpu => vec![
+                 Self::WriteModprobeConf,
++                Self::CheckVulkanIcd,
+                 Self::LoadGpuDrivers,
+                 enable_nvidia_powerd,
+             ],
+             GfxMode::AsusMuxDgpu => vec![
+                 // TODO: remove iGPU
+                 Self::WriteModprobeConf,
++                Self::CheckVulkanIcd,
+                 Self::LoadGpuDrivers,
+                 enable_nvidia_powerd,
+             ],
+@@ -318,6 +325,7 @@ impl StagedAction {
+                     Self::UnloadGpuDrivers,
+                     Self::UnbindRemoveGpu,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     hotplug_rm_type,
+                     start_display,
+                 ]),
+@@ -331,6 +339,7 @@ impl StagedAction {
+                     Self::UnloadGpuDrivers,
+                     Self::UnbindRemoveGpu,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     Self::AsusEgpuEnable,
+                     Self::RescanPci,
+                     Self::LoadGpuDrivers,
+@@ -339,6 +348,7 @@ impl StagedAction {
+                 ]),
+                 GfxMode::AsusMuxDgpu => Action::StagedActions(vec![
+                     // Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd, // check this in anycase
+                     enable_nvidia_powerd,
+                     Self::AsusMuxDgpu,
+                 ]),
+@@ -351,6 +361,7 @@ impl StagedAction {
+                     wait_logout,
+                     stop_display,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     hotplug_add_type,
+                     Self::RescanPci,
+                     Self::LoadGpuDrivers,
+@@ -359,12 +370,14 @@ impl StagedAction {
+                 ]),
+                 GfxMode::NvidiaNoModeset => Action::StagedActions(vec![
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     Self::RescanPci,
+                     Self::LoadGpuDrivers,
+                     enable_nvidia_powerd,
+                 ]),
+                 GfxMode::Vfio => Action::StagedActions(vec![
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     Self::RescanPci, // Make the PCI devices available
+                     disable_nvidia_powerd,
+                     kill_gpu_use,
+@@ -376,6 +389,7 @@ impl StagedAction {
+                     wait_logout,
+                     stop_display,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     Self::AsusEgpuEnable,
+                     Self::RescanPci,
+                     Self::LoadGpuDrivers,
+@@ -384,6 +398,7 @@ impl StagedAction {
+                 ]),
+                 GfxMode::AsusMuxDgpu => Action::StagedActions(vec![
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     hotplug_add_type, // must always assume the possibility dgpu_disable was set
+                     enable_nvidia_powerd,
+                     Self::AsusMuxDgpu,
+@@ -400,12 +415,14 @@ impl StagedAction {
+                     Self::UnloadGpuDrivers,
+                     Self::UnbindRemoveGpu,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                 ]),
+                 GfxMode::Vfio => Action::StagedActions(vec![
+                     disable_nvidia_powerd,
+                     kill_gpu_use,
+                     Self::UnloadGpuDrivers,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     Self::LoadVfioDrivers,
+                 ]),
+                 GfxMode::AsusEgpu => Action::UserAction(UserActionRequired::Nothing),
+@@ -423,6 +440,7 @@ impl StagedAction {
+                     kill_gpu_use,
+                     Self::UnloadVfioDrivers,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     Self::RescanPci,
+                     Self::LoadGpuDrivers,
+                 ]),
+@@ -437,6 +455,7 @@ impl StagedAction {
+                     Self::UnloadVfioDrivers,
+                     Self::UnbindRemoveGpu,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     Self::AsusEgpuEnable,
+                     Self::RescanPci,
+                     Self::LoadGpuDrivers,
+@@ -459,6 +478,7 @@ impl StagedAction {
+                     Self::UnloadGpuDrivers,
+                     Self::UnbindRemoveGpu,
+                     Self::WriteModprobeConf,
++                    Self::CheckVulkanIcd,
+                     Self::AsusEgpuDisable,
+                     Self::AsusDgpuEnable, // ensure the dgpu is enabled
+                     Self::RescanPci,
+@@ -477,7 +497,8 @@ impl StagedAction {
+                     Self::AsusEgpuDisable,
+                     Self::UnloadGpuDrivers,
+                     Self::UnbindRemoveGpu, // egpu disable also enable dgpu, which can reload the drivers
+-                    Self::WriteModprobeConf,
++                    Self::WriteModprobeConf, // TODO: called twice? (why?)
++                    Self::CheckVulkanIcd,
+                     hotplug_rm_type, // also need to ensure dgpu is off
+                     start_display,
+                 ]),
+@@ -540,6 +561,7 @@ impl StagedAction {
+             StagedAction::AsusMuxIgpu => asus_gpu_mux_set_igpu(true),
+             StagedAction::AsusMuxDgpu => asus_gpu_mux_set_igpu(false),
+             StagedAction::WriteModprobeConf => create_modprobe_conf(changing_to, device),
++            StagedAction::CheckVulkanIcd => check_vulkan_icd(changing_to),
+             StagedAction::DevTreeManaged => Ok(()),
+             StagedAction::NoLogind => Ok(()),
+             StagedAction::NotNvidia => Ok(()),
+diff --git a/src/config.rs b/src/config.rs
+index 4ce4bf2dcd034fb832689756668af6363f405c2b..94b55de569397cb58340ea0dfe272bad01cb1371 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -10,7 +10,7 @@ use crate::error::GfxError;
+ use crate::pci_device::{DiscreetGpu, GfxMode, HotplugType};
+ use crate::{
+     MODPROBE_INTEGRATED, MODPROBE_NVIDIA_BASE, MODPROBE_NVIDIA_DRM_MODESET_ON, MODPROBE_PATH,
+-    MODPROBE_VFIO,
++    MODPROBE_VFIO, CONFIG_NVIDIA_VKICD
+ };
+ 
+ /// Cleaned config for passing over dbus only
+@@ -169,6 +169,28 @@ fn create_vfio_conf(devices: &DiscreetGpu) -> Vec<u8> {
+     conf
+ }
+ 
++pub(crate) fn check_vulkan_icd(mode: GfxMode) -> Result<(), GfxError> {
++    let inactive_nv_icd: String = CONFIG_NVIDIA_VKICD.to_owned() + "_inactive";
++    info!("check_vulkan_icd: checking for Vulkan ICD profiles...");
++    if mode == GfxMode::Vfio || mode == GfxMode::Integrated {
++        if std::path::Path::new(CONFIG_NVIDIA_VKICD).exists() {
++            info!("check_vulkan_icd: moving {} to {}", CONFIG_NVIDIA_VKICD, inactive_nv_icd.clone());
++            std::fs::rename(
++                CONFIG_NVIDIA_VKICD, 
++                inactive_nv_icd,
++            ).map_err(|err| GfxError::Write(CONFIG_NVIDIA_VKICD.to_owned(), err))?;
++        }
++    } else if std::path::Path::new(&inactive_nv_icd).exists() {
++        info!("check_vulkan_icd: moving {} to {}", inactive_nv_icd.clone(), CONFIG_NVIDIA_VKICD);
++        // nvidia icd must be applied
++        std::fs::rename(
++            inactive_nv_icd.clone(),
++            CONFIG_NVIDIA_VKICD,
++        ).map_err(|err| GfxError::Write(inactive_nv_icd, err))?;
++    }
++    Ok(())
++}
++
+ pub(crate) fn create_modprobe_conf(mode: GfxMode, device: &DiscreetGpu) -> Result<(), GfxError> {
+     if device.is_amd() || device.is_intel() {
+         return Ok(());
+diff --git a/src/lib.rs b/src/lib.rs
+index dd91e7e10460a5c5e2c70860ed32fc3668469560..671f4e58681bba74d6f209eb922fee41aa45aa7d 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -45,6 +45,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+ pub const CONFIG_PATH: &str = "/etc/supergfxd.conf";
+ /// Destination name to be used in the daemon when setting up DBUS connection
+ pub const DBUS_DEST_NAME: &str = "org.supergfxctl.Daemon";
++/// Generic icd-profile (vulkan)
++pub const CONFIG_NVIDIA_VKICD: &str = "/usr/share/vulkan/icd.d/nvidia_icd.json";
+ /// Interface path name. Should be common across daemon and client.
+ pub const DBUS_IFACE_PATH: &str = "/org/supergfxctl/Gfx";
+ 
+diff --git a/src/tests/actions.rs b/src/tests/actions.rs
+index e86cd908f60a6f279f138870051d404014cb598f..5850fb9ce2ddf038371472f3178c4526b59e3fad 100644
+--- a/src/tests/actions.rs
++++ b/src/tests/actions.rs
+@@ -74,6 +74,7 @@ impl StagedAction {
+                 StagedAction::HotplugUnplug,
+                 StagedAction::DevTreeManaged,
+                 StagedAction::WriteModprobeConf,
++                StagedAction::CheckVulkanIcd
+             ]
+             .contains(&previous_action),
+ 
+@@ -95,7 +96,11 @@ impl StagedAction {
+             | StagedAction::AsusDgpuEnable
+             | StagedAction::AsusEgpuDisable
+             | StagedAction::AsusEgpuEnable
+-            | StagedAction::DevTreeManaged => previous_action == StagedAction::WriteModprobeConf,
++            | StagedAction::DevTreeManaged => [
++                StagedAction::WriteModprobeConf,
++                StagedAction::CheckVulkanIcd
++            ].contains(&previous_action),
++
+             StagedAction::AsusMuxIgpu => [
+                 StagedAction::None,
+                 StagedAction::DisableNvidiaPowerd,
+@@ -120,7 +125,7 @@ impl StagedAction {
+             ]
+             .contains(&previous_action),
+ 
+-            StagedAction::WaitLogout | StagedAction::NotNvidia | StagedAction::None => true,
++            StagedAction::CheckVulkanIcd | StagedAction::WaitLogout | StagedAction::NotNvidia | StagedAction::None => true,
+         } {
+             Ok(())
+         } else {
+@@ -137,6 +142,7 @@ impl StagedAction {
+             StagedAction::StopDisplayManager => [
+                 StagedAction::DisableNvidiaPowerd,
+                 StagedAction::WriteModprobeConf,
++                StagedAction::CheckVulkanIcd,
+                 StagedAction::UnloadVfioDrivers,
+                 StagedAction::KillAmd,
+                 StagedAction::KillNvidia,
+@@ -152,6 +158,7 @@ impl StagedAction {
+                 StagedAction::NotNvidia,
+                 StagedAction::DisableNvidiaPowerd,
+                 StagedAction::WriteModprobeConf,
++                StagedAction::CheckVulkanIcd,
+             ]
+             .contains(&next_allowed_action),
+ 
+@@ -166,6 +173,7 @@ impl StagedAction {
+                 StagedAction::UnbindGpu,
+                 StagedAction::UnbindRemoveGpu,
+                 StagedAction::WriteModprobeConf,
++                StagedAction::CheckVulkanIcd,
+             ]
+             .contains(&next_allowed_action),
+ 
+@@ -196,6 +204,7 @@ impl StagedAction {
+             StagedAction::UnloadVfioDrivers => [
+                 StagedAction::UnbindRemoveGpu,
+                 StagedAction::WriteModprobeConf,
++                StagedAction::CheckVulkanIcd,
+             ]
+             .contains(&next_allowed_action),
+ 
+@@ -214,7 +223,7 @@ impl StagedAction {
+             .contains(&next_allowed_action),
+ 
+             StagedAction::UnbindRemoveGpu => {
+-                [StagedAction::WriteModprobeConf].contains(&next_allowed_action)
++                [StagedAction::WriteModprobeConf, StagedAction::CheckVulkanIcd].contains(&next_allowed_action)
+             }
+ 
+             StagedAction::UnbindGpu => {
+@@ -253,6 +262,7 @@ impl StagedAction {
+                 StagedAction::AsusDgpuEnable,
+                 StagedAction::LoadVfioDrivers,
+                 StagedAction::RescanPci,
++                StagedAction::CheckVulkanIcd,
+             ]
+             .contains(&next_allowed_action),
+ 
+@@ -267,6 +277,7 @@ impl StagedAction {
+                 StagedAction::RescanPci,
+                 StagedAction::NoLogind,
+                 StagedAction::WriteModprobeConf,
++                StagedAction::CheckVulkanIcd,
+                 StagedAction::WaitLogout,
+                 StagedAction::NotNvidia,
+                 StagedAction::KillNvidia,
+@@ -276,6 +287,8 @@ impl StagedAction {
+                 StagedAction::UnloadVfioDrivers,
+             ]
+             .contains(&next_allowed_action),
++
++            StagedAction::CheckVulkanIcd => true,
+         } {
+             Ok(())
+         } else {
